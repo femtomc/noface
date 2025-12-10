@@ -271,9 +271,10 @@ pub const Config = struct {
                         config.verbose = std.mem.eql(u8, value, "true");
                     }
                 } else if (std.mem.eql(u8, current_section.?, "passes")) {
-                    if (std.mem.eql(u8, key, "planner_enabled")) {
+                    // scrum_enabled/scrum_interval are the design doc names; planner_* are aliases
+                    if (std.mem.eql(u8, key, "scrum_enabled") or std.mem.eql(u8, key, "planner_enabled")) {
                         config.enable_planner = std.mem.eql(u8, value, "true");
-                    } else if (std.mem.eql(u8, key, "planner_interval")) {
+                    } else if (std.mem.eql(u8, key, "scrum_interval") or std.mem.eql(u8, key, "planner_interval")) {
                         config.planner_interval = std.fmt.parseInt(u32, value, 10) catch 5;
                     } else if (std.mem.eql(u8, key, "quality_enabled")) {
                         config.enable_quality = std.mem.eql(u8, value, "true");
@@ -504,4 +505,34 @@ test "parse verbose config" {
 test "default verbose is false" {
     const config = Config.default();
     try std.testing.expect(!config.verbose);
+}
+
+test "parse scrum config keys" {
+    const toml =
+        \\[passes]
+        \\scrum_enabled = false
+        \\scrum_interval = 7
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expect(!config.enable_planner);
+    try std.testing.expectEqual(@as(u32, 7), config.planner_interval);
+}
+
+test "parse planner config keys as aliases" {
+    const toml =
+        \\[passes]
+        \\planner_enabled = false
+        \\planner_interval = 8
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expect(!config.enable_planner);
+    try std.testing.expectEqual(@as(u32, 8), config.planner_interval);
 }

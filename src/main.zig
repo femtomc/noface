@@ -63,18 +63,18 @@ pub fn main() !void {
             config.specific_issue = args[i];
         } else if (std.mem.eql(u8, arg, "--dry-run")) {
             config.dry_run = true;
-        } else if (std.mem.eql(u8, arg, "--no-planner")) {
+        } else if (std.mem.eql(u8, arg, "--no-scrum") or std.mem.eql(u8, arg, "--no-planner")) {
             config.enable_planner = false;
         } else if (std.mem.eql(u8, arg, "--no-quality")) {
             config.enable_quality = false;
-        } else if (std.mem.eql(u8, arg, "--planner-interval")) {
+        } else if (std.mem.eql(u8, arg, "--scrum-interval") or std.mem.eql(u8, arg, "--planner-interval")) {
             i += 1;
             if (i >= args.len) {
-                std.debug.print("Error: --planner-interval requires a value\n", .{});
+                std.debug.print("Error: --scrum-interval requires a value\n", .{});
                 return error.InvalidArgument;
             }
             config.planner_interval = std.fmt.parseInt(u32, args[i], 10) catch {
-                std.debug.print("Error: invalid number for --planner-interval\n", .{});
+                std.debug.print("Error: invalid number for --scrum-interval\n", .{});
                 return error.InvalidArgument;
             };
         } else if (std.mem.eql(u8, arg, "--quality-interval")) {
@@ -201,10 +201,10 @@ fn printUsage() void {
         \\  --max-iterations N      Stop after N iterations (default: unlimited)
         \\  --issue ISSUE_ID        Work on specific issue
         \\  --dry-run               Show what would be done without executing
-        \\  --no-planner            Disable planner passes
+        \\  --no-scrum              Disable scrum passes (alias: --no-planner)
         \\  --no-quality            Disable quality review passes
-        \\  --planner-interval N    Run planner every N iterations (default: 5)
-        \\  --planner-directions S  Give directions to the planner (e.g., "prioritize issue X")
+        \\  --scrum-interval N      Run scrum every N iterations (default: 5, alias: --planner-interval)
+        \\  --planner-directions S  Give directions to the scrum planner (e.g., "prioritize issue X")
         \\  --quality-interval N    Run quality review every N iterations (default: 10)
         \\  --agent-timeout N       Kill agent if no output for N seconds (default: 300, must be >0)
         \\  -V, --verbose           Enable detailed logging (commands, timings, prompts, API responses)
@@ -300,9 +300,9 @@ fn runInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
         \\timeout_seconds = 900        # Kill agent if no output for this many seconds (must be >0)
         \\
         \\[passes]
-        \\planner_enabled = true
+        \\scrum_enabled = true
         \\quality_enabled = true
-        \\planner_interval = 5
+        \\scrum_interval = 5
         \\quality_interval = 10
         \\
         \\[tracker]
