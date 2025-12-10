@@ -19,12 +19,9 @@ quality_interval = 10
 type = "beads"          # or "github"
 sync_to_github = true
 
-# Uncomment to enable monowiki integration for design documents
-# [monowiki]
-# vault = "./docs"                # Path to monowiki vault
-# proactive_search = true         # Search for relevant docs before implementation
-# resolve_wikilinks = true        # Fetch [[wikilinked]] docs from issues
-# expand_neighbors = false        # Also fetch graph neighbors
-# api_docs_slug = "api-reference" # Slug for API documentation
-# sync_api_docs = false           # Enable bidirectional API doc sync
-# max_context_docs = 5            # Max docs to inject into prompt
+[monowiki]
+vault = "./wiki"
+proactive_search = true
+resolve_wikilinks = true
+expand_neighbors = true
+max_context_docs = 5

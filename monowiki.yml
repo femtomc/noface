@@ -1,0 +1,27 @@
+# Monowiki Configuration for noface
+
+site:
+  title: "noface"
+  author: "noface"
+  description: "Design documentation for noface"
+  url: "https://github.com/femtomc/noface"
+
+paths:
+  vault: "wiki/vault"      # Path to the Obsidian vault
+  output: "wiki/docs"      # Where to generate HTML (for GitHub Pages)
+  templates: null          # null = use built-in templates
+  theme: null              # null = use built-in theme
+
+orcid:
+  enabled: false
+  id: "0000-0000-0000-0000"
+
+server:
+  port: 8000               # Development server port
+
+bibliography: []           # No bibliography files
+
+base_url: "/"              # Deployment base path (prefix for links)
+enable_rss: true
+enable_sitemap: true
+enable_backlinks: true

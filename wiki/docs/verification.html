@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verification — noface</title>
+  <meta name="description" content="Verification">
+  <meta name="author" content="noface">
+  <meta name="monowiki-base-url" content="/">
+  <meta name="monowiki-note-slug" content="verification">
+  
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/previews.css">
+  <link rel="stylesheet" href="/css/graph.css">
+  <link rel="stylesheet" href="/css/search.css">
+
+  <!-- Frontend bundle -->
+  <script type="module" src="/js/bundle.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <nav class="nav">
+        <a href="/index.html">home</a>
+        
+        <a href="https://github.com/femtomc/noface">github</a>
+        <button id="search-trigger" class="search-trigger" aria-label="Search">
+          <span class="search-trigger-text">search</span>
+          <span class="search-trigger-hint">⌘K</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article>
+      
+      
+
+      
+      <p>
+        Tags: <code>design</code> <code>verification</code> <code>testing</code> <code>acceptance</code> 
+      </p>
+      
+
+      
+        <div id="toc" class="toc-container">
+          <nav class="toc-nav"><h3>Contents</h3><ul class="toc-list"><li class="toc-level-1"><a href="#verification">Verification</a></li><li class="toc-level-2"><a href="#current-design">Current Design</a></li><li class="toc-level-2"><a href="#relation-to-survey">Relation to Survey</a></li><li class="toc-level-2"><a href="#open-questions">Open Questions</a></li><li class="toc-level-2"><a href="#implementation-notes">Implementation Notes</a></li></ul></nav>
+        </div>
+        
+
+      <div class="page-subheader">
+        
+          <button id="copy-page-source" class="copy-page-btn" type="button" aria-label="Copy page Markdown">Copy page source</button>
+          
+        <button id="global-graph-toggle" class="graph-btn" type="button" aria-label="Open graph">Graph</button>
+      </div>
+
+      <h1 id="verification">Verification<a class="heading-anchor" href="#verification" aria-label="Link to heading">#</a></h1>
+<p>How noface determines whether an agent succeeded.</p>
+<h2 id="current-design">Current Design<a class="heading-anchor" href="#current-design" aria-label="Link to heading">#</a></h2>
+<p>noface uses multiple verification layers:</p>
+<ol>
+<li><strong>Test execution</strong> — runs the configured test command; failure = not done</li>
+<li><strong>Manifest compliance</strong> — <code>git diff</code> checked against declared files; violations = rollback</li>
+<li><strong>Build check</strong> — runs the configured build command (implicit in agent workflow)</li>
+</ol>
+<p>The agent is instructed to self-verify (run tests, check output) before committing.</p>
+<h2 id="relation-to-survey">Relation to Survey<a class="heading-anchor" href="#relation-to-survey" aria-label="Link to heading">#</a></h2>
+<p>The survey emphasizes <strong>automated testing as ground truth</strong>:</p>
+<blockquote>
+<p>"This ensures that code isn't accepted as 'done' until it passes its tests. Even single-agent approaches like OpenAI's Codex have employed this idea (often called execute-and-fix): run the code, and if an error or failing test is detected, prompt the model to fix it."</p>
+</blockquote>
+<p>And <strong>manifest verification</strong>:</p>
+<blockquote>
+<p>"Tools like MAID runner perform static analysis on the diff: did the agent only modify the allowed files and functions?"</p>
+</blockquote>
+<p>The survey also discusses <strong>LLM critics</strong> as an additional layer — a second agent that reviews the code.</p>
+<h2 id="open-questions">Open Questions<a class="heading-anchor" href="#open-questions" aria-label="Link to heading">#</a></h2>
+<ol>
+<li>
+<p><strong>Test Coverage</strong> — What if the tests don't cover the change? Agent could introduce a bug that passes existing tests.</p>
+</li>
+<li>
+<p><strong>Review Pass</strong> — Should noface run a dedicated reviewer agent on each change before accepting? Cost vs. benefit?</p>
+</li>
+<li>
+<p><strong>Static Analysis</strong> — Should we run linters, type checkers, security scanners as additional gates?</p>
+</li>
+<li>
+<p><strong>Semantic Verification</strong> — Tests check behavior, manifests check scope. But what about "did the agent actually address the issue?" Sometimes code passes tests but doesn't solve the problem.</p>
+</li>
+<li>
+<p><strong>Confidence Signals</strong> — Can we detect low-confidence completions? Agent says "done" but hedges in comments? Unusual patterns?</p>
+</li>
+<li>
+<p><strong>Partial Acceptance</strong> — If 2 of 3 acceptance criteria pass, do we accept partially? Or all-or-nothing?</p>
+</li>
+<li>
+<p><strong>Human Review Gate</strong> — For high-risk changes (security, config), should noface require human approval?</p>
+</li>
+</ol>
+<h2 id="implementation-notes">Implementation Notes<a class="heading-anchor" href="#implementation-notes" aria-label="Link to heading">#</a></h2>
+<p>See <code>src/loop.zig:verifyManifestCompliance</code> and prompt instructions for self-testing.</p>
+
+
+      
+      <hr>
+      <div id="backlinks">
+        <h3>Backlinks</h3>
+        <ul class="backlinks-list">
+          
+          <li><a href="/index.html">noface</a></li>
+          
+        </ul>
+      </div>
+      
+    </article>
+
+    
+    <hr>
+
+    <p>
+      <a href="/index.html">← Back to home</a>
+    </p>
+    
+    </article>
+
+  </main>
+
+
+
+  <!-- Global Graph Modal -->
+  <div class="global-graph-outer" id="global-graph-outer">
+    <div class="global-graph-container" id="global-graph-container"></div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal">
+    <div class="search-modal-wrapper">
+      <div class="search-modal-header">
+        <input
+          type="text"
+          id="search-modal-input"
+          class="search-modal-input"
+          placeholder="Search documentation..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="search-modal-tabs">
+        <button class="search-tab active" data-tab="results">Results</button>
+        <button class="search-tab" data-tab="graph">Graph</button>
+      </div>
+      <div class="search-modal-content">
+        <div class="search-tab-panel active" id="search-tab-results">
+          <div class="search-modal-results" id="search-modal-results"></div>
+        </div>
+        <div class="search-tab-panel" id="search-tab-graph">
+          <div class="search-graph-container" id="search-graph-container"></div>
+        </div>
+      </div>
+      <div class="search-modal-footer">
+        <div class="search-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>↵</kbd> Select</span>
+          <span><kbd>ESC</kbd> Close</span>
+        </div>
+        <div class="search-count"></div>
+      </div>
+    </div>
+  </div>
+
+  
+    <script id="page-source-data" type="application/json">"# Verification\n\nHow noface determines whether an agent succeeded.\n\n## Current Design\n\nnoface uses multiple verification layers:\n\n1. **Test execution** — runs the configured test command; failure = not done\n2. **Manifest compliance** — `git diff` checked against declared files; violations = rollback\n3. **Build check** — runs the configured build command (implicit in agent workflow)\n\nThe agent is instructed to self-verify (run tests, check output) before committing.\n\n## Relation to Survey\n\nThe survey emphasizes **automated testing as ground truth**:\n\n\u003e \"This ensures that code isn\u0027t accepted as \u0027done\u0027 until it passes its tests. Even single-agent approaches like OpenAI\u0027s Codex have employed this idea (often called execute-and-fix): run the code, and if an error or failing test is detected, prompt the model to fix it.\"\n\nAnd **manifest verification**:\n\n\u003e \"Tools like MAID runner perform static analysis on the diff: did the agent only modify the allowed files and functions?\"\n\nThe survey also discusses **LLM critics** as an additional layer — a second agent that reviews the code.\n\n## Open Questions\n\n1. **Test Coverage** — What if the tests don\u0027t cover the change? Agent could introduce a bug that passes existing tests.\n\n2. **Review Pass** — Should noface run a dedicated reviewer agent on each change before accepting? Cost vs. benefit?\n\n3. **Static Analysis** — Should we run linters, type checkers, security scanners as additional gates?\n\n4. **Semantic Verification** — Tests check behavior, manifests check scope. But what about \"did the agent actually address the issue?\" Sometimes code passes tests but doesn\u0027t solve the problem.\n\n5. **Confidence Signals** — Can we detect low-confidence completions? Agent says \"done\" but hedges in comments? Unusual patterns?\n\n6. **Partial Acceptance** — If 2 of 3 acceptance criteria pass, do we accept partially? Or all-or-nothing?\n\n7. **Human Review Gate** — For high-risk changes (security, config), should noface require human approval?\n\n## Implementation Notes\n\nSee `src/loop.zig:verifyManifestCompliance` and prompt instructions for self-testing.\n"</script>
+    
+
+</body>
+</html>

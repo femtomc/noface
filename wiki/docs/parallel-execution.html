@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parallel Execution — noface</title>
+  <meta name="description" content="Parallel Execution">
+  <meta name="author" content="noface">
+  <meta name="monowiki-base-url" content="/">
+  <meta name="monowiki-note-slug" content="parallel-execution">
+  
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/previews.css">
+  <link rel="stylesheet" href="/css/graph.css">
+  <link rel="stylesheet" href="/css/search.css">
+
+  <!-- Frontend bundle -->
+  <script type="module" src="/js/bundle.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <nav class="nav">
+        <a href="/index.html">home</a>
+        
+        <a href="https://github.com/femtomc/noface">github</a>
+        <button id="search-trigger" class="search-trigger" aria-label="Search">
+          <span class="search-trigger-text">search</span>
+          <span class="search-trigger-hint">⌘K</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article>
+      
+      
+
+      
+      <p>
+        Tags: <code>design</code> <code>parallelism</code> <code>batching</code> <code>locking</code> 
+      </p>
+      
+
+      
+        <div id="toc" class="toc-container">
+          <nav class="toc-nav"><h3>Contents</h3><ul class="toc-list"><li class="toc-level-1"><a href="#parallel-execution">Parallel Execution</a></li><li class="toc-level-2"><a href="#current-design">Current Design</a></li><li class="toc-level-2"><a href="#relation-to-survey">Relation to Survey</a></li><li class="toc-level-2"><a href="#open-questions">Open Questions</a></li><li class="toc-level-2"><a href="#implementation-notes">Implementation Notes</a></li></ul></nav>
+        </div>
+        
+
+      <div class="page-subheader">
+        
+          <button id="copy-page-source" class="copy-page-btn" type="button" aria-label="Copy page Markdown">Copy page source</button>
+          
+        <button id="global-graph-toggle" class="graph-btn" type="button" aria-label="Open graph">Graph</button>
+      </div>
+
+      <h1 id="parallel-execution">Parallel Execution<a class="heading-anchor" href="#parallel-execution" aria-label="Link to heading">#</a></h1>
+<p>How noface runs multiple agents concurrently without conflicts.</p>
+<h2 id="current-design">Current Design<a class="heading-anchor" href="#current-design" aria-label="Link to heading">#</a></h2>
+<ol>
+<li><strong>Planner pass</strong> groups issues into batches based on manifest analysis</li>
+<li>Issues in the same batch have <strong>disjoint primary_files</strong> (no overlap)</li>
+<li><strong>Worker pool</strong> spawns up to N parallel processes (configurable, default 8)</li>
+<li><strong>Lock entries</strong> track which files are held by which worker</li>
+<li>Batches execute sequentially; issues within a batch execute in parallel</li>
+</ol>
+<h2 id="relation-to-survey">Relation to Survey<a class="heading-anchor" href="#relation-to-survey" aria-label="Link to heading">#</a></h2>
+<p>This implements the <strong>file-level locking</strong> pattern from <a href="/orchestration-survey.html">orchestration-survey</a>:</p>
+<blockquote>
+<p>"A community-built 'Claude code agent farm' demonstrates this with a coordination protocol: each agent must create a lock file listing the files/features it intends to work on, and consult a shared active work registry to ensure no overlap."</p>
+</blockquote>
+<p>The survey also discusses <strong>CRDTs</strong> for lock-free coordination (CodeCRDT achieved 100% merge convergence). This is more scalable but more complex.</p>
+<h2 id="open-questions">Open Questions<a class="heading-anchor" href="#open-questions" aria-label="Link to heading">#</a></h2>
+<ol>
+<li>
+<p><strong>Lock Granularity</strong> — File-level prevents conflicts but may be too conservative. Two agents could safely edit different functions in the same file. Is function-level locking worth the complexity?</p>
+</li>
+<li>
+<p><strong>Batch Sizing</strong> — How do we decide how many issues to batch together? More parallelism = faster, but also more resource contention and harder debugging.</p>
+</li>
+<li>
+<p><strong>Lock Contention</strong> — With many issues, popular files (e.g., <code>main.zig</code>) become bottlenecks. How do we detect and mitigate hot files?</p>
+</li>
+<li>
+<p><strong>Conflict Recovery</strong> — If a conflict somehow occurs (manifest was wrong), what's the resolution strategy? Currently undefined.</p>
+</li>
+<li>
+<p><strong>CRDT Exploration</strong> — Is there a simpler middle ground between locks and full CRDTs? AST-aware merging?</p>
+</li>
+</ol>
+<h2 id="implementation-notes">Implementation Notes<a class="heading-anchor" href="#implementation-notes" aria-label="Link to heading">#</a></h2>
+<p>See <code>src/worker_pool.zig:WorkerPool</code> and <code>src/state.zig:LockEntry</code>.</p>
+
+
+      
+      <hr>
+      <div id="backlinks">
+        <h3>Backlinks</h3>
+        <ul class="backlinks-list">
+          
+          <li><a href="/index.html">noface</a></li>
+          
+        </ul>
+      </div>
+      
+    </article>
+
+    
+    <hr>
+
+    <p>
+      <a href="/index.html">← Back to home</a>
+    </p>
+    
+    </article>
+
+  </main>
+
+
+
+  <!-- Global Graph Modal -->
+  <div class="global-graph-outer" id="global-graph-outer">
+    <div class="global-graph-container" id="global-graph-container"></div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal">
+    <div class="search-modal-wrapper">
+      <div class="search-modal-header">
+        <input
+          type="text"
+          id="search-modal-input"
+          class="search-modal-input"
+          placeholder="Search documentation..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="search-modal-tabs">
+        <button class="search-tab active" data-tab="results">Results</button>
+        <button class="search-tab" data-tab="graph">Graph</button>
+      </div>
+      <div class="search-modal-content">
+        <div class="search-tab-panel active" id="search-tab-results">
+          <div class="search-modal-results" id="search-modal-results"></div>
+        </div>
+        <div class="search-tab-panel" id="search-tab-graph">
+          <div class="search-graph-container" id="search-graph-container"></div>
+        </div>
+      </div>
+      <div class="search-modal-footer">
+        <div class="search-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>↵</kbd> Select</span>
+          <span><kbd>ESC</kbd> Close</span>
+        </div>
+        <div class="search-count"></div>
+      </div>
+    </div>
+  </div>
+
+  
+    <script id="page-source-data" type="application/json">"# Parallel Execution\n\nHow noface runs multiple agents concurrently without conflicts.\n\n## Current Design\n\n1. **Planner pass** groups issues into batches based on manifest analysis\n2. Issues in the same batch have **disjoint primary_files** (no overlap)\n3. **Worker pool** spawns up to N parallel processes (configurable, default 8)\n4. **Lock entries** track which files are held by which worker\n5. Batches execute sequentially; issues within a batch execute in parallel\n\n## Relation to Survey\n\nThis implements the **file-level locking** pattern from [[orchestration-survey]]:\n\n\u003e \"A community-built \u0027Claude code agent farm\u0027 demonstrates this with a coordination protocol: each agent must create a lock file listing the files/features it intends to work on, and consult a shared active work registry to ensure no overlap.\"\n\nThe survey also discusses **CRDTs** for lock-free coordination (CodeCRDT achieved 100% merge convergence). This is more scalable but more complex.\n\n## Open Questions\n\n1. **Lock Granularity** — File-level prevents conflicts but may be too conservative. Two agents could safely edit different functions in the same file. Is function-level locking worth the complexity?\n\n2. **Batch Sizing** — How do we decide how many issues to batch together? More parallelism = faster, but also more resource contention and harder debugging.\n\n3. **Lock Contention** — With many issues, popular files (e.g., `main.zig`) become bottlenecks. How do we detect and mitigate hot files?\n\n4. **Conflict Recovery** — If a conflict somehow occurs (manifest was wrong), what\u0027s the resolution strategy? Currently undefined.\n\n5. **CRDT Exploration** — Is there a simpler middle ground between locks and full CRDTs? AST-aware merging?\n\n## Implementation Notes\n\nSee `src/worker_pool.zig:WorkerPool` and `src/state.zig:LockEntry`.\n"</script>
+    
+
+</body>
+</html>

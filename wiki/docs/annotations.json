@@ -1,0 +1,293 @@
+{
+  "comments": [],
+  "sections": {
+    "agent": [
+      {
+        "anchor_id": "monowiki-agent-guide",
+        "hash": "83bafda4f98f83fd03d25c9db3328b15c1a8f2d1f6699bbeb2c49d06b2ce4496",
+        "heading": "monowiki Agent Guide #",
+        "section_id": "monowiki-agent-guide-83bafda4"
+      }
+    ],
+    "context-injection": [
+      {
+        "anchor_id": "context-injection",
+        "hash": "90dffdcd905c97635c6c28e649617aacf41eb5227ab2e59b78dcf0e38117be74",
+        "heading": "Context Injection #",
+        "section_id": "context-injection-90dffdcd"
+      },
+      {
+        "anchor_id": "current-design",
+        "hash": "b9e459728a8bfb5540294ef6e56e5f366e6e700ea102dc848b79d668a5d7e592",
+        "heading": "Current Design #",
+        "section_id": "current-design-b9e45972"
+      },
+      {
+        "anchor_id": "relation-to-survey",
+        "hash": "7b4d541eadd7fe36b7cebbd4c9217be5535fdf3c9843a8e767ee54e15ec540a9",
+        "heading": "Relation to Survey #",
+        "section_id": "relation-to-survey-7b4d541e"
+      },
+      {
+        "anchor_id": "open-questions",
+        "hash": "f585c1c59b28cc431758c3d46edf8bcb7b95e1ece07f694d6956c28d41f883ba",
+        "heading": "Open Questions #",
+        "section_id": "open-questions-f585c1c5"
+      },
+      {
+        "anchor_id": "implementation-notes",
+        "hash": "6112792c4a51b4b51a2d8559be77ed020368dd9403c1d57b3e5dae3f28935ef3",
+        "heading": "Implementation Notes #",
+        "section_id": "implementation-notes-6112792c"
+      }
+    ],
+    "failure-recovery": [
+      {
+        "anchor_id": "failure-recovery",
+        "hash": "b953c4f52789451edbefe8d0fc6c7a05f03b14b15a1a0bd74d38219d2afa1e34",
+        "heading": "Failure Recovery #",
+        "section_id": "failure-recovery-b953c4f5"
+      },
+      {
+        "anchor_id": "current-design",
+        "hash": "0345ec9189ef76d200518f587036a7c21df559e3eeb10df3153d7acf5c4a11da",
+        "heading": "Current Design #",
+        "section_id": "current-design-0345ec91"
+      },
+      {
+        "anchor_id": "relation-to-survey",
+        "hash": "04fc4d1505436e53c036f0a2149bf7ff7624db04916eaa562567cfc6aeb6f797",
+        "heading": "Relation to Survey #",
+        "section_id": "relation-to-survey-04fc4d15"
+      },
+      {
+        "anchor_id": "open-questions",
+        "hash": "69f12830810f8074f420420d8980a34d94bd3936cb5e9b5fa878efa80caf6ff3",
+        "heading": "Open Questions #",
+        "section_id": "open-questions-69f12830"
+      },
+      {
+        "anchor_id": "implementation-notes",
+        "hash": "cd9881abf1c4cf585a4953b8be6b2a1330e4bb2fd6e1927a05e2d7dbcaca74b4",
+        "heading": "Implementation Notes #",
+        "section_id": "implementation-notes-cd9881ab"
+      }
+    ],
+    "index": [
+      {
+        "anchor_id": "noface",
+        "hash": "bd03f5d67ae34eeb8ed3a5e32d5280590496e3cf5b070011ed516ce82e381aea",
+        "heading": "noface #",
+        "section_id": "noface-bd03f5d6"
+      },
+      {
+        "anchor_id": "research",
+        "hash": "0203af86003e51d710f7374618a31c10e95556d416e6c4e7ed1cb449191293a7",
+        "heading": "Research #",
+        "section_id": "research-0203af86"
+      },
+      {
+        "anchor_id": "design",
+        "hash": "bdbdb456012d830e904b9d24e0558721346f846742cb8ac3646dc1d1da3d00be",
+        "heading": "Design #",
+        "section_id": "design-bdbdb456"
+      },
+      {
+        "anchor_id": "quick-links",
+        "hash": "f538eff3bbd2905f6d04d28d33196451eb8c33eae0e3abd2d5e88df168936984",
+        "heading": "Quick Links #",
+        "section_id": "quick-links-f538eff3"
+      }
+    ],
+    "manifests": [
+      {
+        "anchor_id": "file-manifests",
+        "hash": "c49f2c4522c66ce295656b808fbddf59592063762ba56b924adc55cf93bc299e",
+        "heading": "File Manifests #",
+        "section_id": "file-manifests-c49f2c45"
+      },
+      {
+        "anchor_id": "current-design",
+        "hash": "f43c2d12814319715ff1679ab13c4e26ad9a43fbf2d150ede4d75e5ad08e5a8d",
+        "heading": "Current Design #",
+        "section_id": "current-design-f43c2d12"
+      },
+      {
+        "anchor_id": "relation-to-survey",
+        "hash": "119104bd801cd616414935a27eaae86dc58ff5c47d4ae571fef16d92bc802c41",
+        "heading": "Relation to Survey #",
+        "section_id": "relation-to-survey-119104bd"
+      },
+      {
+        "anchor_id": "open-questions",
+        "hash": "46f16f5fa107686a809ca56018c6b0a52de977bac96267c02555e7465bc942dd",
+        "heading": "Open Questions #",
+        "section_id": "open-questions-46f16f5f"
+      },
+      {
+        "anchor_id": "implementation-notes",
+        "hash": "17f895c4f1986fa2142a9331ce88b5dcb084cb1eefe7967cb0d75c0e912b4f96",
+        "heading": "Implementation Notes #",
+        "section_id": "implementation-notes-17f895c4"
+      }
+    ],
+    "multi-pass": [
+      {
+        "anchor_id": "multi-pass-architecture",
+        "hash": "4890ea93f322865f5f7bf563b10e06c6baa5e445868b4bde013f9e7c2b4ca8e9",
+        "heading": "Multi-Pass Architecture #",
+        "section_id": "multi-pass-architecture-4890ea93"
+      },
+      {
+        "anchor_id": "current-design",
+        "hash": "f91ec757d6b85610c59afe6051300c38605cb8d7da9a2f600f59e7a2e1c5ca83",
+        "heading": "Current Design #",
+        "section_id": "current-design-f91ec757"
+      },
+      {
+        "anchor_id": "relation-to-survey",
+        "hash": "cbef4a0e31b88b0d44e4cb8ba3a1b1b86437cef2bf65fc192ed9202804400afd",
+        "heading": "Relation to Survey #",
+        "section_id": "relation-to-survey-cbef4a0e"
+      },
+      {
+        "anchor_id": "open-questions",
+        "hash": "ed02413827dc7f83ec1f4e2cd3d5600ebc672b6607f40eb690aad53bbea41383",
+        "heading": "Open Questions #",
+        "section_id": "open-questions-ed024138"
+      },
+      {
+        "anchor_id": "implementation-notes",
+        "hash": "75c9176949ce9be0f86cff0cbcebcb4673c355207adcc6dac381ec75fb08bf44",
+        "heading": "Implementation Notes #",
+        "section_id": "implementation-notes-75c91769"
+      }
+    ],
+    "orchestration-survey": [
+      {
+        "anchor_id": "design-patterns-for-orchestrating-black-box-code-agents-a-literature-survey",
+        "hash": "cd25f60af3b5e8f64104237a2e7c761f9bf5d9c152c9d91c03e3a4214c9b3a34",
+        "heading": "Design Patterns for Orchestrating Black-Box Code Agents: A Literature Survey #",
+        "section_id": "design-patterns-for-orchestrating-black-box-code-agents-a-literature-survey-cd25f60a"
+      },
+      {
+        "anchor_id": "task-assignment-and-granularity",
+        "hash": "2a5ac648a8629e22cfb3a700a622fb4f6cbb65b419a66fab6fd4b640f170d489",
+        "heading": "Task Assignment and Granularity #",
+        "section_id": "task-assignment-and-granularity-2a5ac648"
+      },
+      {
+        "anchor_id": "context-curation-providing-helpful-context-and-avoiding-harmful-noise",
+        "hash": "fd7b663d6605bb6d058cc5a01f75babac3f1c25489009f8cbe8afdd2417b5907",
+        "heading": "Context Curation: Providing Helpful Context (and Avoiding Harmful Noise) #",
+        "section_id": "context-curation-providing-helpful-context-and-avoiding-harmful-noise-fd7b663d"
+      },
+      {
+        "anchor_id": "prompt-engineering-at-the-orchestration-level",
+        "hash": "30056102db3bde76b0add9165e2e528b4ed007dfb9290b628ed89fb8813617c8",
+        "heading": "Prompt Engineering at the Orchestration Level #",
+        "section_id": "prompt-engineering-at-the-orchestration-level-30056102"
+      },
+      {
+        "anchor_id": "parallelism-conflict-avoidance",
+        "hash": "8ccab7eebfad0bab04a3300ebbc0c0ee3d60682e84a2d3dec400d90f63534988",
+        "heading": "Parallelism & Conflict Avoidance #",
+        "section_id": "parallelism-conflict-avoidance-8ccab7ee"
+      },
+      {
+        "anchor_id": "verification-acceptance-criteria",
+        "hash": "2aa7d1386c7e1e18709d771f6a4603fe30e83d641597fff72f8dcb54ec1efdf0",
+        "heading": "Verification & Acceptance Criteria #",
+        "section_id": "verification-acceptance-criteria-2aa7d138"
+      },
+      {
+        "anchor_id": "failure-modes-recovery-strategies",
+        "hash": "2b38860147078fd4b353d785b2768bec9681999c236325fef05a0265f6797237",
+        "heading": "Failure Modes & Recovery Strategies #",
+        "section_id": "failure-modes-recovery-strategies-2b388601"
+      },
+      {
+        "anchor_id": "multi-pass-architectures-planner-implementer-reviewer-etc",
+        "hash": "791d98295aad1365f936f4b58ae5f6f14b6a1e573c7746e4fa7b5f903a4f24ca",
+        "heading": "Multi-Pass Architectures (Planner, Implementer, Reviewer, etc.) #",
+        "section_id": "multi-pass-architectures-planner-implementer-reviewer-etc-791d9829"
+      },
+      {
+        "anchor_id": "human-in-the-loop-in-orchestration",
+        "hash": "e1a3f7a01efcf2210f3db846b9c6e7d80f847898d27fc343fc4430dfc3cd0ca0",
+        "heading": "Human-in-the-Loop in Orchestration #",
+        "section_id": "human-in-the-loop-in-orchestration-e1a3f7a0"
+      },
+      {
+        "anchor_id": "conclusion",
+        "hash": "1758a73e3430b090afb7a51d62bd4abb38a3e8530ac58d58763a391121d2fff1",
+        "heading": "Conclusion #",
+        "section_id": "conclusion-1758a73e"
+      }
+    ],
+    "parallel-execution": [
+      {
+        "anchor_id": "parallel-execution",
+        "hash": "2cec95ca473208e1e362f46d3d0029890ea9452eb842eef274641537a034b217",
+        "heading": "Parallel Execution #",
+        "section_id": "parallel-execution-2cec95ca"
+      },
+      {
+        "anchor_id": "current-design",
+        "hash": "684d83b1c716965444f1ce6b54f8ec246d07b9c3cd5aa85da8992accd941ac0b",
+        "heading": "Current Design #",
+        "section_id": "current-design-684d83b1"
+      },
+      {
+        "anchor_id": "relation-to-survey",
+        "hash": "0826a9aee8d0140e821d300db8cdde601fbca85428f550adb4e2a4e8fdca5571",
+        "heading": "Relation to Survey #",
+        "section_id": "relation-to-survey-0826a9ae"
+      },
+      {
+        "anchor_id": "open-questions",
+        "hash": "1d07ef8da2cb24f188e7a6b3a81623ea9a7a71015893a064705f2577a59f1c47",
+        "heading": "Open Questions #",
+        "section_id": "open-questions-1d07ef8d"
+      },
+      {
+        "anchor_id": "implementation-notes",
+        "hash": "263b3aa23ca4b472de7568bb9b1ade6e97d6d58b6c668893a9a42e1842c94ca9",
+        "heading": "Implementation Notes #",
+        "section_id": "implementation-notes-263b3aa2"
+      }
+    ],
+    "verification": [
+      {
+        "anchor_id": "verification",
+        "hash": "56b5b01caa2f83838b0b631e7e5bf527d958d6682282fd2dd81ee6953c938f9e",
+        "heading": "Verification #",
+        "section_id": "verification-56b5b01c"
+      },
+      {
+        "anchor_id": "current-design",
+        "hash": "a6920eab044f60f2c9567887cf8c053a1185c7294626b8e7152adea6b3570d2d",
+        "heading": "Current Design #",
+        "section_id": "current-design-a6920eab"
+      },
+      {
+        "anchor_id": "relation-to-survey",
+        "hash": "61c733500744876fc02c003a0af51cac423374f0bda4eca9cd640423bd898eee",
+        "heading": "Relation to Survey #",
+        "section_id": "relation-to-survey-61c73350"
+      },
+      {
+        "anchor_id": "open-questions",
+        "hash": "a7af6b6a29b3a65806a9ea6df45a3704eaa847a77ca4f99172c572a6ec3e6cfe",
+        "heading": "Open Questions #",
+        "section_id": "open-questions-a7af6b6a"
+      },
+      {
+        "anchor_id": "implementation-notes",
+        "hash": "358700cd55483acb8f8d4ccdf9c01bce47c8da244668c0de1802e7a734e95a97",
+        "heading": "Implementation Notes #",
+        "section_id": "implementation-notes-358700cd"
+      }
+    ]
+  }
+}

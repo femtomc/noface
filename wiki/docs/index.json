@@ -1,0 +1,737 @@
+[
+  {
+    "id": "agent#monowiki-agent-guide",
+    "url": "/agent.html#monowiki-agent-guide",
+    "section_id": "monowiki-agent-guide-83bafda4",
+    "section_hash": "83bafda4f98f83fd03d25c9db3328b15c1a8f2d1f6699bbeb2c49d06b2ce4496",
+    "title": "AGENT",
+    "section_title": "monowiki Agent Guide #",
+    "content": "This vault ships with a CLI that is designed to be agent-friendly. Key commands: monowiki build : render the site to docs/ and emit index.json , graph.json , previews.json , and a cached site index at docs/.site_index.json . monowiki dev : serve the site locally with live rebuilds and JSON endpoints: /api/search?q=term&limit=10 /api/note/<slug> /api/graph/<slug>?depth=2&direction=both /api/graph/path?from=a&to=b&max_depth=5 monowiki search \"<query>\" --json --limit 5 --types essay,thought --tags rust,notes --with-links for machine-readable results. monowiki note <slug> --format json --with-links to fetch a single note (frontmatter, rendered HTML, raw body, links). monowiki graph neighbors --slug <slug> --depth 2 --direction outgoing --json to fan out. monowiki graph path --from a --to b --max-depth 4 --json to find shortest paths. monowiki export sections --format jsonl --with-links to stream embedding-ready chunks. monowiki watch streams JSON change events from vault/ (one line per event). JSON schemas CLI --json and dev server /api/* responses are wrapped in: Copy { \"schema_version\" : \"2024-11-llm-v1\", \"kind\" : \"search.results | note.full | graph.neighbors | graph.path\", \"data\" : { ... } } Search results include id , slug , url , title , section_title , snippet , tags , type , score , outgoing , backlinks . Notes include frontmatter, HTML, raw markdown, toc, outgoing, backlinks, and dates. Graph neighbors include nodes with slug/title/url/tags/type and edges; graph path returns the path array. Performance tips monowiki build / dev write docs/.site_index.json . The note , graph , and export commands reuse this cache to avoid rebuilding when only reading data. Delete it if you need a fresh rebuild. Conventions: Slugs come from frontmatter slug , otherwise the filename slugified. Drafts are excluded from exports/search when type: draft or draft: true . Backlinks are computed from [[WikiLinks]] in markdown and exposed via graph.json and the CLI/API. Section-level search slices HTML headings into chunks; IDs match rendered anchors. Tips for agents: Use monowiki export sections to build retrieval datasets without scraping. Use monowiki note <slug> --format json to fetch full context (toc, html, raw markdown) before editing. Prefer the dev server APIs during interactive sessions; they reflect live rebuilds. Happy hacking!",
+    "snippet": "This vault ships with a CLI that is designed to be agent-friendly. Key commands: monowiki build : render the site to docs/ and emit index.json , graph.json , previews.json , and a cached site index...",
+    "tags": [],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#design-patterns-for-orchestrating-black-box-code-agents-a-literature-survey",
+    "url": "/orchestration-survey.html#design-patterns-for-orchestrating-black-box-code-agents-a-literature-survey",
+    "section_id": "design-patterns-for-orchestrating-black-box-code-agents-a-literature-survey-cd25f60a",
+    "section_hash": "cd25f60af3b5e8f64104237a2e7c761f9bf5d9c152c9d91c03e3a4214c9b3a34",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Design Patterns for Orchestrating Black-Box Code Agents: A Literature Survey #",
+    "content": "Orchestrating black-box code-generation agents requires careful planning and robust design patterns to ensure these AI \"developers\" work effectively. Researchers and practitioners have proposed various strategies to assign tasks, manage context, engineer prompts, run agents in parallel safely, verify outputs, handle failures, and integrate multiple passes or human oversight. This survey reviews key patterns from academic literature and real-world case studies, organized by orchestration concern, and provides a pattern catalog of proven approaches.",
+    "snippet": "Orchestrating black-box code-generation agents requires careful planning and robust design patterns to ensure these AI \"developers\" work effectively. Researchers and practitioners have proposed...",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#task-assignment-and-granularity",
+    "url": "/orchestration-survey.html#task-assignment-and-granularity",
+    "section_id": "task-assignment-and-granularity-2a5ac648",
+    "section_hash": "2a5ac648a8629e22cfb3a700a622fb4f6cbb65b419a66fab6fd4b640f170d489",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Task Assignment and Granularity #",
+    "content": "Dynamic Task Decomposition: A central pattern is to use an orchestrator agent (or component) that breaks down a software project into manageable subtasks and assigns them to specialized agents. Rather than having one AI attempt an entire project, orchestrators analyze the request and determine necessary subtasks (e.g. implement a feature, write tests, update docs). In Microsoft's taxonomy of agent architectures, an Orchestrator-Workers pattern is defined where a lead agent \"dynamically decomposes tasks, delegates them to worker agents, and synthesizes their outputs\". For example, in a coding context the orchestrator could decide which files or modules need changes and coordinate sub-agents for code generation, testing, and documentation. This dynamic assignment allows tackling large development goals by partitioning work. Specialization and Routing: Task assignment often leverages specialization. The orchestrator may classify each task and route it to an agent best suited for that category (using a Routing Workflow pattern) [@pujals2025agentic]. For instance, code-generation requests might go to a \"Coder\" agent, while bug-fix tasks route to a \"Debugger\" agent, and documentation tasks to a \"Doc Writer\" agent. The input can be analyzed (via rules or an LLM) to decide which agent is most appropriate. This ensures that each agent works on tasks aligned with its expertise, improving effectiveness. Ellipsis's production code review system is an example: it runs multiple specialized agents in parallel, each looking for a specific type of issue in a pull request (security, style, duplication, etc.), rather than one monolithic agent [@zenml2024ellipsis]. Granularity – Sizing the Task: Deciding how large a task to give a single agent call is crucial. Literature suggests that tasks should be fine-grained enough to fit the agent's context window and capabilities, yet not so granular that the overhead of orchestration dominates. If a task is too large (e.g. \"implement an entire feature spanning many files\"), agents may struggle with context or produce incomplete solutions. Researchers have addressed this by explicit task planning. Self-planning code generation has the LLM first outline a plan of steps for a complex request, then tackle each step sequentially [@jiang2024selfplanning]. This two-phase approach of planning then coding yields up to 25.4% higher success (Pass@1) than one-shot generation for complex problems. Similarly, the Prompt-Chaining workflow breaks a complex job into a sequence of smaller subtasks, each handled by a dedicated prompt/agent call [@pujals2025agentic]. This not only makes each step easier for the model to execute but also improves transparency and debuggability. In practice, a rule of thumb is to treat one well-defined issue or function as a unit of work for an agent, and if the request spans multiple concerns or components, the orchestrator should subdivide it. Handling Dependencies and Readiness: An orchestrator must also respect task dependencies when assigning work. Some tasks can run in parallel (e.g. implement UI and backend separately), while others depend on earlier outputs (e.g. tests should run after code is written). One practical approach is to maintain a shared task board with statuses and dependencies. In a user's multi-agent Claude setup, tasks were tracked in a Markdown plan file with fields for Assigned Agent, Status, and Dependencies – e.g. \"Write Integration Tests – Assigned to Validator – Pending (waiting for Builder to complete auth module)\". This allows the orchestrator (and agents themselves) to know when a task is ready to start. If a task is too big or not well-defined, a planner agent might refine it further or ask for clarification before assignment. Ultimately, effective task assignment balances priority (which issues are most important), readiness (are prerequisites done?), and size (fits in one agent invocation).",
+    "snippet": "Dynamic Task Decomposition: A central pattern is to use an orchestrator agent (or component) that breaks down a software project into manageable subtasks and assigns them to specialized agents....",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#context-curation-providing-helpful-context-and-avoiding-harmful-noise",
+    "url": "/orchestration-survey.html#context-curation-providing-helpful-context-and-avoiding-harmful-noise",
+    "section_id": "context-curation-providing-helpful-context-and-avoiding-harmful-noise-fd7b663d",
+    "section_hash": "fd7b663d6605bb6d058cc5a01f75babac3f1c25489009f8cbe8afdd2417b5907",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Context Curation: Providing Helpful Context (and Avoiding Harmful Noise) #",
+    "content": "Relevant Context Injections: The information an agent gets in its prompt (code context, design docs, examples) profoundly impacts its success. A key pattern is Retrieval-Augmented Code Generation (RACG), where the orchestrator fetches relevant snippets from the codebase or documentation to include in the agent's prompt. Real-world software tasks often require understanding cross-file dependencies and global architecture. Since an LLM has a limited context window, the orchestrator must be selective: for example, retrieving the function signature and related config file when asking the agent to implement a new feature in that function. A recent survey emphasizes that repository-level code generation needs to ensure global semantic consistency across files, and integrating a retrieval mechanism (e.g. searching a knowledge base of code) helps the LLM reason beyond a single file. In practice, tools like vector databases are used to find and feed the most relevant code pieces to the agent. Ellipsis's code review agents, for instance, use advanced code search backed by embeddings to find pertinent pieces of the codebase when analyzing a PR [@zenml2024ellipsis]. Curating Helpful Examples and Constraints: Apart from code context, orchestrators often supply design documents, API usage examples, or style guides as context if they will guide the agent toward the right solution. Providing a few-shot example of a similar function or test can dramatically improve accuracy, as the agent can analogize from the given pattern. Additionally, context can include explicit constraints – e.g. a list of files that are in scope, or performance requirements. By giving the agent a clear problem statement along with these auxiliary materials, the orchestrator sets it up for success. For example, if generating a new module, the orchestrator might include an outline of the module's design or a simplified spec in the prompt. In PerfOrch (Performance-Oriented Orchestration), contextual knowledge about which LLMs perform best for a given language and problem type is stored and used to pick the right model for the task [@wang2025perforch]. This \"strategic memory\" of model strengths is a form of context that improves outcomes by dynamically selecting the optimal agent for each subtask. Avoiding Context Overload: Too much context can hurt agent performance. It might be tempting to provide every possibly relevant file to be safe, but large context size can confuse the model or dilute its focus. Recent studies have shown that even if all provided context is relevant, performance can degrade substantially (by 13–85%) as input length grows. In other words, beyond a certain point, the sheer volume of text can overwhelm the LLM's reasoning (\"context dilution\"). Thus, orchestrators should be judicious: include only the most relevant code and information. Irrelevant or contradictory context is even worse – it can lead the agent to draw false inferences or focus on the wrong problem. Best practices include using retrieval algorithms to filter context, and possibly summarizing or abstracting context to fit the window. For instance, rather than inserting an entire 500-line file, an orchestrator might insert a summary or the specific function signature needed. The Context-Augmentation pattern described by Hugging Face highlights that context expansion should be iterative and need-based: the agent identifies what extra info it needs, the orchestrator fetches it, and this cycle repeats, rather than dumping everything at once [@pujals2025agentic]. Techniques like embedding search, docstrings extraction, or code property graphs can help select which context truly matters. Detecting and Removing Harmful Context: Orchestrators may also implement \"context pruning\" – removing any information from the prompt that isn't consistent or necessary. This can include stale data (e.g. outdated function definitions if a newer version exists) or irrelevant conversation history in iterative settings. The goal is to minimize noise. If an agent will be doing a focused code edit, the orchestrator might strip out any unrelated instructions from the conversation and supply a fresh prompt with just the needed background. In summary, curated context is a double-edged sword: the right snippets and examples can greatly enhance success, but too much or wrong context can mislead the agent. Effective orchestration employs retrieval, filtering, and pruning to optimize context.",
+    "snippet": "Relevant Context Injections: The information an agent gets in its prompt (code context, design docs, examples) profoundly impacts its success. A key pattern is Retrieval-Augmented Code Generation...",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#prompt-engineering-at-the-orchestration-level",
+    "url": "/orchestration-survey.html#prompt-engineering-at-the-orchestration-level",
+    "section_id": "prompt-engineering-at-the-orchestration-level-30056102",
+    "section_hash": "30056102db3bde76b0add9165e2e528b4ed007dfb9290b628ed89fb8813617c8",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Prompt Engineering at the Orchestration Level #",
+    "content": "Structured Instructions vs. Plain Language: Orchestration involves not only what tasks agents do, but how those tasks are described in prompts. A recurring pattern is to use structured, formal instructions rather than leaving everything to freeform natural language. For example, instead of saying \"Please write some code to do X\", an orchestrator-generated prompt might include a template: a step-by-step checklist, or a specific format like pseudo-code or JSON plan that the agent must follow. This structure can guide the model's output and reduce ambiguity. A concrete case is the self-planning approach: the orchestrator first asks the LLM to output a formatted plan (e.g. a numbered list of steps), and then feeds that plan into the next prompt for code generation [@jiang2024selfplanning]. By explicitly separating \"thinking\" from \"coding,\" the instructions become more systematic, leading to better results. Similarly, multi-agent frameworks often start with a role acknowledgment and task breakdown. In a four-agent setup using Claude (Architect, Builder, Validator, Scribe), each agent's system prompt begins with a role declaration and primary tasks in bullet form (e.g. \"You are Agent 1 – The Architect. Primary Tasks: requirements analysis, architecture planning…\"). This kind of structured prompt ensures each agent knows its exact scope and constraints. Communicating Constraints Clearly: The orchestration layer must convey any hard constraints or \"rules of engagement\" to the agent in the prompt. This can include: \"Do not modify code outside of Function A in file X\", \"Follow the project's style guide for naming\", or \"Make sure to run the provided tests and ensure they pass\". Explicitly listing files or sections not to touch can prevent collateral changes. However, LLMs may not always obey implicitly phrased constraints, so phrasing is important. Some systems adopt a manifest-driven approach, where the orchestrator provides a manifest of intended changes. For instance, the manifest might enumerate which functions to implement or which files to create, and the agent is instructed that any output will be checked against this manifest. A recent methodology called Manifest-Driven AI Development (MAID) takes this further by treating the manifest as an enforceable contract: after generation, a validator checks that only the declared files/functions were altered and no undeclared edits occurred. By front-loading these constraints (and later verifying them), the orchestrator greatly reduces the chance of the agent \"coloring outside the lines.\" Another way to impose structure is using tool-assisted prompting languages (like Microsoft's Guidance library) that allow templates with placeholders and even regex checks on the LLM's output, ensuring the agent adheres to formats. Success Criteria and Framing: The prompt should also frame what constitutes success. A good orchestration prompt might end with a clear success condition, e.g.: \"Your solution will be considered correct if all given unit tests pass and it meets the performance constraint of <2s runtime.\" By stating these criteria, the agent can self-evaluate its output against them, leading to better alignment with the goal. This is related to the Evaluator-Optimizer pattern [@carpintero2025evaluator], where the prompt or subsequent agent pass includes evaluation guidelines. For example, an orchestrator might instruct: \"First, implement the function. Then double-check that the function handles edge cases (null input, etc.) and meets the description. Only finalize if these criteria are satisfied.\" Such structured prompts push the agent to reflect on its answer against requirements, effectively building a spec into the prompt. Research by Anthropic also suggests that using systematic prompt patterns often outperforms ad-hoc prompting [@anthropic2024agents]. In their experience, many teams succeeded by \"simple, composable patterns\" in prompts (like stepwise reasoning or tool usage specifications) rather than overly open-ended prompts. In sum, the orchestration layer benefits from acting like a technical writer: providing the right scaffolding in the prompt (roles, steps, examples, constraints, and success checks) so the black-box agent is guided toward the desired outcome. Example – Claude Subagents: As a practical example, Claude's subagents feature allows configuring specialized system prompts for different sub-tasks. Each subagent has \"a custom system prompt that guides its behavior\" and a defined expertise. The main agent automatically delegates to these subagents when appropriate. In effect, the orchestrator (Claude's internal logic) appends the specialized prompt and context for that sub-task. This demonstrates prompt engineering at scale: rather than one giant prompt for everything, the orchestration chooses a tailored prompt per task type. Overall, structured and deliberate prompt engineering at the orchestration level — using instructions, role context, examples, and criteria — is key to maximizing agent reliability.",
+    "snippet": "Structured Instructions vs. Plain Language: Orchestration involves not only what tasks agents do, but how those tasks are described in prompts. A recurring pattern is to use structured, formal...",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#parallelism-conflict-avoidance",
+    "url": "/orchestration-survey.html#parallelism-conflict-avoidance",
+    "section_id": "parallelism-conflict-avoidance-8ccab7ee",
+    "section_hash": "8ccab7eebfad0bab04a3300ebbc0c0ee3d60682e84a2d3dec400d90f63534988",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Parallelism & Conflict Avoidance #",
+    "content": "When to Run Agents in Parallel: Orchestrating multiple agents in parallel can speed up development, but only if their tasks won't conflict. The Parallelization Workflow follows a divide-and-conquer approach: identify subtasks that are truly independent and execute them concurrently [@pujals2025agentic]. For example, an orchestrator might split a feature into frontend and backend implementations and assign each to a different agent at the same time. Another parallel pattern is \"voting\" – run multiple agents on the same task in parallel (perhaps with different prompting styles or different model seeds) and then choose the best result. In coding, this could mean generating multiple candidate solutions concurrently and later selecting one that passes tests (\"N-best\" approach). However, if parallel agents operate on shared artifacts (e.g. editing the same file), conflicts can arise. Thus, orchestrators should only parallelize tasks that either target separate components or use a strategy to reconcile outputs. Locking and Work Queues: A common strategy for conflict avoidance is file-level locking or resource locking. Before an agent begins work, the orchestrator can lock the files or modules it will touch, preventing other agents from editing them until completion. A community-built \"Claude code agent farm\" demonstrates this with a coordination protocol: each agent must create a lock file listing the files/features it intends to work on, and consult a shared active work registry to ensure no overlap. If a conflict is detected (e.g. two agents want to modify utils.py), one agent will wait (queue the task) until the file is free. This effectively serializes conflicting sections while still allowing non-conflicting tasks in parallel. The registry and lock files also help avoid duplicate work – agents check the completed task log so they don't redo something another agent already finished. Such locking is a conservative heuristic but very effective: it \"eliminates merge conflicts\" and \"prevents wasted work\" in concurrent development. The downside is that overly coarse locks (e.g. locking an entire project) nullify the speed benefit, so orchestrators must strike a balance by locking at a sensible granularity (file or feature level). Advanced Conflict Resolution (CRDTs): Recent research explores lock-free coordination using principles from distributed systems. CodeCRDT introduces an observation-driven approach where agents don't explicitly lock resources, but instead work on a shared state (a codebase) that automatically merges changes in a conflict-free manner [@pugachev2025codecrdt]. It uses Conflict-Free Replicated Data Types to ensure that as agents make edits, their updates converge deterministically without stepping on each other. In trials, this achieved 100% merge convergence with zero low-level conflicts, eliminating the need for manual conflict resolution. Essentially, each agent can edit concurrently and the CRDT mechanism integrates their changes (like Google Docs but for code). While CRDT-based orchestration can avoid the bottleneck of locks (which can become contention points as agent count N grows), it introduces complexity: agents must deal with semantic conflicts (e.g. two agents might implement the same feature in different ways, both syntactically merged but logically redundant). CodeCRDT reported about 5–10% of such higher-level conflicts, meaning an orchestrator or later review still has to reconcile duplicate or inconsistent implementations. Nonetheless, this approach is promising for truly scalable parallel agent teams, as it sidesteps the O(N×L) contention of lock-based systems. Heuristics for Parallel Task Selection: In practice, orchestrators often use simple heuristics to decide parallelism: e.g. no two agents on the same file or closely related module. Some systems use static analysis of code dependency graphs to ensure two parallel tasks don't overlap in call graphs or data models. Others rely on the developer to specify which tasks are independent. For example, an orchestrator might know that adding a new API endpoint (task A) is largely independent of refactoring the logging library (task B), so it schedules those simultaneously. If there is uncertainty, a conservative orchestrator will serialize tasks to avoid the risk of conflict. In the worst case that a conflict does occur (say two agents inadvertently changed the same file), the orchestrator must have a conflict-resolution step: it could auto-merge the code (if changes are in different regions), prefer one agent's output over the other, or fall back to human intervention to reconcile differences. Generally, the goal is conflict avoidance through design: split work such that each agent has its own domain of responsibility. As one user's experience with 4 parallel Claude agents showed, dividing roles by concern (architecture vs. coding vs. testing vs. docs) inherently reduced direct conflicts and even brought positive effects like built-in peer review. Each agent had a clear lane, enabling parallel development with quality checks due to the separation of concerns. In summary, orchestrating parallel code agents requires careful coordination: lock or isolate shared resources, or adopt novel merging strategies, so that parallelism yields speed-up without chaos. When done right (e.g. with file locks or CRDTs), teams of agents can work \"like a well-oiled machine\" in parallel.",
+    "snippet": "When to Run Agents in Parallel: Orchestrating multiple agents in parallel can speed up development, but only if their tasks won't conflict. The Parallelization Workflow follows a divide-and-conquer...",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#verification-acceptance-criteria",
+    "url": "/orchestration-survey.html#verification-acceptance-criteria",
+    "section_id": "verification-acceptance-criteria-2aa7d138",
+    "section_hash": "2aa7d1386c7e1e18709d771f6a4603fe30e83d641597fff72f8dcb54ec1efdf0",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Verification & Acceptance Criteria #",
+    "content": "Automated Testing as Ground Truth: One of the most powerful verification techniques is running tests on the agent's output. If the task comes with a test suite or at least some example cases, the orchestrator can automatically execute the generated code and check for correctness. This pattern is evident in many frameworks. AgentCoder is explicitly built around a test-feedback loop: a Test Designer agent generates unit tests, a Test Executor runs the code on those tests, and the Programmer agent then debugs or refines the code based on failures [@huang2023agentcoder]. This ensures that code isn't accepted as \"done\" until it passes its tests. Even single-agent approaches like OpenAI's Codex have employed this idea (often called execute-and-fix): run the code, and if an error or failing test is detected, prompt the model to fix it. The orchestrator's job is to automate this loop. In PerfOrch's multi-stage pipeline, after generation they perform a validation: if the code is functionally incorrect, it triggers the Fix Stage, invoking specialized bug-fixing models iteratively until a correct solution is found [@wang2025perforch]. Only once all tests pass does it proceed to the next stage. This demonstrates an automated acceptance gate – test passing is the criterion for success. Orchestrators can also measure other aspects like performance: PerfOrch's final Refine Stage checked if runtime improved and only accepted refinements that preserved correctness and met the performance target. Code Reviews and LLM Critics: Besides tests, another verification layer is reviewing the code, either by humans or by a second \"reviewer\" agent. Having a separate agent critique the generated code can catch issues that tests don't (e.g. poor readability, not following style, potential inefficiencies). A pattern often cited is dual-agent coding: one agent writes code, another agent reviews it. If the reviewer finds problems, the coder agent revises accordingly. This is essentially the Evaluator-Optimizer pattern applied to code [@carpintero2025evaluator] – where the Evaluator (which could be the same LLM or a different one tuned for critique) provides feedback, and the Optimizer (generator) uses it to improve the output in another pass. Academic and industry work supports this approach. In practice, companies like Meta have prototypes where an AI code generation is always followed by an AI code review, flagging issues before any human sees the code. Ellipsis's production system likewise emphasizes accuracy over latency: they run multiple comment-generation agents and then use a filtering pipeline (including an LLM-as-judge that evaluates the proposed comments) to ensure only high-quality, non-false-positive feedback is given [@zenml2024ellipsis]. By using an LLM judge on the outputs of LLM coders, they add a second layer of assurance. Manifests and Static Verification: As discussed in prompt engineering, if the orchestrator provided a manifest of expected changes, verification includes checking the agent's output against that manifest. Tools like MAID runner perform static analysis on the diff: did the agent only modify the allowed files and functions? Did it include the required new function? This kind of structural verification can be automated by parsing the output or performing AST (Abstract Syntax Tree) comparison between the original and modified code. If the agent deviated (e.g. changed something unrelated), the orchestrator can reject that output or prompt a correction (\"You edited file Y which was out of scope; please revert that.\"). Additionally, the orchestrator might enforce style guides by running linters or formatters on the code and ensuring no new warnings were introduced. Acceptance and Quality Gates: Complex orchestrations often define multi-dimensional acceptance criteria. Functional correctness (tests passing) is usually mandatory. Beyond that, style compliance, performance metrics, security scans, etc., can be gates. For example, after an agent's code passes tests, the orchestrator might also run a static security analyzer; if it flags issues, the agent's output isn't fully accepted and a fix task is spawned (or a human review is requested for that aspect). Hugging Face's guide suggests quality gates such as \"code passes all test suites\" as a primary stopping condition for an iterative refine loop – essentially, you keep refining until the code meets the quality bar [@pujals2025agentic]. They also note using a maximum iteration limit and similarity checks to avoid infinite loops. Handling Partial Success: Sometimes an agent's output is partially correct – e.g. it implements one feature but misses another, or fixes some bugs but not all. In these cases, orchestrators can take a pragmatic approach: accept the improvements made and then create follow-up tasks for the remaining work. This is akin to how a human might commit a partial fix and then address the rest. Orchestrators with tracking systems (like the completed_work_log in the agent farm) can mark certain sub-goals as done and only reassign what failed. If tests are granular, the orchestrator can rerun them and see which specific tests still fail, then prompt the agent specifically about those failures on the next try. This targeted retry approach zeroes in on the unresolved issues rather than redoing everything. Automated vs Human Acceptance: Ultimately, the output may either be auto-merged or require human approval. Many real-world setups keep a human-in-the-loop for final approval – for example, an orchestrator might open a pull request with the agent's changes and require a human developer to review and merge. The orchestrator in this case hands off to a human at the final step. Another checkpoint is when an agent is uncertain or stuck. If an agent expresses confusion (some advanced agents might output a special token or message like \"I am not sure how to proceed\"), the orchestrator should detect that and involve a human to clarify requirements or provide a hint. In summary, verification in agent orchestration is about establishing feedback loops and safety nets: tests to verify correctness, secondary agents or tools to verify quality, and structured checks (manifests, linters) to enforce constraints. By combining these, orchestrators can confidently determine when an agent \"succeeded\" and its output is acceptable.",
+    "snippet": "Automated Testing as Ground Truth: One of the most powerful verification techniques is running tests on the agent's output. If the task comes with a test suite or at least some example cases, the...",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#failure-modes-recovery-strategies",
+    "url": "/orchestration-survey.html#failure-modes-recovery-strategies",
+    "section_id": "failure-modes-recovery-strategies-2b388601",
+    "section_hash": "2b38860147078fd4b353d785b2768bec9681999c236325fef05a0265f6797237",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Failure Modes & Recovery Strategies #",
+    "content": "Even with the best planning, agents will sometimes fail – producing wrong code, no code, or even crashing. The orchestration layer must be resilient to these failures and have recovery strategies. Graceful Retries: The simplest recovery pattern is retrying the same prompt. Because LLM agents are stochastic, a second attempt might yield a different (possibly correct) result. Orchestrators often implement a retry-on-failure (with a limit on retries to avoid loops). If an agent times out or returns an error (e.g. if using an API that errors out), the orchestrator can automatically retry after a short delay or with a smaller context. The Claude agent farm tool, for example, monitors each agent's health and will auto-restart an agent if it crashes or gets stuck. This ensures that a transient glitch doesn't halt the entire workflow. Refining the Prompt or Task Breakdown: If a direct retry doesn't help, the orchestrator should try a modified approach. One common strategy is progressive prompting: if the agent failed to produce output, perhaps the instructions were too broad – so break the task into smaller sub-tasks and prompt those instead. For instance, if \"implement the foobar algorithm\" came back empty or incorrect, the orchestrator might break it into \"step 1: implement the helper function X\" and \"step 2: implement main foobar using X\". Alternatively, the orchestrator can supply more guidance in the prompt on a retry – e.g. provide a partial solution or additional hints. This resembles a fallback to a more guided prompt when the agent seems to be stuck with a high-level request. In the Prompt-Chaining considerations, it's suggested to re-prompt including details of the failure in the context if an intermediate step fails [@pujals2025agentic]. For example: \"The previous attempt resulted in a runtime error at line 20. Here is the error log… Please fix the code to handle this issue.\" This gives the agent new information to succeed on the next pass. Alternate Agents or Models: Another recovery pattern is trying a different agent or model. If one model repeatedly fails to solve a problem, perhaps a more powerful model (or one fine-tuned differently) could succeed. PerfOrch demonstrates this by maintaining a ranking of models for each stage – if the top choice fails, it falls back to the next best model for that task [@wang2025perforch]. In their bug-fixing stage, they iteratively invoked up to n different specialized LLMs until one fixed the bug. Similarly, if an agent like GPT-3.5 is not producing a solution, an orchestrator might escalate to GPT-4 for that task. This is a cost-performance trade-off: use cheaper models for most tasks, but have a path to involve a more capable (or simply different) model on failure. Preserving Partial Progress: In complex multi-step tasks, an agent might accomplish some steps successfully before failing at a later step. A robust orchestrator will preserve this partial progress so it's not lost. For example, if an agent wrote 80% of a file correctly and then struggled, the orchestrator can save the file (or keep it in memory) and instruct a subsequent agent to continue from that state. This could involve checking the agent's output for usable sections. Some frameworks treat the codebase like a persistent state that agents incrementally build – even if one agent stops mid-way, the next agent sees the codebase with whatever was added so far. Escalating to Human or Halting: Not all failures can or should be handled autonomously. A critical safety mechanism is to escalate to a human when automated retries are exhausted or when the cost of more retries outweighs the benefit. The orchestrator might, for instance, make 3 attempts at a task (each possibly with refined prompts or different models). If none succeed, it can stop and label the task for human attention. In a CI/CD integration, this could mean leaving a comment like \"AI agent could not resolve this issue – please review manually.\" Logging and Learning from Failures: Another aspect of handling failures is logging them for continuous improvement. The orchestrator should log error cases, so developers can later analyze if prompt tweaks or training could solve them. In some advanced setups, this log is fed into a \"reflexion\" agent that tries to learn from failures by adjusting future prompts. In essence, failure recovery in orchestration is about resilience and adaptability. Try again (maybe differently), switch strategies if needed, and know when to ask for help.",
+    "snippet": "Even with the best planning, agents will sometimes fail – producing wrong code, no code, or even crashing. The orchestration layer must be resilient to these failures and have recovery strategies....",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#multi-pass-architectures-planner-implementer-reviewer-etc",
+    "url": "/orchestration-survey.html#multi-pass-architectures-planner-implementer-reviewer-etc",
+    "section_id": "multi-pass-architectures-planner-implementer-reviewer-etc-791d9829",
+    "section_hash": "791d98295aad1365f936f4b58ae5f6f14b6a1e573c7746e4fa7b5f903a4f24ca",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Multi-Pass Architectures (Planner, Implementer, Reviewer, etc.) #",
+    "content": "One of the most powerful design patterns emerging in AI code generation is the use of multiple passes or multiple agent roles to tackle a problem in stages. Instead of a single monolithic prompt-to-code step, the task is divided into phases such as planning, implementing, and reviewing. Planner → Implementer Workflow: In this pattern, a Planner agent first creates a high-level plan or design, which is then used by an Implementer agent to write the actual code. The planner might outline which functions need to be created, what the approach will be, or even pseudo-code. The implementer then follows this blueprint. The self-planning study exemplifies this: the LLM generates concise, structured planning steps from the intent, then in the implementation phase it \"generates code step by step, guided by the preceding planning steps\" [@jiang2024selfplanning]. This two-pass approach yielded significantly higher correctness than a single-pass solution, because the model effectively did some problem decomposition and reasoning out loud before coding. MapCoder extends this idea to four stages: it uses one agent to recall relevant examples, another to plan the solution approach, a third to generate code, and a fourth to debug the result [@islam2024mapcoder]. Each agent is specialized for its role, and together they \"replicate the full cycle of program synthesis as observed in human developers\". The results were state-of-the-art on code benchmarks, underlining the efficacy of a multi-pass pipeline. Reviewer or Refiner Pass: Another common multi-pass setup is having a Reviewer agent or second pass that checks and improves the code written by an Implementer (first pass). In a multi-pass architecture, this is built-in: after code generation, the process automatically goes to a review phase. The reviewer might be tasked with ensuring the code meets the spec and then either directly editing the code to fix issues or providing feedback for the implementer to act on. This can even become an iterative loop: implementer → reviewer → implementer (for revisions) → reviewer … until the reviewer is satisfied. This approach aligns with the Evaluator-Optimizer iterative refinement pattern [@carpintero2025evaluator]. When Multi-Pass Helps: Multi-pass shines especially for complex tasks that benefit from explicit reasoning or quality control. If a coding task requires sophisticated reasoning (algorithm design, complex logic), a planning pass helps. If it requires high assurance (safety-critical code, or just code in a large codebase where consistency matters), a review/testing pass helps. On simpler tasks (e.g. \"add a print statement\"), multi-pass might be overkill – a single agent can handle it and the overhead of planning/reviewing might outweigh the simplicity of the change. Feedback Loops: Multi-pass architectures inherently create a feedback loop, especially with a reviewer/corrector in the mix. The orchestrator should feed the feedback in a form the implementer can act on. For example, if a reviewer says \"Function foo doesn't handle negative inputs properly,\" the orchestrator might prompt the implementer agent with that exact feedback: \"The code was reviewed and the following issue was found: it doesn't handle negative inputs. Please update the code to address this.\"",
+    "snippet": "One of the most powerful design patterns emerging in AI code generation is the use of multiple passes or multiple agent roles to tackle a problem in stages. Instead of a single monolithic...",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#human-in-the-loop-in-orchestration",
+    "url": "/orchestration-survey.html#human-in-the-loop-in-orchestration",
+    "section_id": "human-in-the-loop-in-orchestration-e1a3f7a0",
+    "section_hash": "e1a3f7a01efcf2210f3db846b9c6e7d80f847898d27fc343fc4430dfc3cd0ca0",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Human-in-the-Loop in Orchestration #",
+    "content": "Even with all the above automation, the human element remains important. Orchestration should consider when to involve human developers or stakeholders to guide or approve the process. Checkpoints for Human Input: A well-designed orchestrator will define certain points at which it pauses and seeks human input. This might be after planning – e.g., once a Planner agent produces a design, the orchestrator could show that plan to a human for approval before coding. It could also be after code generation but before acceptance – essentially treating the AI-generated code like a regular code review that a human must OK. Surviving \"I'm stuck\" vs \"I'm done\": Differentiating between an agent that believes it's finished vs one that gave up is key. If an agent says \"Solution complete\" but the tests are failing, clearly it was wrongly done. The orchestrator should treat that as a failure (and possibly loop in a reviewer agent or human). On the other hand, if after several tries the agent outputs, \"I cannot find an approach for this problem,\" then the orchestrator has an impasse. This is a prime moment for human-in-the-loop. Human Oversight and Approval: Humans may also impose guardrails by setting policies the orchestrator follows. For example, an organization might require that any code touching security-critical files must be reviewed by a human, no matter what. The orchestrator can have a rule: if task involves auth.py (or generally high-risk area), always assign it to a human or at least get human approval after the AI suggests changes. Balancing Autonomy and Oversight: The goal of orchestration is often to minimize human effort, but not to eliminate it entirely at the cost of quality. An insightful guideline from Anthropic is to use the simplest solution possible and only add complexity (autonomy) when needed [@anthropic2024agents]. This suggests that if a task can be handled with a single LLM call plus a quick human tweak, that might be preferable to spinning up a whole autonomous multi-agent system.",
+    "snippet": "Even with all the above automation, the human element remains important. Orchestration should consider when to involve human developers or stakeholders to guide or approve the process. Checkpoints...",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "orchestration-survey#conclusion",
+    "url": "/orchestration-survey.html#conclusion",
+    "section_id": "conclusion-1758a73e",
+    "section_hash": "1758a73e3430b090afb7a51d62bd4abb38a3e8530ac58d58763a391121d2fff1",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "section_title": "Conclusion #",
+    "content": "Orchestrating black-box code agents is an exercise in applying sound software engineering principles to AI-driven automation. The patterns identified – from task assignment and context curation to multi-pass workflows and human oversight – collectively form a toolkit for reliable AI-assisted development. In designing an orchestration framework, one should treat AI agents as fallible collaborators that need structure and guidance – much like human junior developers. The orchestrator's role is part project manager, part version-control system, and part QA engineer for this AI \"team.\" It decides who does what (task assignment), gives them what they need (context), tells them how to do it (prompt engineering and constraints), lets them work together safely (parallelism control), checks their work (verification), handles when they get it wrong (failure recovery), encourages iterative improvement (multi-pass), and knows when to ask a senior (human-in-loop).",
+    "snippet": "Orchestrating black-box code agents is an exercise in applying sound software engineering principles to AI-driven automation. The patterns identified – from task assignment and context curation to...",
+    "tags": [
+      "research",
+      "agents",
+      "orchestration",
+      "survey"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#context-injection",
+    "url": "/context-injection.html#context-injection",
+    "section_id": "context-injection-90dffdcd",
+    "section_hash": "90dffdcd905c97635c6c28e649617aacf41eb5227ab2e59b78dcf0e38117be74",
+    "title": "Context Injection",
+    "section_title": "Context Injection #",
+    "content": "What information noface provides to agents and how.",
+    "snippet": "What information noface provides to agents and how.",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#current-design",
+    "url": "/context-injection.html#current-design",
+    "section_id": "current-design-b9e45972",
+    "section_hash": "b9e459728a8bfb5540294ef6e56e5f366e6e700ea102dc848b79d668a5d7e592",
+    "title": "Context Injection",
+    "section_title": "Current Design #",
+    "content": "The implementation prompt includes: Issue description — from beads Manifest — which files the agent can touch Build/test commands — from .noface.toml Design docs — fetched from monowiki if configured Workflow instructions — step-by-step process (implement → test → commit) Context is capped by max_context_docs setting (default 5).",
+    "snippet": "The implementation prompt includes: Issue description — from beads Manifest — which files the agent can touch Build/test commands — from .noface.toml Design docs — fetched from monowiki if configured...",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#relation-to-survey",
+    "url": "/context-injection.html#relation-to-survey",
+    "section_id": "relation-to-survey-7b4d541e",
+    "section_hash": "7b4d541eadd7fe36b7cebbd4c9217be5535fdf3c9843a8e767ee54e15ec540a9",
+    "title": "Context Injection",
+    "section_title": "Relation to Survey #",
+    "content": "The survey warns about context dilution : \"Recent studies have shown that even if all provided context is relevant, performance can degrade substantially (by 13–85%) as input length grows.\" And recommends iterative context expansion : \"The Context-Augmentation pattern described by Hugging Face highlights that context expansion should be iterative and need-based: the agent identifies what extra info it needs, the orchestrator fetches it.\"",
+    "snippet": "The survey warns about context dilution : \"Recent studies have shown that even if all provided context is relevant, performance can degrade substantially (by 13–85%) as input length grows.\" And...",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#open-questions",
+    "url": "/context-injection.html#open-questions",
+    "section_id": "open-questions-f585c1c5",
+    "section_hash": "f585c1c59b28cc431758c3d46edf8bcb7b95e1ece07f694d6956c28d41f883ba",
+    "title": "Context Injection",
+    "section_title": "Open Questions #",
+    "content": "Context Budget — Is max_context_docs = 5 the right number? Should it be dynamic based on issue complexity? Relevance Ranking — Currently we fetch docs by wikilink or search. Should we score/rank by semantic relevance? Embeddings? Code Context — Should we inject relevant source files? Which ones? The survey mentions BM25 search over codebase (noface has src/bm25.zig ). Context Freshness — If a doc is stale (refers to old API), it could mislead the agent. How do we detect/handle this? Negative Context — What explicitly shouldn't be included? Large generated files? Vendored deps? How do we filter? Agent-Requested Context — Should agents be able to ask for more context mid-run? Or does the harness (Claude Code) handle this internally?",
+    "snippet": "Context Budget — Is max_context_docs = 5 the right number? Should it be dynamic based on issue complexity? Relevance Ranking — Currently we fetch docs by wikilink or search. Should we score/rank by...",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#implementation-notes",
+    "url": "/context-injection.html#implementation-notes",
+    "section_id": "implementation-notes-6112792c",
+    "section_hash": "6112792c4a51b4b51a2d8559be77ed020368dd9403c1d57b3e5dae3f28935ef3",
+    "title": "Context Injection",
+    "section_title": "Implementation Notes #",
+    "content": "See src/loop.zig:buildImplementationPrompt and src/monowiki.zig .",
+    "snippet": "See src/loop.zig:buildImplementationPrompt and src/monowiki.zig .",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#parallel-execution",
+    "url": "/parallel-execution.html#parallel-execution",
+    "section_id": "parallel-execution-2cec95ca",
+    "section_hash": "2cec95ca473208e1e362f46d3d0029890ea9452eb842eef274641537a034b217",
+    "title": "Parallel Execution",
+    "section_title": "Parallel Execution #",
+    "content": "How noface runs multiple agents concurrently without conflicts.",
+    "snippet": "How noface runs multiple agents concurrently without conflicts.",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#current-design",
+    "url": "/parallel-execution.html#current-design",
+    "section_id": "current-design-684d83b1",
+    "section_hash": "684d83b1c716965444f1ce6b54f8ec246d07b9c3cd5aa85da8992accd941ac0b",
+    "title": "Parallel Execution",
+    "section_title": "Current Design #",
+    "content": "Planner pass groups issues into batches based on manifest analysis Issues in the same batch have disjoint primary_files (no overlap) Worker pool spawns up to N parallel processes (configurable, default 8) Lock entries track which files are held by which worker Batches execute sequentially; issues within a batch execute in parallel",
+    "snippet": "Planner pass groups issues into batches based on manifest analysis Issues in the same batch have disjoint primary_files (no overlap) Worker pool spawns up to N parallel processes (configurable,...",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#relation-to-survey",
+    "url": "/parallel-execution.html#relation-to-survey",
+    "section_id": "relation-to-survey-0826a9ae",
+    "section_hash": "0826a9aee8d0140e821d300db8cdde601fbca85428f550adb4e2a4e8fdca5571",
+    "title": "Parallel Execution",
+    "section_title": "Relation to Survey #",
+    "content": "This implements the file-level locking pattern from orchestration-survey : \"A community-built 'Claude code agent farm' demonstrates this with a coordination protocol: each agent must create a lock file listing the files/features it intends to work on, and consult a shared active work registry to ensure no overlap.\" The survey also discusses CRDTs for lock-free coordination (CodeCRDT achieved 100% merge convergence). This is more scalable but more complex.",
+    "snippet": "This implements the file-level locking pattern from orchestration-survey : \"A community-built 'Claude code agent farm' demonstrates this with a coordination protocol: each agent must create a lock...",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#open-questions",
+    "url": "/parallel-execution.html#open-questions",
+    "section_id": "open-questions-1d07ef8d",
+    "section_hash": "1d07ef8da2cb24f188e7a6b3a81623ea9a7a71015893a064705f2577a59f1c47",
+    "title": "Parallel Execution",
+    "section_title": "Open Questions #",
+    "content": "Lock Granularity — File-level prevents conflicts but may be too conservative. Two agents could safely edit different functions in the same file. Is function-level locking worth the complexity? Batch Sizing — How do we decide how many issues to batch together? More parallelism = faster, but also more resource contention and harder debugging. Lock Contention — With many issues, popular files (e.g., main.zig ) become bottlenecks. How do we detect and mitigate hot files? Conflict Recovery — If a conflict somehow occurs (manifest was wrong), what's the resolution strategy? Currently undefined. CRDT Exploration — Is there a simpler middle ground between locks and full CRDTs? AST-aware merging?",
+    "snippet": "Lock Granularity — File-level prevents conflicts but may be too conservative. Two agents could safely edit different functions in the same file. Is function-level locking worth the complexity? Batch...",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#implementation-notes",
+    "url": "/parallel-execution.html#implementation-notes",
+    "section_id": "implementation-notes-263b3aa2",
+    "section_hash": "263b3aa23ca4b472de7568bb9b1ade6e97d6d58b6c668893a9a42e1842c94ca9",
+    "title": "Parallel Execution",
+    "section_title": "Implementation Notes #",
+    "content": "See src/worker_pool.zig:WorkerPool and src/state.zig:LockEntry .",
+    "snippet": "See src/worker_pool.zig:WorkerPool and src/state.zig:LockEntry .",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#failure-recovery",
+    "url": "/failure-recovery.html#failure-recovery",
+    "section_id": "failure-recovery-b953c4f5",
+    "section_hash": "b953c4f52789451edbefe8d0fc6c7a05f03b14b15a1a0bd74d38219d2afa1e34",
+    "title": "Failure Recovery",
+    "section_title": "Failure Recovery #",
+    "content": "How noface handles agent failures.",
+    "snippet": "How noface handles agent failures.",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#current-design",
+    "url": "/failure-recovery.html#current-design",
+    "section_id": "current-design-0345ec91",
+    "section_hash": "0345ec9189ef76d200518f587036a7c21df559e3eeb10df3153d7acf5c4a11da",
+    "title": "Failure Recovery",
+    "section_title": "Current Design #",
+    "content": "noface handles several failure modes: Transient failures (429, 5xx, network) — retry up to 3x with exponential backoff Manifest violations — rollback offending files, retry with stricter prompt Timeouts (no output for N seconds) — break down issue into smaller tasks Crash recovery — on startup, detect in-progress work from previous run, reset stale locks, restore state Each attempt is recorded in state with outcome (success/failed/timeout/violation).",
+    "snippet": "noface handles several failure modes: Transient failures (429, 5xx, network) — retry up to 3x with exponential backoff Manifest violations — rollback offending files, retry with stricter prompt...",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#relation-to-survey",
+    "url": "/failure-recovery.html#relation-to-survey",
+    "section_id": "relation-to-survey-04fc4d15",
+    "section_hash": "04fc4d1505436e53c036f0a2149bf7ff7624db04916eaa562567cfc6aeb6f797",
+    "title": "Failure Recovery",
+    "section_title": "Relation to Survey #",
+    "content": "The survey describes several recovery patterns: Graceful retries: \"The simplest recovery pattern is retrying the same prompt. Because LLM agents are stochastic, a second attempt might yield a different (possibly correct) result.\" Progressive prompting: \"If a direct retry doesn't help, the orchestrator should try a modified approach... break the task into smaller sub-tasks and prompt those instead.\" Preserving partial progress: \"A robust orchestrator will preserve this partial progress so it's not lost.\"",
+    "snippet": "The survey describes several recovery patterns: Graceful retries: \"The simplest recovery pattern is retrying the same prompt. Because LLM agents are stochastic, a second attempt might yield a...",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#open-questions",
+    "url": "/failure-recovery.html#open-questions",
+    "section_id": "open-questions-69f12830",
+    "section_hash": "69f12830810f8074f420420d8980a34d94bd3936cb5e9b5fa878efa80caf6ff3",
+    "title": "Failure Recovery",
+    "section_title": "Open Questions #",
+    "content": "Retry Strategies — Current retry is simple backoff. Should we modify the prompt on retry? Add more context? Summarize the failure? Task Breakdown — Timeout triggers breakdown, but how does noface actually break down an issue? Is this implemented or aspirational? Partial Progress — If an agent edits 3 files correctly but fails on the 4th, do we keep the 3? Currently unclear. Model Escalation — The survey mentions falling back to more powerful models. Should noface try a different model on failure? Failure Classification — Not all failures are equal. \"Syntax error\" vs \"doesn't understand the task\" vs \"timeout\" need different responses. Human Escalation — After N failures, should noface pause and ask for help? Current behavior is unclear. Learning from Failures — Should failure patterns inform future prompts? \"This type of issue often fails, add extra guidance.\"",
+    "snippet": "Retry Strategies — Current retry is simple backoff. Should we modify the prompt on retry? Add more context? Summarize the failure? Task Breakdown — Timeout triggers breakdown, but how does noface...",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#implementation-notes",
+    "url": "/failure-recovery.html#implementation-notes",
+    "section_id": "implementation-notes-cd9881ab",
+    "section_hash": "cd9881abf1c4cf585a4953b8be6b2a1330e4bb2fd6e1927a05e2d7dbcaca74b4",
+    "title": "Failure Recovery",
+    "section_title": "Implementation Notes #",
+    "content": "See src/loop.zig:runIteration retry logic and src/state.zig:IssueState .",
+    "snippet": "See src/loop.zig:runIteration retry logic and src/state.zig:IssueState .",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "manifests#file-manifests",
+    "url": "/manifests.html#file-manifests",
+    "section_id": "file-manifests-c49f2c45",
+    "section_hash": "c49f2c4522c66ce295656b808fbddf59592063762ba56b924adc55cf93bc299e",
+    "title": "File Manifests",
+    "section_title": "File Manifests #",
+    "content": "How noface controls what files each agent can touch.",
+    "snippet": "How noface controls what files each agent can touch.",
+    "tags": [
+      "design",
+      "manifests",
+      "access-control"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "manifests#current-design",
+    "url": "/manifests.html#current-design",
+    "section_id": "current-design-f43c2d12",
+    "section_hash": "f43c2d12814319715ff1679ab13c4e26ad9a43fbf2d150ede4d75e5ad08e5a8d",
+    "title": "File Manifests",
+    "section_title": "Current Design #",
+    "content": "Manifests declare three access levels per issue: PRIMARY_FILES — exclusive write access (locked during execution) READ_FILES — shared read-only access FORBIDDEN_FILES — must never be touched The planner generates manifests by analyzing each issue. After an agent completes, noface runs git diff and verifies compliance. Violations trigger rollback of offending files and retry with a stricter prompt.",
+    "snippet": "Manifests declare three access levels per issue: PRIMARY_FILES — exclusive write access (locked during execution) READ_FILES — shared read-only access FORBIDDEN_FILES — must never be touched The...",
+    "tags": [
+      "design",
+      "manifests",
+      "access-control"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "manifests#relation-to-survey",
+    "url": "/manifests.html#relation-to-survey",
+    "section_id": "relation-to-survey-119104bd",
+    "section_hash": "119104bd801cd616414935a27eaae86dc58ff5c47d4ae571fef16d92bc802c41",
+    "title": "File Manifests",
+    "section_title": "Relation to Survey #",
+    "content": "This implements the Manifest-Driven AI Development (MAID) pattern from orchestration-survey : \"A recent methodology called Manifest-Driven AI Development (MAID) takes this further by treating the manifest as an enforceable contract: after generation, a validator checks that only the declared files/functions were altered and no undeclared edits occurred.\"",
+    "snippet": "This implements the Manifest-Driven AI Development (MAID) pattern from orchestration-survey : \"A recent methodology called Manifest-Driven AI Development (MAID) takes this further by treating the...",
+    "tags": [
+      "design",
+      "manifests",
+      "access-control"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "manifests#open-questions",
+    "url": "/manifests.html#open-questions",
+    "section_id": "open-questions-46f16f5f",
+    "section_hash": "46f16f5fa107686a809ca56018c6b0a52de977bac96267c02555e7465bc942dd",
+    "title": "File Manifests",
+    "section_title": "Open Questions #",
+    "content": "Granularity — File-level is coarse. Should we support function-level or line-range manifests? Manifest Generation — How good is the planner at predicting which files an issue will touch? What's the false-negative rate (files needed but not declared)? Manifest Violations — Current behavior is rollback + retry. Should we ever accept a violation if the change is clearly correct? Dynamic Expansion — Should agents be able to request additional files mid-execution? Or does that break the isolation model?",
+    "snippet": "Granularity — File-level is coarse. Should we support function-level or line-range manifests? Manifest Generation — How good is the planner at predicting which files an issue will touch? What's the...",
+    "tags": [
+      "design",
+      "manifests",
+      "access-control"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "manifests#implementation-notes",
+    "url": "/manifests.html#implementation-notes",
+    "section_id": "implementation-notes-17f895c4",
+    "section_hash": "17f895c4f1986fa2142a9331ce88b5dcb084cb1eefe7967cb0d75c0e912b4f96",
+    "title": "File Manifests",
+    "section_title": "Implementation Notes #",
+    "content": "See src/state.zig:Manifest and src/loop.zig:verifyManifestCompliance .",
+    "snippet": "See src/state.zig:Manifest and src/loop.zig:verifyManifestCompliance .",
+    "tags": [
+      "design",
+      "manifests",
+      "access-control"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#verification",
+    "url": "/verification.html#verification",
+    "section_id": "verification-56b5b01c",
+    "section_hash": "56b5b01caa2f83838b0b631e7e5bf527d958d6682282fd2dd81ee6953c938f9e",
+    "title": "Verification",
+    "section_title": "Verification #",
+    "content": "How noface determines whether an agent succeeded.",
+    "snippet": "How noface determines whether an agent succeeded.",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#current-design",
+    "url": "/verification.html#current-design",
+    "section_id": "current-design-a6920eab",
+    "section_hash": "a6920eab044f60f2c9567887cf8c053a1185c7294626b8e7152adea6b3570d2d",
+    "title": "Verification",
+    "section_title": "Current Design #",
+    "content": "noface uses multiple verification layers: Test execution — runs the configured test command; failure = not done Manifest compliance — git diff checked against declared files; violations = rollback Build check — runs the configured build command (implicit in agent workflow) The agent is instructed to self-verify (run tests, check output) before committing.",
+    "snippet": "noface uses multiple verification layers: Test execution — runs the configured test command; failure = not done Manifest compliance — git diff checked against declared files; violations = rollback...",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#relation-to-survey",
+    "url": "/verification.html#relation-to-survey",
+    "section_id": "relation-to-survey-61c73350",
+    "section_hash": "61c733500744876fc02c003a0af51cac423374f0bda4eca9cd640423bd898eee",
+    "title": "Verification",
+    "section_title": "Relation to Survey #",
+    "content": "The survey emphasizes automated testing as ground truth : \"This ensures that code isn't accepted as 'done' until it passes its tests. Even single-agent approaches like OpenAI's Codex have employed this idea (often called execute-and-fix): run the code, and if an error or failing test is detected, prompt the model to fix it.\" And manifest verification : \"Tools like MAID runner perform static analysis on the diff: did the agent only modify the allowed files and functions?\" The survey also discusses LLM critics as an additional layer — a second agent that reviews the code.",
+    "snippet": "The survey emphasizes automated testing as ground truth : \"This ensures that code isn't accepted as 'done' until it passes its tests. Even single-agent approaches like OpenAI's Codex have employed...",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#open-questions",
+    "url": "/verification.html#open-questions",
+    "section_id": "open-questions-a7af6b6a",
+    "section_hash": "a7af6b6a29b3a65806a9ea6df45a3704eaa847a77ca4f99172c572a6ec3e6cfe",
+    "title": "Verification",
+    "section_title": "Open Questions #",
+    "content": "Test Coverage — What if the tests don't cover the change? Agent could introduce a bug that passes existing tests. Review Pass — Should noface run a dedicated reviewer agent on each change before accepting? Cost vs. benefit? Static Analysis — Should we run linters, type checkers, security scanners as additional gates? Semantic Verification — Tests check behavior, manifests check scope. But what about \"did the agent actually address the issue?\" Sometimes code passes tests but doesn't solve the problem. Confidence Signals — Can we detect low-confidence completions? Agent says \"done\" but hedges in comments? Unusual patterns? Partial Acceptance — If 2 of 3 acceptance criteria pass, do we accept partially? Or all-or-nothing? Human Review Gate — For high-risk changes (security, config), should noface require human approval?",
+    "snippet": "Test Coverage — What if the tests don't cover the change? Agent could introduce a bug that passes existing tests. Review Pass — Should noface run a dedicated reviewer agent on each change before...",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#implementation-notes",
+    "url": "/verification.html#implementation-notes",
+    "section_id": "implementation-notes-358700cd",
+    "section_hash": "358700cd55483acb8f8d4ccdf9c01bce47c8da244668c0de1802e7a734e95a97",
+    "title": "Verification",
+    "section_title": "Implementation Notes #",
+    "content": "See src/loop.zig:verifyManifestCompliance and prompt instructions for self-testing.",
+    "snippet": "See src/loop.zig:verifyManifestCompliance and prompt instructions for self-testing.",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#multi-pass-architecture",
+    "url": "/multi-pass.html#multi-pass-architecture",
+    "section_id": "multi-pass-architecture-4890ea93",
+    "section_hash": "4890ea93f322865f5f7bf563b10e06c6baa5e445868b4bde013f9e7c2b4ca8e9",
+    "title": "Multi-Pass Architecture",
+    "section_title": "Multi-Pass Architecture #",
+    "content": "How noface uses multiple agent passes to improve quality.",
+    "snippet": "How noface uses multiple agent passes to improve quality.",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#current-design",
+    "url": "/multi-pass.html#current-design",
+    "section_id": "current-design-f91ec757",
+    "section_hash": "f91ec757d6b85610c59afe6051300c38605cb8d7da9a2f600f59e7a2e1c5ca83",
+    "title": "Multi-Pass Architecture",
+    "section_title": "Current Design #",
+    "content": "noface runs three types of passes: Planner pass (Codex) — every N iterations Analyzes issue backlog Generates file manifests for each issue Groups non-conflicting issues into parallel batches Implementation pass (Claude) — per issue Receives issue + manifest + context Implements the change, runs tests, commits Quality pass (Codex) — every M iterations Scans codebase for tech debt Creates new issues for findings",
+    "snippet": "noface runs three types of passes: Planner pass (Codex) — every N iterations Analyzes issue backlog Generates file manifests for each issue Groups non-conflicting issues into parallel batches...",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#relation-to-survey",
+    "url": "/multi-pass.html#relation-to-survey",
+    "section_id": "relation-to-survey-cbef4a0e",
+    "section_hash": "cbef4a0e31b88b0d44e4cb8ba3a1b1b86437cef2bf65fc192ed9202804400afd",
+    "title": "Multi-Pass Architecture",
+    "section_title": "Relation to Survey #",
+    "content": "This follows the Planner → Implementer pattern from orchestration-survey : \"The self-planning study by Jiang et al. (2025) exemplifies this: the LLM generates concise, structured planning steps from the intent, then in the implementation phase it 'generates code step by step, guided by the preceding planning steps'. This two-pass approach yielded significantly higher correctness than a single-pass solution.\" The survey also discusses Reviewer passes for catching mistakes. noface's quality pass is similar but focuses on proactive debt detection rather than reviewing specific changes.",
+    "snippet": "This follows the Planner → Implementer pattern from orchestration-survey : \"The self-planning study by Jiang et al. (2025) exemplifies this: the LLM generates concise, structured planning steps from...",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#open-questions",
+    "url": "/multi-pass.html#open-questions",
+    "section_id": "open-questions-ed024138",
+    "section_hash": "ed02413827dc7f83ec1f4e2cd3d5600ebc672b6607f40eb690aad53bbea41383",
+    "title": "Multi-Pass Architecture",
+    "section_title": "Open Questions #",
+    "content": "Pass Intervals — planner_interval = 5 and quality_interval = 10 are arbitrary. What's optimal? Should they be adaptive? Reviewer Pass — Should noface add a dedicated reviewer pass that checks each implementation before accepting? Current flow trusts tests + manifest. Feedback Loops — If the quality pass finds issues, they become new issues. But there's no direct feedback to the implementer. Should there be? Pass Ordering — Planner runs periodically, not before every implementation. Does this cause stale manifests? Should planner run on-demand? Diminishing Returns — The survey notes additional passes have diminishing returns. How do we measure if a pass is worth the cost? Model Selection — Planner/quality use Codex; implementation uses Claude. Is this the right split? Should we try other combinations?",
+    "snippet": "Pass Intervals — planner_interval = 5 and quality_interval = 10 are arbitrary. What's optimal? Should they be adaptive? Reviewer Pass — Should noface add a dedicated reviewer pass that checks each...",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#implementation-notes",
+    "url": "/multi-pass.html#implementation-notes",
+    "section_id": "implementation-notes-75c91769",
+    "section_hash": "75c9176949ce9be0f86cff0cbcebcb4673c355207adcc6dac381ec75fb08bf44",
+    "title": "Multi-Pass Architecture",
+    "section_title": "Implementation Notes #",
+    "content": "See src/loop.zig:runPlannerPass , runQualityPass , runIteration .",
+    "snippet": "See src/loop.zig:runPlannerPass , runQualityPass , runIteration .",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "index#noface",
+    "url": "/index.html#noface",
+    "section_id": "noface-bd03f5d6",
+    "section_hash": "bd03f5d67ae34eeb8ed3a5e32d5280590496e3cf5b070011ed516ce82e381aea",
+    "title": "noface",
+    "section_title": "noface #",
+    "content": "An autonomous agent orchestrator for software development. noface coordinates black-box agents (Claude Code, Codex) to work on issues from your backlog — in parallel, with conflict detection, crash recovery, and quality gates.",
+    "snippet": "An autonomous agent orchestrator for software development. noface coordinates black-box agents (Claude Code, Codex) to work on issues from your backlog — in parallel, with conflict detection, crash...",
+    "tags": [],
+    "type": "essay"
+  },
+  {
+    "id": "index#research",
+    "url": "/index.html#research",
+    "section_id": "research-0203af86",
+    "section_hash": "0203af86003e51d710f7374618a31c10e95556d416e6c4e7ed1cb449191293a7",
+    "title": "noface",
+    "section_title": "Research #",
+    "content": "orchestration-survey — Literature survey on design patterns for orchestrating code agents",
+    "snippet": "orchestration-survey — Literature survey on design patterns for orchestrating code agents",
+    "tags": [],
+    "type": "essay"
+  },
+  {
+    "id": "index#design",
+    "url": "/index.html#design",
+    "section_id": "design-bdbdb456",
+    "section_hash": "bdbdb456012d830e904b9d24e0558721346f846742cb8ac3646dc1d1da3d00be",
+    "title": "noface",
+    "section_title": "Design #",
+    "content": "Core infrastructure decisions: manifests — File access control via PRIMARY/READ/FORBIDDEN declarations parallel-execution — Batching, locking, and conflict avoidance context-injection — What information agents receive and how multi-pass — Planner → Implementer → Reviewer architecture failure-recovery — Retry, rollback, escalation strategies verification — How we know an agent succeeded",
+    "snippet": "Core infrastructure decisions: manifests — File access control via PRIMARY/READ/FORBIDDEN declarations parallel-execution — Batching, locking, and conflict avoidance context-injection — What...",
+    "tags": [],
+    "type": "essay"
+  },
+  {
+    "id": "index#quick-links",
+    "url": "/index.html#quick-links",
+    "section_id": "quick-links-f538eff3",
+    "section_hash": "f538eff3bbd2905f6d04d28d33196451eb8c33eae0e3abd2d5e88df168936984",
+    "title": "noface",
+    "section_title": "Quick Links #",
+    "content": "GitHub Issue Tracker",
+    "snippet": "GitHub Issue Tracker",
+    "tags": [],
+    "type": "essay"
+  }
+]

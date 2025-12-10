@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Context Injection — noface</title>
+  <meta name="description" content="Context Injection">
+  <meta name="author" content="noface">
+  <meta name="monowiki-base-url" content="/">
+  <meta name="monowiki-note-slug" content="context-injection">
+  
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/previews.css">
+  <link rel="stylesheet" href="/css/graph.css">
+  <link rel="stylesheet" href="/css/search.css">
+
+  <!-- Frontend bundle -->
+  <script type="module" src="/js/bundle.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <nav class="nav">
+        <a href="/index.html">home</a>
+        
+        <a href="https://github.com/femtomc/noface">github</a>
+        <button id="search-trigger" class="search-trigger" aria-label="Search">
+          <span class="search-trigger-text">search</span>
+          <span class="search-trigger-hint">⌘K</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article>
+      
+      
+
+      
+      <p>
+        Tags: <code>design</code> <code>context</code> <code>prompts</code> <code>monowiki</code> 
+      </p>
+      
+
+      
+        <div id="toc" class="toc-container">
+          <nav class="toc-nav"><h3>Contents</h3><ul class="toc-list"><li class="toc-level-1"><a href="#context-injection">Context Injection</a></li><li class="toc-level-2"><a href="#current-design">Current Design</a></li><li class="toc-level-2"><a href="#relation-to-survey">Relation to Survey</a></li><li class="toc-level-2"><a href="#open-questions">Open Questions</a></li><li class="toc-level-2"><a href="#implementation-notes">Implementation Notes</a></li></ul></nav>
+        </div>
+        
+
+      <div class="page-subheader">
+        
+          <button id="copy-page-source" class="copy-page-btn" type="button" aria-label="Copy page Markdown">Copy page source</button>
+          
+        <button id="global-graph-toggle" class="graph-btn" type="button" aria-label="Open graph">Graph</button>
+      </div>
+
+      <h1 id="context-injection">Context Injection<a class="heading-anchor" href="#context-injection" aria-label="Link to heading">#</a></h1>
+<p>What information noface provides to agents and how.</p>
+<h2 id="current-design">Current Design<a class="heading-anchor" href="#current-design" aria-label="Link to heading">#</a></h2>
+<p>The implementation prompt includes:</p>
+<ol>
+<li><strong>Issue description</strong> — from beads</li>
+<li><strong>Manifest</strong> — which files the agent can touch</li>
+<li><strong>Build/test commands</strong> — from <code>.noface.toml</code></li>
+<li><strong>Design docs</strong> — fetched from monowiki if configured</li>
+<li><strong>Workflow instructions</strong> — step-by-step process (implement → test → commit)</li>
+</ol>
+<p>Context is capped by <code>max_context_docs</code> setting (default 5).</p>
+<h2 id="relation-to-survey">Relation to Survey<a class="heading-anchor" href="#relation-to-survey" aria-label="Link to heading">#</a></h2>
+<p>The survey warns about <strong>context dilution</strong>:</p>
+<blockquote>
+<p>"Recent studies have shown that even if all provided context is relevant, performance can degrade substantially (by 13–85%) as input length grows."</p>
+</blockquote>
+<p>And recommends <strong>iterative context expansion</strong>:</p>
+<blockquote>
+<p>"The Context-Augmentation pattern described by Hugging Face highlights that context expansion should be iterative and need-based: the agent identifies what extra info it needs, the orchestrator fetches it."</p>
+</blockquote>
+<h2 id="open-questions">Open Questions<a class="heading-anchor" href="#open-questions" aria-label="Link to heading">#</a></h2>
+<ol>
+<li>
+<p><strong>Context Budget</strong> — Is <code>max_context_docs = 5</code> the right number? Should it be dynamic based on issue complexity?</p>
+</li>
+<li>
+<p><strong>Relevance Ranking</strong> — Currently we fetch docs by wikilink or search. Should we score/rank by semantic relevance? Embeddings?</p>
+</li>
+<li>
+<p><strong>Code Context</strong> — Should we inject relevant source files? Which ones? The survey mentions BM25 search over codebase (noface has <code>src/bm25.zig</code>).</p>
+</li>
+<li>
+<p><strong>Context Freshness</strong> — If a doc is stale (refers to old API), it could mislead the agent. How do we detect/handle this?</p>
+</li>
+<li>
+<p><strong>Negative Context</strong> — What explicitly <em>shouldn't</em> be included? Large generated files? Vendored deps? How do we filter?</p>
+</li>
+<li>
+<p><strong>Agent-Requested Context</strong> — Should agents be able to ask for more context mid-run? Or does the harness (Claude Code) handle this internally?</p>
+</li>
+</ol>
+<h2 id="implementation-notes">Implementation Notes<a class="heading-anchor" href="#implementation-notes" aria-label="Link to heading">#</a></h2>
+<p>See <code>src/loop.zig:buildImplementationPrompt</code> and <code>src/monowiki.zig</code>.</p>
+
+
+      
+      <hr>
+      <div id="backlinks">
+        <h3>Backlinks</h3>
+        <ul class="backlinks-list">
+          
+          <li><a href="/index.html">noface</a></li>
+          
+        </ul>
+      </div>
+      
+    </article>
+
+    
+    <hr>
+
+    <p>
+      <a href="/index.html">← Back to home</a>
+    </p>
+    
+    </article>
+
+  </main>
+
+
+
+  <!-- Global Graph Modal -->
+  <div class="global-graph-outer" id="global-graph-outer">
+    <div class="global-graph-container" id="global-graph-container"></div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal">
+    <div class="search-modal-wrapper">
+      <div class="search-modal-header">
+        <input
+          type="text"
+          id="search-modal-input"
+          class="search-modal-input"
+          placeholder="Search documentation..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="search-modal-tabs">
+        <button class="search-tab active" data-tab="results">Results</button>
+        <button class="search-tab" data-tab="graph">Graph</button>
+      </div>
+      <div class="search-modal-content">
+        <div class="search-tab-panel active" id="search-tab-results">
+          <div class="search-modal-results" id="search-modal-results"></div>
+        </div>
+        <div class="search-tab-panel" id="search-tab-graph">
+          <div class="search-graph-container" id="search-graph-container"></div>
+        </div>
+      </div>
+      <div class="search-modal-footer">
+        <div class="search-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>↵</kbd> Select</span>
+          <span><kbd>ESC</kbd> Close</span>
+        </div>
+        <div class="search-count"></div>
+      </div>
+    </div>
+  </div>
+
+  
+    <script id="page-source-data" type="application/json">"# Context Injection\n\nWhat information noface provides to agents and how.\n\n## Current Design\n\nThe implementation prompt includes:\n\n1. **Issue description** — from beads\n2. **Manifest** — which files the agent can touch\n3. **Build/test commands** — from `.noface.toml`\n4. **Design docs** — fetched from monowiki if configured\n5. **Workflow instructions** — step-by-step process (implement → test → commit)\n\nContext is capped by `max_context_docs` setting (default 5).\n\n## Relation to Survey\n\nThe survey warns about **context dilution**:\n\n\u003e \"Recent studies have shown that even if all provided context is relevant, performance can degrade substantially (by 13–85%) as input length grows.\"\n\nAnd recommends **iterative context expansion**:\n\n\u003e \"The Context-Augmentation pattern described by Hugging Face highlights that context expansion should be iterative and need-based: the agent identifies what extra info it needs, the orchestrator fetches it.\"\n\n## Open Questions\n\n1. **Context Budget** — Is `max_context_docs = 5` the right number? Should it be dynamic based on issue complexity?\n\n2. **Relevance Ranking** — Currently we fetch docs by wikilink or search. Should we score/rank by semantic relevance? Embeddings?\n\n3. **Code Context** — Should we inject relevant source files? Which ones? The survey mentions BM25 search over codebase (noface has `src/bm25.zig`).\n\n4. **Context Freshness** — If a doc is stale (refers to old API), it could mislead the agent. How do we detect/handle this?\n\n5. **Negative Context** — What explicitly *shouldn\u0027t* be included? Large generated files? Vendored deps? How do we filter?\n\n6. **Agent-Requested Context** — Should agents be able to ask for more context mid-run? Or does the harness (Claude Code) handle this internally?\n\n## Implementation Notes\n\nSee `src/loop.zig:buildImplementationPrompt` and `src/monowiki.zig`.\n"</script>
+    
+
+</body>
+</html>

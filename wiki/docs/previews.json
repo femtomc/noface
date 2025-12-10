@@ -1,0 +1,65 @@
+{
+  "agent.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#monowiki-agent-guide\">monowiki Agent Guide</a></li></ul></nav>",
+    "title": "AGENT",
+    "type": "essay",
+    "url": "/agent.html"
+  },
+  "context-injection.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#context-injection\">Context Injection</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#open-questions\">Open Questions</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li></ul></nav>",
+    "title": "Context Injection",
+    "type": "essay",
+    "url": "/context-injection.html"
+  },
+  "failure-recovery.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#failure-recovery\">Failure Recovery</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#open-questions\">Open Questions</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li></ul></nav>",
+    "title": "Failure Recovery",
+    "type": "essay",
+    "url": "/failure-recovery.html"
+  },
+  "index.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#noface\">noface</a></li><li class=\"toc-level-2\"><a href=\"#research\">Research</a></li><li class=\"toc-level-2\"><a href=\"#design\">Design</a></li><li class=\"toc-level-2\"><a href=\"#quick-links\">Quick Links</a></li></ul></nav>",
+    "title": "noface",
+    "type": "essay",
+    "url": "/index.html"
+  },
+  "manifests.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#file-manifests\">File Manifests</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#open-questions\">Open Questions</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li></ul></nav>",
+    "title": "File Manifests",
+    "type": "essay",
+    "url": "/manifests.html"
+  },
+  "multi-pass.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#multi-pass-architecture\">Multi-Pass Architecture</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#open-questions\">Open Questions</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li></ul></nav>",
+    "title": "Multi-Pass Architecture",
+    "type": "essay",
+    "url": "/multi-pass.html"
+  },
+  "orchestration-survey.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#design-patterns-for-orchestrating-black-box-code-agents-a-literature-survey\">Design Patterns for Orchestrating Black-Box Code Agents: A Literature Survey</a></li><li class=\"toc-level-2\"><a href=\"#task-assignment-and-granularity\">Task Assignment and Granularity</a></li><li class=\"toc-level-2\"><a href=\"#context-curation-providing-helpful-context-and-avoiding-harmful-noise\">Context Curation: Providing Helpful Context (and Avoiding Harmful Noise)</a></li><li class=\"toc-level-2\"><a href=\"#prompt-engineering-at-the-orchestration-level\">Prompt Engineering at the Orchestration Level</a></li><li class=\"toc-level-2\"><a href=\"#parallelism-conflict-avoidance\">Parallelism &amp; Conflict Avoidance</a></li><li class=\"toc-level-2\"><a href=\"#verification-acceptance-criteria\">Verification &amp; Acceptance Criteria</a></li><li class=\"toc-level-2\"><a href=\"#failure-modes-recovery-strategies\">Failure Modes &amp; Recovery Strategies</a></li><li class=\"toc-level-2\"><a href=\"#multi-pass-architectures-planner-implementer-reviewer-etc\">Multi-Pass Architectures (Planner, Implementer, Reviewer, etc.)</a></li><li class=\"toc-level-2\"><a href=\"#human-in-the-loop-in-orchestration\">Human-in-the-Loop in Orchestration</a></li><li class=\"toc-level-2\"><a href=\"#conclusion\">Conclusion</a></li><li class=\"toc-level-2\"><a href=\"#references\">References</a></li></ul></nav>",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "type": "essay",
+    "url": "/orchestration-survey.html"
+  },
+  "parallel-execution.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#parallel-execution\">Parallel Execution</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#open-questions\">Open Questions</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li></ul></nav>",
+    "title": "Parallel Execution",
+    "type": "essay",
+    "url": "/parallel-execution.html"
+  },
+  "verification.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#verification\">Verification</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#open-questions\">Open Questions</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li></ul></nav>",
+    "title": "Verification",
+    "type": "essay",
+    "url": "/verification.html"
+  }
+}

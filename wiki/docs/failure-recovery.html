@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Failure Recovery — noface</title>
+  <meta name="description" content="Failure Recovery">
+  <meta name="author" content="noface">
+  <meta name="monowiki-base-url" content="/">
+  <meta name="monowiki-note-slug" content="failure-recovery">
+  
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/previews.css">
+  <link rel="stylesheet" href="/css/graph.css">
+  <link rel="stylesheet" href="/css/search.css">
+
+  <!-- Frontend bundle -->
+  <script type="module" src="/js/bundle.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <nav class="nav">
+        <a href="/index.html">home</a>
+        
+        <a href="https://github.com/femtomc/noface">github</a>
+        <button id="search-trigger" class="search-trigger" aria-label="Search">
+          <span class="search-trigger-text">search</span>
+          <span class="search-trigger-hint">⌘K</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article>
+      
+      
+
+      
+      <p>
+        Tags: <code>design</code> <code>failure</code> <code>retry</code> <code>recovery</code> 
+      </p>
+      
+
+      
+        <div id="toc" class="toc-container">
+          <nav class="toc-nav"><h3>Contents</h3><ul class="toc-list"><li class="toc-level-1"><a href="#failure-recovery">Failure Recovery</a></li><li class="toc-level-2"><a href="#current-design">Current Design</a></li><li class="toc-level-2"><a href="#relation-to-survey">Relation to Survey</a></li><li class="toc-level-2"><a href="#open-questions">Open Questions</a></li><li class="toc-level-2"><a href="#implementation-notes">Implementation Notes</a></li></ul></nav>
+        </div>
+        
+
+      <div class="page-subheader">
+        
+          <button id="copy-page-source" class="copy-page-btn" type="button" aria-label="Copy page Markdown">Copy page source</button>
+          
+        <button id="global-graph-toggle" class="graph-btn" type="button" aria-label="Open graph">Graph</button>
+      </div>
+
+      <h1 id="failure-recovery">Failure Recovery<a class="heading-anchor" href="#failure-recovery" aria-label="Link to heading">#</a></h1>
+<p>How noface handles agent failures.</p>
+<h2 id="current-design">Current Design<a class="heading-anchor" href="#current-design" aria-label="Link to heading">#</a></h2>
+<p>noface handles several failure modes:</p>
+<ol>
+<li><strong>Transient failures</strong> (429, 5xx, network) — retry up to 3x with exponential backoff</li>
+<li><strong>Manifest violations</strong> — rollback offending files, retry with stricter prompt</li>
+<li><strong>Timeouts</strong> (no output for N seconds) — break down issue into smaller tasks</li>
+<li><strong>Crash recovery</strong> — on startup, detect in-progress work from previous run, reset stale locks, restore state</li>
+</ol>
+<p>Each attempt is recorded in state with outcome (success/failed/timeout/violation).</p>
+<h2 id="relation-to-survey">Relation to Survey<a class="heading-anchor" href="#relation-to-survey" aria-label="Link to heading">#</a></h2>
+<p>The survey describes several recovery patterns:</p>
+<p><strong>Graceful retries:</strong></p>
+<blockquote>
+<p>"The simplest recovery pattern is retrying the same prompt. Because LLM agents are stochastic, a second attempt might yield a different (possibly correct) result."</p>
+</blockquote>
+<p><strong>Progressive prompting:</strong></p>
+<blockquote>
+<p>"If a direct retry doesn't help, the orchestrator should try a modified approach... break the task into smaller sub-tasks and prompt those instead."</p>
+</blockquote>
+<p><strong>Preserving partial progress:</strong></p>
+<blockquote>
+<p>"A robust orchestrator will preserve this partial progress so it's not lost."</p>
+</blockquote>
+<h2 id="open-questions">Open Questions<a class="heading-anchor" href="#open-questions" aria-label="Link to heading">#</a></h2>
+<ol>
+<li>
+<p><strong>Retry Strategies</strong> — Current retry is simple backoff. Should we modify the prompt on retry? Add more context? Summarize the failure?</p>
+</li>
+<li>
+<p><strong>Task Breakdown</strong> — Timeout triggers breakdown, but how does noface actually break down an issue? Is this implemented or aspirational?</p>
+</li>
+<li>
+<p><strong>Partial Progress</strong> — If an agent edits 3 files correctly but fails on the 4th, do we keep the 3? Currently unclear.</p>
+</li>
+<li>
+<p><strong>Model Escalation</strong> — The survey mentions falling back to more powerful models. Should noface try a different model on failure?</p>
+</li>
+<li>
+<p><strong>Failure Classification</strong> — Not all failures are equal. "Syntax error" vs "doesn't understand the task" vs "timeout" need different responses.</p>
+</li>
+<li>
+<p><strong>Human Escalation</strong> — After N failures, should noface pause and ask for help? Current behavior is unclear.</p>
+</li>
+<li>
+<p><strong>Learning from Failures</strong> — Should failure patterns inform future prompts? "This type of issue often fails, add extra guidance."</p>
+</li>
+</ol>
+<h2 id="implementation-notes">Implementation Notes<a class="heading-anchor" href="#implementation-notes" aria-label="Link to heading">#</a></h2>
+<p>See <code>src/loop.zig:runIteration</code> retry logic and <code>src/state.zig:IssueState</code>.</p>
+
+
+      
+      <hr>
+      <div id="backlinks">
+        <h3>Backlinks</h3>
+        <ul class="backlinks-list">
+          
+          <li><a href="/index.html">noface</a></li>
+          
+        </ul>
+      </div>
+      
+    </article>
+
+    
+    <hr>
+
+    <p>
+      <a href="/index.html">← Back to home</a>
+    </p>
+    
+    </article>
+
+  </main>
+
+
+
+  <!-- Global Graph Modal -->
+  <div class="global-graph-outer" id="global-graph-outer">
+    <div class="global-graph-container" id="global-graph-container"></div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal">
+    <div class="search-modal-wrapper">
+      <div class="search-modal-header">
+        <input
+          type="text"
+          id="search-modal-input"
+          class="search-modal-input"
+          placeholder="Search documentation..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="search-modal-tabs">
+        <button class="search-tab active" data-tab="results">Results</button>
+        <button class="search-tab" data-tab="graph">Graph</button>
+      </div>
+      <div class="search-modal-content">
+        <div class="search-tab-panel active" id="search-tab-results">
+          <div class="search-modal-results" id="search-modal-results"></div>
+        </div>
+        <div class="search-tab-panel" id="search-tab-graph">
+          <div class="search-graph-container" id="search-graph-container"></div>
+        </div>
+      </div>
+      <div class="search-modal-footer">
+        <div class="search-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>↵</kbd> Select</span>
+          <span><kbd>ESC</kbd> Close</span>
+        </div>
+        <div class="search-count"></div>
+      </div>
+    </div>
+  </div>
+
+  
+    <script id="page-source-data" type="application/json">"# Failure Recovery\n\nHow noface handles agent failures.\n\n## Current Design\n\nnoface handles several failure modes:\n\n1. **Transient failures** (429, 5xx, network) — retry up to 3x with exponential backoff\n2. **Manifest violations** — rollback offending files, retry with stricter prompt\n3. **Timeouts** (no output for N seconds) — break down issue into smaller tasks\n4. **Crash recovery** — on startup, detect in-progress work from previous run, reset stale locks, restore state\n\nEach attempt is recorded in state with outcome (success/failed/timeout/violation).\n\n## Relation to Survey\n\nThe survey describes several recovery patterns:\n\n**Graceful retries:**\n\u003e \"The simplest recovery pattern is retrying the same prompt. Because LLM agents are stochastic, a second attempt might yield a different (possibly correct) result.\"\n\n**Progressive prompting:**\n\u003e \"If a direct retry doesn\u0027t help, the orchestrator should try a modified approach... break the task into smaller sub-tasks and prompt those instead.\"\n\n**Preserving partial progress:**\n\u003e \"A robust orchestrator will preserve this partial progress so it\u0027s not lost.\"\n\n## Open Questions\n\n1. **Retry Strategies** — Current retry is simple backoff. Should we modify the prompt on retry? Add more context? Summarize the failure?\n\n2. **Task Breakdown** — Timeout triggers breakdown, but how does noface actually break down an issue? Is this implemented or aspirational?\n\n3. **Partial Progress** — If an agent edits 3 files correctly but fails on the 4th, do we keep the 3? Currently unclear.\n\n4. **Model Escalation** — The survey mentions falling back to more powerful models. Should noface try a different model on failure?\n\n5. **Failure Classification** — Not all failures are equal. \"Syntax error\" vs \"doesn\u0027t understand the task\" vs \"timeout\" need different responses.\n\n6. **Human Escalation** — After N failures, should noface pause and ask for help? Current behavior is unclear.\n\n7. **Learning from Failures** — Should failure patterns inform future prompts? \"This type of issue often fails, add extra guidance.\"\n\n## Implementation Notes\n\nSee `src/loop.zig:runIteration` retry logic and `src/state.zig:IssueState`.\n"</script>
+    
+
+</body>
+</html>

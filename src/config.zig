@@ -72,7 +72,7 @@ pub const Config = struct {
 
     /// Agent timeout in seconds (0 = no timeout)
     /// If an agent produces no output for this duration, it is killed
-    agent_timeout_seconds: u32 = 300,
+    agent_timeout_seconds: u32 = 900,  // 15 minutes - complex issues need time
 
     /// Number of parallel workers for batch execution (1-8)
     num_workers: u32 = 3,
@@ -294,7 +294,7 @@ test "default config" {
     try std.testing.expectEqual(@as(u32, 5), config.planner_interval);
     try std.testing.expectEqual(@as(u32, 10), config.quality_interval);
     try std.testing.expect(config.enable_planner);
-    try std.testing.expectEqual(@as(u32, 300), config.agent_timeout_seconds);
+    try std.testing.expectEqual(@as(u32, 900), config.agent_timeout_seconds);
 }
 
 test "parse toml" {
@@ -348,7 +348,7 @@ test "parse agents timeout zero rejected" {
 
     const config = try Config.parseToml(arena.allocator(), toml);
     // Zero is rejected, should keep default
-    try std.testing.expectEqual(@as(u32, 300), config.agent_timeout_seconds);
+    try std.testing.expectEqual(@as(u32, 900), config.agent_timeout_seconds);
 }
 
 test "parse agents num_workers config" {

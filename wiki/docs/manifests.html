@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>File Manifests — noface</title>
+  <meta name="description" content="File Manifests">
+  <meta name="author" content="noface">
+  <meta name="monowiki-base-url" content="/">
+  <meta name="monowiki-note-slug" content="manifests">
+  
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/previews.css">
+  <link rel="stylesheet" href="/css/graph.css">
+  <link rel="stylesheet" href="/css/search.css">
+
+  <!-- Frontend bundle -->
+  <script type="module" src="/js/bundle.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <nav class="nav">
+        <a href="/index.html">home</a>
+        
+        <a href="https://github.com/femtomc/noface">github</a>
+        <button id="search-trigger" class="search-trigger" aria-label="Search">
+          <span class="search-trigger-text">search</span>
+          <span class="search-trigger-hint">⌘K</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article>
+      
+      
+
+      
+      <p>
+        Tags: <code>design</code> <code>manifests</code> <code>access-control</code> 
+      </p>
+      
+
+      
+        <div id="toc" class="toc-container">
+          <nav class="toc-nav"><h3>Contents</h3><ul class="toc-list"><li class="toc-level-1"><a href="#file-manifests">File Manifests</a></li><li class="toc-level-2"><a href="#current-design">Current Design</a></li><li class="toc-level-2"><a href="#relation-to-survey">Relation to Survey</a></li><li class="toc-level-2"><a href="#open-questions">Open Questions</a></li><li class="toc-level-2"><a href="#implementation-notes">Implementation Notes</a></li></ul></nav>
+        </div>
+        
+
+      <div class="page-subheader">
+        
+          <button id="copy-page-source" class="copy-page-btn" type="button" aria-label="Copy page Markdown">Copy page source</button>
+          
+        <button id="global-graph-toggle" class="graph-btn" type="button" aria-label="Open graph">Graph</button>
+      </div>
+
+      <h1 id="file-manifests">File Manifests<a class="heading-anchor" href="#file-manifests" aria-label="Link to heading">#</a></h1>
+<p>How noface controls what files each agent can touch.</p>
+<h2 id="current-design">Current Design<a class="heading-anchor" href="#current-design" aria-label="Link to heading">#</a></h2>
+<p>Manifests declare three access levels per issue:</p>
+<ul>
+<li><strong>PRIMARY_FILES</strong> — exclusive write access (locked during execution)</li>
+<li><strong>READ_FILES</strong> — shared read-only access</li>
+<li><strong>FORBIDDEN_FILES</strong> — must never be touched</li>
+</ul>
+<p>The planner generates manifests by analyzing each issue. After an agent completes, noface runs <code>git diff</code> and verifies compliance. Violations trigger rollback of offending files and retry with a stricter prompt.</p>
+<h2 id="relation-to-survey">Relation to Survey<a class="heading-anchor" href="#relation-to-survey" aria-label="Link to heading">#</a></h2>
+<p>This implements the <strong>Manifest-Driven AI Development (MAID)</strong> pattern from <a href="/orchestration-survey.html">orchestration-survey</a>:</p>
+<blockquote>
+<p>"A recent methodology called Manifest-Driven AI Development (MAID) takes this further by treating the manifest as an enforceable contract: after generation, a validator checks that only the declared files/functions were altered and no undeclared edits occurred."</p>
+</blockquote>
+<h2 id="open-questions">Open Questions<a class="heading-anchor" href="#open-questions" aria-label="Link to heading">#</a></h2>
+<ol>
+<li>
+<p><strong>Granularity</strong> — File-level is coarse. Should we support function-level or line-range manifests?</p>
+</li>
+<li>
+<p><strong>Manifest Generation</strong> — How good is the planner at predicting which files an issue will touch? What's the false-negative rate (files needed but not declared)?</p>
+</li>
+<li>
+<p><strong>Manifest Violations</strong> — Current behavior is rollback + retry. Should we ever accept a violation if the change is clearly correct?</p>
+</li>
+<li>
+<p><strong>Dynamic Expansion</strong> — Should agents be able to request additional files mid-execution? Or does that break the isolation model?</p>
+</li>
+</ol>
+<h2 id="implementation-notes">Implementation Notes<a class="heading-anchor" href="#implementation-notes" aria-label="Link to heading">#</a></h2>
+<p>See <code>src/state.zig:Manifest</code> and <code>src/loop.zig:verifyManifestCompliance</code>.</p>
+
+
+      
+      <hr>
+      <div id="backlinks">
+        <h3>Backlinks</h3>
+        <ul class="backlinks-list">
+          
+          <li><a href="/index.html">noface</a></li>
+          
+        </ul>
+      </div>
+      
+    </article>
+
+    
+    <hr>
+
+    <p>
+      <a href="/index.html">← Back to home</a>
+    </p>
+    
+    </article>
+
+  </main>
+
+
+
+  <!-- Global Graph Modal -->
+  <div class="global-graph-outer" id="global-graph-outer">
+    <div class="global-graph-container" id="global-graph-container"></div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal">
+    <div class="search-modal-wrapper">
+      <div class="search-modal-header">
+        <input
+          type="text"
+          id="search-modal-input"
+          class="search-modal-input"
+          placeholder="Search documentation..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="search-modal-tabs">
+        <button class="search-tab active" data-tab="results">Results</button>
+        <button class="search-tab" data-tab="graph">Graph</button>
+      </div>
+      <div class="search-modal-content">
+        <div class="search-tab-panel active" id="search-tab-results">
+          <div class="search-modal-results" id="search-modal-results"></div>
+        </div>
+        <div class="search-tab-panel" id="search-tab-graph">
+          <div class="search-graph-container" id="search-graph-container"></div>
+        </div>
+      </div>
+      <div class="search-modal-footer">
+        <div class="search-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>↵</kbd> Select</span>
+          <span><kbd>ESC</kbd> Close</span>
+        </div>
+        <div class="search-count"></div>
+      </div>
+    </div>
+  </div>
+
+  
+    <script id="page-source-data" type="application/json">"# File Manifests\n\nHow noface controls what files each agent can touch.\n\n## Current Design\n\nManifests declare three access levels per issue:\n\n- **PRIMARY_FILES** — exclusive write access (locked during execution)\n- **READ_FILES** — shared read-only access\n- **FORBIDDEN_FILES** — must never be touched\n\nThe planner generates manifests by analyzing each issue. After an agent completes, noface runs `git diff` and verifies compliance. Violations trigger rollback of offending files and retry with a stricter prompt.\n\n## Relation to Survey\n\nThis implements the **Manifest-Driven AI Development (MAID)** pattern from [[orchestration-survey]]:\n\n\u003e \"A recent methodology called Manifest-Driven AI Development (MAID) takes this further by treating the manifest as an enforceable contract: after generation, a validator checks that only the declared files/functions were altered and no undeclared edits occurred.\"\n\n## Open Questions\n\n1. **Granularity** — File-level is coarse. Should we support function-level or line-range manifests?\n\n2. **Manifest Generation** — How good is the planner at predicting which files an issue will touch? What\u0027s the false-negative rate (files needed but not declared)?\n\n3. **Manifest Violations** — Current behavior is rollback + retry. Should we ever accept a violation if the change is clearly correct?\n\n4. **Dynamic Expansion** — Should agents be able to request additional files mid-execution? Or does that break the isolation model?\n\n## Implementation Notes\n\nSee `src/state.zig:Manifest` and `src/loop.zig:verifyManifestCompliance`.\n"</script>
+    
+
+</body>
+</html>

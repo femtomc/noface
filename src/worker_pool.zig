@@ -97,16 +97,19 @@ pub const WorkerPool = struct {
                 return successful;
             }
 
-            // 1. Collect results from completed workers
+            // 1. Poll output from running workers (updates last_output_time for idle detection)
+            self.pollAllWorkerOutput();
+
+            // 2. Collect results from completed workers
             try self.collectCompletedWorkers();
 
-            // 1b. Detect and handle crashed/timed out workers
+            // 3. Detect and handle idle/timed out workers
             const crashed = try self.detectCrashedWorkers();
             if (crashed > 0) {
                 logWarn("Detected {d} crashed/timed out worker(s)", .{crashed});
             }
 
-            // 2. Process any pending results
+            // 4. Process any pending results
             while (self.pending_results.items.len > 0) {
                 const result = self.pending_results.orderedRemove(0);
                 defer self.allocator.free(result.issue_id);
@@ -151,7 +154,7 @@ pub const WorkerPool = struct {
                 }
             }
 
-            // 3. Assign unassigned issues to idle workers
+            // 5. Assign unassigned issues to idle workers
             for (batch.issue_ids, 0..) |issue_id, i| {
                 if (assigned[i]) continue;
 
@@ -182,7 +185,7 @@ pub const WorkerPool = struct {
                 }
             }
 
-            // 4. Brief sleep to avoid busy-waiting
+            // 6. Brief sleep to avoid busy-waiting
             if (issues_remaining > 0) {
                 std.Thread.sleep(100 * std.time.ns_per_ms);
             }
@@ -228,6 +231,8 @@ pub const WorkerPool = struct {
             "-p",
             "--dangerously-skip-permissions",
             "--verbose",
+            "--max-turns",
+            "100",  // Allow more iterations for complex issues
             "--output-format",
             "stream-json",
             prompt,
@@ -299,6 +304,17 @@ pub const WorkerPool = struct {
         });
     }
 
+    /// Poll output from all running workers (non-blocking).
+    /// This updates each worker's last_output_time for idle timeout detection.
+    fn pollAllWorkerOutput(self: *WorkerPool) void {
+        for (0..self.state.num_workers) |i| {
+            const worker_id: u32 = @intCast(i);
+            if (self.worker_processes[worker_id]) |*worker| {
+                worker.pollOutput();
+            }
+        }
+    }
+
     /// Check all running workers and collect results from completed ones
     fn collectCompletedWorkers(self: *WorkerPool) !void {
         for (0..self.state.num_workers) |i| {
@@ -328,27 +344,30 @@ pub const WorkerPool = struct {
         }
     }
 
-    /// Detect crashed workers (no output for timeout period)
+    /// Detect idle workers (no output for timeout period)
     pub fn detectCrashedWorkers(self: *WorkerPool) !u32 {
         var crashed: u32 = 0;
-        const now = std.time.timestamp();
         const timeout: i64 = @intCast(self.config.agent_timeout_seconds);
 
         for (0..self.state.num_workers) |i| {
             const worker_id: u32 = @intCast(i);
             if (self.worker_processes[worker_id]) |*worker| {
-                const started_at = self.state.workers[worker_id].started_at orelse now;
-                const elapsed = now - started_at;
+                const idle_seconds = worker.getIdleSeconds();
 
-                if (elapsed > timeout) {
-                    logWarn("Worker {d} timed out after {d}s (issue: {s})", .{
+                if (idle_seconds > timeout) {
+                    logWarn("Worker {d} timed out: no output for {d}s (issue: {s})", .{
                         worker_id,
-                        elapsed,
+                        idle_seconds,
                         worker.issue_id,
                     });
 
                     // Kill the worker
                     worker.kill();
+
+                    // Calculate actual wall-clock duration for the result
+                    const now = std.time.timestamp();
+                    const started_at = self.state.workers[worker_id].started_at orelse now;
+                    const duration = now - started_at;
 
                     // Create failure result
                     const result = WorkerResult{
@@ -356,7 +375,7 @@ pub const WorkerPool = struct {
                         .issue_id = try self.allocator.dupe(u8, worker.issue_id),
                         .success = false,
                         .exit_code = 124, // Timeout exit code
-                        .duration_seconds = elapsed,
+                        .duration_seconds = duration,
                     };
 
                     try self.pending_results.append(self.allocator, result);
@@ -417,25 +436,92 @@ const WorkerProcess = struct {
     allocator: std.mem.Allocator,
     worker_id: u32,
     issue_id: []const u8,
+    /// Timestamp of last output received (for idle timeout tracking)
+    last_output_time: i64,
 
     pub fn spawn(allocator: std.mem.Allocator, argv: []const []const u8, worker_id: u32, issue_id: []const u8) !WorkerProcess {
         var child = std.process.Child.init(argv, allocator);
-        // Inherit stdout/stderr so we can see worker output
-        child.stdout_behavior = .Inherit;
-        child.stderr_behavior = .Inherit;
+        // Pipe stdout so we can track output for idle timeout detection
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
 
         try child.spawn();
 
+        const now = std.time.timestamp();
         return .{
             .child = child,
             .allocator = allocator,
             .worker_id = worker_id,
             .issue_id = try allocator.dupe(u8, issue_id),
+            .last_output_time = now,
         };
     }
 
     pub fn deinit(self: *WorkerProcess) void {
         self.allocator.free(self.issue_id);
+    }
+
+    /// Poll for output from the worker (non-blocking).
+    /// Updates last_output_time if any output is received.
+    /// Forwards output to stdout/stderr for visibility.
+    pub fn pollOutput(self: *WorkerProcess) void {
+        var buf: [4096]u8 = undefined;
+        var received_output = false;
+
+        // Poll stdout
+        if (self.child.stdout) |stdout_file| {
+            const fd = stdout_file.handle;
+            var poll_fds = [1]std.posix.pollfd{
+                .{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 },
+            };
+
+            // Non-blocking poll (0 timeout)
+            const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
+            if (poll_result > 0 and (poll_fds[0].revents & std.posix.POLL.IN) != 0) {
+                while (true) {
+                    const n = stdout_file.read(&buf) catch break;
+                    if (n == 0) break;
+                    received_output = true;
+                    // Forward to real stdout
+                    _ = std.fs.File.stdout().write(buf[0..n]) catch {};
+
+                    // Check if more data available without blocking
+                    const more = std.posix.poll(&poll_fds, 0) catch 0;
+                    if (more == 0 or (poll_fds[0].revents & std.posix.POLL.IN) == 0) break;
+                }
+            }
+        }
+
+        // Poll stderr
+        if (self.child.stderr) |stderr_file| {
+            const fd = stderr_file.handle;
+            var poll_fds = [1]std.posix.pollfd{
+                .{ .fd = fd, .events = std.posix.POLL.IN, .revents = 0 },
+            };
+
+            const poll_result = std.posix.poll(&poll_fds, 0) catch 0;
+            if (poll_result > 0 and (poll_fds[0].revents & std.posix.POLL.IN) != 0) {
+                while (true) {
+                    const n = stderr_file.read(&buf) catch break;
+                    if (n == 0) break;
+                    received_output = true;
+                    // Forward to real stderr
+                    _ = std.fs.File.stderr().write(buf[0..n]) catch {};
+
+                    const more = std.posix.poll(&poll_fds, 0) catch 0;
+                    if (more == 0 or (poll_fds[0].revents & std.posix.POLL.IN) == 0) break;
+                }
+            }
+        }
+
+        if (received_output) {
+            self.last_output_time = std.time.timestamp();
+        }
+    }
+
+    /// Get the idle time in seconds (time since last output)
+    pub fn getIdleSeconds(self: *const WorkerProcess) i64 {
+        return std.time.timestamp() - self.last_output_time;
     }
 
     /// Get the process ID
@@ -536,4 +622,69 @@ test "worker result struct" {
 
     try std.testing.expect(result.success);
     try std.testing.expectEqual(@as(u8, 0), result.exit_code);
+}
+
+test "worker idle time tracking" {
+    // Create a worker process with a simple command that produces output
+    var worker = try WorkerProcess.spawn(
+        std.testing.allocator,
+        &[_][]const u8{ "echo", "hello" },
+        0,
+        "test-issue",
+    );
+    defer worker.deinit();
+
+    // Initial idle time should be near zero
+    const initial_idle = worker.getIdleSeconds();
+    try std.testing.expect(initial_idle >= 0);
+    try std.testing.expect(initial_idle <= 1);
+
+    // Poll for output - this should update last_output_time
+    worker.pollOutput();
+
+    // Give the process time to complete
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    worker.pollOutput();
+
+    // Idle time should still be small since we just polled
+    const after_poll_idle = worker.getIdleSeconds();
+    try std.testing.expect(after_poll_idle >= 0);
+    try std.testing.expect(after_poll_idle <= 2);
+
+    // Clean up - wait for process to exit
+    _ = worker.tryWait();
+}
+
+test "idle timeout triggers only on idle workers" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Create config with very short timeout for testing
+    var cfg = Config.default();
+    cfg.agent_timeout_seconds = 1; // 1 second timeout
+
+    var pool = WorkerPool.init(std.testing.allocator, cfg, &state);
+    defer pool.deinit();
+
+    // Start a worker process that exits immediately
+    const worker = try WorkerProcess.spawn(
+        std.testing.allocator,
+        &[_][]const u8{ "echo", "quick" },
+        0,
+        "test-issue",
+    );
+
+    pool.worker_processes[0] = worker;
+    state.workers[0].status = .running;
+    state.workers[0].started_at = std.time.timestamp();
+
+    // Poll output immediately - should receive output and update last_output_time
+    pool.pollAllWorkerOutput();
+
+    // Wait for process to complete
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    try pool.collectCompletedWorkers();
+
+    // Process should have completed, no timeout triggered
+    try std.testing.expect(pool.worker_processes[0] == null);
 }

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Multi-Pass Architecture — noface</title>
+  <meta name="description" content="Multi-Pass Architecture">
+  <meta name="author" content="noface">
+  <meta name="monowiki-base-url" content="/">
+  <meta name="monowiki-note-slug" content="multi-pass">
+  
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/previews.css">
+  <link rel="stylesheet" href="/css/graph.css">
+  <link rel="stylesheet" href="/css/search.css">
+
+  <!-- Frontend bundle -->
+  <script type="module" src="/js/bundle.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <nav class="nav">
+        <a href="/index.html">home</a>
+        
+        <a href="https://github.com/femtomc/noface">github</a>
+        <button id="search-trigger" class="search-trigger" aria-label="Search">
+          <span class="search-trigger-text">search</span>
+          <span class="search-trigger-hint">⌘K</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article>
+      
+      
+
+      
+      <p>
+        Tags: <code>design</code> <code>planner</code> <code>reviewer</code> <code>passes</code> 
+      </p>
+      
+
+      
+        <div id="toc" class="toc-container">
+          <nav class="toc-nav"><h3>Contents</h3><ul class="toc-list"><li class="toc-level-1"><a href="#multi-pass-architecture">Multi-Pass Architecture</a></li><li class="toc-level-2"><a href="#current-design">Current Design</a></li><li class="toc-level-2"><a href="#relation-to-survey">Relation to Survey</a></li><li class="toc-level-2"><a href="#open-questions">Open Questions</a></li><li class="toc-level-2"><a href="#implementation-notes">Implementation Notes</a></li></ul></nav>
+        </div>
+        
+
+      <div class="page-subheader">
+        
+          <button id="copy-page-source" class="copy-page-btn" type="button" aria-label="Copy page Markdown">Copy page source</button>
+          
+        <button id="global-graph-toggle" class="graph-btn" type="button" aria-label="Open graph">Graph</button>
+      </div>
+
+      <h1 id="multi-pass-architecture">Multi-Pass Architecture<a class="heading-anchor" href="#multi-pass-architecture" aria-label="Link to heading">#</a></h1>
+<p>How noface uses multiple agent passes to improve quality.</p>
+<h2 id="current-design">Current Design<a class="heading-anchor" href="#current-design" aria-label="Link to heading">#</a></h2>
+<p>noface runs three types of passes:</p>
+<ol>
+<li>
+<p><strong>Planner pass</strong> (Codex) — every N iterations</p>
+<ul>
+<li>Analyzes issue backlog</li>
+<li>Generates file manifests for each issue</li>
+<li>Groups non-conflicting issues into parallel batches</li>
+</ul>
+</li>
+<li>
+<p><strong>Implementation pass</strong> (Claude) — per issue</p>
+<ul>
+<li>Receives issue + manifest + context</li>
+<li>Implements the change, runs tests, commits</li>
+</ul>
+</li>
+<li>
+<p><strong>Quality pass</strong> (Codex) — every M iterations</p>
+<ul>
+<li>Scans codebase for tech debt</li>
+<li>Creates new issues for findings</li>
+</ul>
+</li>
+</ol>
+<h2 id="relation-to-survey">Relation to Survey<a class="heading-anchor" href="#relation-to-survey" aria-label="Link to heading">#</a></h2>
+<p>This follows the <strong>Planner → Implementer</strong> pattern from <a href="/orchestration-survey.html">orchestration-survey</a>:</p>
+<blockquote>
+<p>"The self-planning study by Jiang et al. (2025) exemplifies this: the LLM generates concise, structured planning steps from the intent, then in the implementation phase it 'generates code step by step, guided by the preceding planning steps'. This two-pass approach yielded significantly higher correctness than a single-pass solution."</p>
+</blockquote>
+<p>The survey also discusses <strong>Reviewer passes</strong> for catching mistakes. noface's quality pass is similar but focuses on proactive debt detection rather than reviewing specific changes.</p>
+<h2 id="open-questions">Open Questions<a class="heading-anchor" href="#open-questions" aria-label="Link to heading">#</a></h2>
+<ol>
+<li>
+<p><strong>Pass Intervals</strong> — <code>planner_interval = 5</code> and <code>quality_interval = 10</code> are arbitrary. What's optimal? Should they be adaptive?</p>
+</li>
+<li>
+<p><strong>Reviewer Pass</strong> — Should noface add a dedicated reviewer pass that checks each implementation before accepting? Current flow trusts tests + manifest.</p>
+</li>
+<li>
+<p><strong>Feedback Loops</strong> — If the quality pass finds issues, they become new issues. But there's no direct feedback to the implementer. Should there be?</p>
+</li>
+<li>
+<p><strong>Pass Ordering</strong> — Planner runs periodically, not before every implementation. Does this cause stale manifests? Should planner run on-demand?</p>
+</li>
+<li>
+<p><strong>Diminishing Returns</strong> — The survey notes additional passes have diminishing returns. How do we measure if a pass is worth the cost?</p>
+</li>
+<li>
+<p><strong>Model Selection</strong> — Planner/quality use Codex; implementation uses Claude. Is this the right split? Should we try other combinations?</p>
+</li>
+</ol>
+<h2 id="implementation-notes">Implementation Notes<a class="heading-anchor" href="#implementation-notes" aria-label="Link to heading">#</a></h2>
+<p>See <code>src/loop.zig:runPlannerPass</code>, <code>runQualityPass</code>, <code>runIteration</code>.</p>
+
+
+      
+      <hr>
+      <div id="backlinks">
+        <h3>Backlinks</h3>
+        <ul class="backlinks-list">
+          
+          <li><a href="/index.html">noface</a></li>
+          
+        </ul>
+      </div>
+      
+    </article>
+
+    
+    <hr>
+
+    <p>
+      <a href="/index.html">← Back to home</a>
+    </p>
+    
+    </article>
+
+  </main>
+
+
+
+  <!-- Global Graph Modal -->
+  <div class="global-graph-outer" id="global-graph-outer">
+    <div class="global-graph-container" id="global-graph-container"></div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal">
+    <div class="search-modal-wrapper">
+      <div class="search-modal-header">
+        <input
+          type="text"
+          id="search-modal-input"
+          class="search-modal-input"
+          placeholder="Search documentation..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="search-modal-tabs">
+        <button class="search-tab active" data-tab="results">Results</button>
+        <button class="search-tab" data-tab="graph">Graph</button>
+      </div>
+      <div class="search-modal-content">
+        <div class="search-tab-panel active" id="search-tab-results">
+          <div class="search-modal-results" id="search-modal-results"></div>
+        </div>
+        <div class="search-tab-panel" id="search-tab-graph">
+          <div class="search-graph-container" id="search-graph-container"></div>
+        </div>
+      </div>
+      <div class="search-modal-footer">
+        <div class="search-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>↵</kbd> Select</span>
+          <span><kbd>ESC</kbd> Close</span>
+        </div>
+        <div class="search-count"></div>
+      </div>
+    </div>
+  </div>
+
+  
+    <script id="page-source-data" type="application/json">"# Multi-Pass Architecture\n\nHow noface uses multiple agent passes to improve quality.\n\n## Current Design\n\nnoface runs three types of passes:\n\n1. **Planner pass** (Codex) — every N iterations\n   - Analyzes issue backlog\n   - Generates file manifests for each issue\n   - Groups non-conflicting issues into parallel batches\n\n2. **Implementation pass** (Claude) — per issue\n   - Receives issue + manifest + context\n   - Implements the change, runs tests, commits\n\n3. **Quality pass** (Codex) — every M iterations\n   - Scans codebase for tech debt\n   - Creates new issues for findings\n\n## Relation to Survey\n\nThis follows the **Planner → Implementer** pattern from [[orchestration-survey]]:\n\n\u003e \"The self-planning study by Jiang et al. (2025) exemplifies this: the LLM generates concise, structured planning steps from the intent, then in the implementation phase it \u0027generates code step by step, guided by the preceding planning steps\u0027. This two-pass approach yielded significantly higher correctness than a single-pass solution.\"\n\nThe survey also discusses **Reviewer passes** for catching mistakes. noface\u0027s quality pass is similar but focuses on proactive debt detection rather than reviewing specific changes.\n\n## Open Questions\n\n1. **Pass Intervals** — `planner_interval = 5` and `quality_interval = 10` are arbitrary. What\u0027s optimal? Should they be adaptive?\n\n2. **Reviewer Pass** — Should noface add a dedicated reviewer pass that checks each implementation before accepting? Current flow trusts tests + manifest.\n\n3. **Feedback Loops** — If the quality pass finds issues, they become new issues. But there\u0027s no direct feedback to the implementer. Should there be?\n\n4. **Pass Ordering** — Planner runs periodically, not before every implementation. Does this cause stale manifests? Should planner run on-demand?\n\n5. **Diminishing Returns** — The survey notes additional passes have diminishing returns. How do we measure if a pass is worth the cost?\n\n6. **Model Selection** — Planner/quality use Codex; implementation uses Claude. Is this the right split? Should we try other combinations?\n\n## Implementation Notes\n\nSee `src/loop.zig:runPlannerPass`, `runQualityPass`, `runIteration`.\n"</script>
+    
+
+</body>
+</html>
