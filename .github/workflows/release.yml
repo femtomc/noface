@@ -1,0 +1,52 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build-${{ matrix.os_slug }}-${{ matrix.arch_slug }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            os_slug: linux
+            arch_slug: amd64
+          - os: macos-13
+            os_slug: darwin
+            arch_slug: amd64
+          - os: macos-14
+            os_slug: darwin
+            arch_slug: arm64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp zig-out/bin/noface dist/
+          cp LICENSE dist/ || true
+          tar -C dist -czf noface-${{ matrix.os_slug }}-${{ matrix.arch_slug }}.tar.gz noface LICENSE
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v1
+        with:
+          files: noface-${{ matrix.os_slug }}-${{ matrix.arch_slug }}.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

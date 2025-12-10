@@ -79,7 +79,7 @@ pub const StreamingProcess = struct {
     pub fn spawn(allocator: std.mem.Allocator, argv: []const []const u8) !StreamingProcess {
         var child = std.process.Child.init(argv, allocator);
         child.stdout_behavior = .Pipe;
-        child.stderr_behavior = .Pipe;
+        child.stderr_behavior = .Inherit;
 
         try child.spawn();
 

@@ -15,12 +15,15 @@ pub const OutputFormat = enum {
 pub const Config = struct {
     /// Project name (used in prompts)
     project_name: []const u8 = "Project",
+    project_name_owned: bool = false,
 
     /// Build command to verify project compiles
     build_command: []const u8 = "make build",
+    build_command_owned: bool = false,
 
     /// Test command to verify tests pass
     test_command: []const u8 = "make test",
+    test_command_owned: bool = false,
 
     /// Maximum iterations (0 = unlimited)
     max_iterations: u32 = 0,
@@ -51,9 +54,11 @@ pub const Config = struct {
 
     /// Implementation agent command
     impl_agent: []const u8 = "claude",
+    impl_agent_owned: bool = false,
 
     /// Review agent command
     review_agent: []const u8 = "codex",
+    review_agent_owned: bool = false,
 
     /// Custom implementation prompt template (null = use default)
     impl_prompt_template: ?[]const u8 = null,
@@ -111,6 +116,7 @@ pub const Config = struct {
     /// Parse TOML content into Config
     fn parseToml(allocator: std.mem.Allocator, content: []const u8) !Config {
         var config = Config.default();
+        errdefer config.deinit(allocator);
 
         var lines = std.mem.splitScalar(u8, content, '\n');
         var current_section: ?[]const u8 = null;
@@ -140,17 +146,17 @@ pub const Config = struct {
                 // Apply based on section
                 if (current_section == null or std.mem.eql(u8, current_section.?, "project")) {
                     if (std.mem.eql(u8, key, "name")) {
-                        config.project_name = try allocator.dupe(u8, value);
+                        try setOwnedString(allocator, &config.project_name, &config.project_name_owned, value);
                     } else if (std.mem.eql(u8, key, "build")) {
-                        config.build_command = try allocator.dupe(u8, value);
+                        try setOwnedString(allocator, &config.build_command, &config.build_command_owned, value);
                     } else if (std.mem.eql(u8, key, "test")) {
-                        config.test_command = try allocator.dupe(u8, value);
+                        try setOwnedString(allocator, &config.test_command, &config.test_command_owned, value);
                     }
                 } else if (std.mem.eql(u8, current_section.?, "agents")) {
                     if (std.mem.eql(u8, key, "implementer")) {
-                        config.impl_agent = try allocator.dupe(u8, value);
+                        try setOwnedString(allocator, &config.impl_agent, &config.impl_agent_owned, value);
                     } else if (std.mem.eql(u8, key, "reviewer")) {
-                        config.review_agent = try allocator.dupe(u8, value);
+                        try setOwnedString(allocator, &config.review_agent, &config.review_agent_owned, value);
                     }
                 } else if (std.mem.eql(u8, current_section.?, "passes")) {
                     if (std.mem.eql(u8, key, "scrum_enabled")) {
@@ -178,7 +184,45 @@ pub const Config = struct {
 
         return config;
     }
+
+    /// Free any owned fields allocated during parsing
+    pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
+        if (self.project_name_owned) {
+            allocator.free(self.project_name);
+            self.project_name_owned = false;
+        }
+        if (self.build_command_owned) {
+            allocator.free(self.build_command);
+            self.build_command_owned = false;
+        }
+        if (self.test_command_owned) {
+            allocator.free(self.test_command);
+            self.test_command_owned = false;
+        }
+        if (self.impl_agent_owned) {
+            allocator.free(self.impl_agent);
+            self.impl_agent_owned = false;
+        }
+        if (self.review_agent_owned) {
+            allocator.free(self.review_agent);
+            self.review_agent_owned = false;
+        }
+    }
 };
+
+/// Replace a string field, freeing previous owned value if needed
+fn setOwnedString(
+    allocator: std.mem.Allocator,
+    field: *[]const u8,
+    owned_flag: *bool,
+    value: []const u8,
+) !void {
+    if (owned_flag.*) {
+        allocator.free(field.*);
+    }
+    field.* = try allocator.dupe(u8, value);
+    owned_flag.* = true;
+}
 
 test "default config" {
     const config = Config.default();

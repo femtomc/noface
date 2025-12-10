@@ -163,7 +163,7 @@ pub const AgentLoop = struct {
     /// Get the next issue to work on
     fn getNextIssue(self: *AgentLoop) !?[]const u8 {
         if (self.config.specific_issue) |issue| {
-            return issue;
+            return try self.allocator.dupe(u8, issue);
         }
 
         // Get highest priority ready issue from beads
@@ -355,14 +355,12 @@ pub const AgentLoop = struct {
 
     /// Run codex exec with a prompt
     fn runCodexExec(self: *AgentLoop, prompt: []const u8) !u8 {
-        const cmd = try std.fmt.allocPrint(
-            self.allocator,
-            "{s} exec --dangerously-bypass-approvals-and-sandbox \"{s}\"",
-            .{ self.config.review_agent, prompt },
-        );
-        defer self.allocator.free(cmd);
-
-        var result = try process.shell(self.allocator, cmd);
+        var result = try process.run(self.allocator, &.{
+            self.config.review_agent,
+            "exec",
+            "--dangerously-bypass-approvals-and-sandbox",
+            prompt,
+        });
         defer result.deinit();
 
         std.debug.print("{s}", .{result.stdout});
@@ -375,22 +373,26 @@ pub const AgentLoop = struct {
 
     /// Run an agent with streaming output and JSON logging
     fn runAgentStreaming(self: *AgentLoop, agent: []const u8, prompt: []const u8, json_log_path: []const u8) !u8 {
-        // Build command
-        const cmd = try std.fmt.allocPrint(
-            self.allocator,
-            "{s} -p --dangerously-skip-permissions --verbose --output-format stream-json --include-partial-messages \"{s}\"",
-            .{ agent, prompt },
-        );
-        defer self.allocator.free(cmd);
+        // Build argv to avoid shell quoting pitfalls
+        const argv = [_][]const u8{
+            agent,
+            "-p",
+            "--dangerously-skip-permissions",
+            "--verbose",
+            "--output-format",
+            "stream-json",
+            "--include-partial-messages",
+            prompt,
+        };
 
         // Open log file for JSON output
         const log_file = std.fs.cwd().createFile(json_log_path, .{}) catch |err| {
             self.logWarn("Failed to create log file {s}: {}", .{ json_log_path, err });
-            return try self.runAgentStreamingWithoutLog(cmd);
+            return try self.runAgentStreamingWithoutLog(&argv);
         };
         defer log_file.close();
 
-        var proc = try process.StreamingProcess.spawn(self.allocator, &.{ "/bin/sh", "-c", cmd });
+        var proc = try process.StreamingProcess.spawn(self.allocator, &argv);
 
         // Collect full response for final markdown rendering
         var full_response: std.ArrayList(u8) = .empty;
@@ -409,7 +411,7 @@ pub const AgentLoop = struct {
             _ = log_file.write("\n") catch {};
 
             // Parse and display based on output format
-            const event = streaming.parseStreamLine(self.allocator, line) catch continue;
+            var event = streaming.parseStreamLine(self.allocator, line) catch continue;
 
             switch (self.config.output_format) {
                 .stream_json => {
@@ -434,6 +436,8 @@ pub const AgentLoop = struct {
                     streaming.printTextDelta(event);
                 },
             }
+
+            streaming.deinitEvent(self.allocator, &event);
         }
 
         const exit_code = try proc.wait();
@@ -452,8 +456,8 @@ pub const AgentLoop = struct {
     }
 
     /// Fallback streaming without log file
-    fn runAgentStreamingWithoutLog(self: *AgentLoop, cmd: []const u8) !u8 {
-        var proc = try process.StreamingProcess.spawn(self.allocator, &.{ "/bin/sh", "-c", cmd });
+    fn runAgentStreamingWithoutLog(self: *AgentLoop, argv: []const []const u8) !u8 {
+        var proc = try process.StreamingProcess.spawn(self.allocator, argv);
 
         var line_buf: [64 * 1024]u8 = undefined;
         while (try proc.readLine(&line_buf)) |line| {
@@ -461,8 +465,9 @@ pub const AgentLoop = struct {
                 proc.kill();
                 break;
             }
-            const event = streaming.parseStreamLine(self.allocator, line) catch continue;
+            var event = streaming.parseStreamLine(self.allocator, line) catch continue;
             streaming.printTextDelta(event);
+            streaming.deinitEvent(self.allocator, &event);
         }
 
         const exit_code = try proc.wait();

@@ -9,8 +9,18 @@
 # - codex (review agent)
 # - gh (GitHub CLI)
 # - jq (JSON processor)
+# It prefers downloading a prebuilt release binary from GitHub.
+# Optional fallback: build from source when requested.
 
 set -e
+
+# Configurable via environment:
+#   NOFACE_VERSION       Override version tag (default: 0.1.0)
+#   INSTALL_DIR          Override install directory (default: ~/.local/bin)
+#   BUILD_FROM_SOURCE    Set to "true" to force source build
+VERSION="${NOFACE_VERSION:-0.1.0}"
+INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
+BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 
 # Colors
 RED='\033[0;31m'
@@ -30,52 +40,6 @@ ARCH="$(uname -m)"
 
 log_info "Installing noface on $OS ($ARCH)"
 echo ""
-
-# Check for Zig
-check_zig() {
-    if command -v zig &> /dev/null; then
-        log_success "zig found: $(zig version)"
-        return 0
-    else
-        log_warn "zig not found"
-        return 1
-    fi
-}
-
-# Install Zig
-install_zig() {
-    log_info "Installing Zig..."
-
-    case "$OS" in
-        Darwin)
-            if command -v brew &> /dev/null; then
-                brew install zig
-            else
-                log_error "Homebrew not found. Install from: https://ziglang.org/download/"
-                exit 1
-            fi
-            ;;
-        Linux)
-            # Try package managers
-            if command -v apt-get &> /dev/null; then
-                sudo apt-get update && sudo apt-get install -y zig
-            elif command -v dnf &> /dev/null; then
-                sudo dnf install -y zig
-            elif command -v pacman &> /dev/null; then
-                sudo pacman -S zig
-            else
-                log_error "No supported package manager found. Install from: https://ziglang.org/download/"
-                exit 1
-            fi
-            ;;
-        *)
-            log_error "Unsupported OS: $OS. Install Zig manually from: https://ziglang.org/download/"
-            exit 1
-            ;;
-    esac
-
-    log_success "Zig installed"
-}
 
 # Check for beads
 check_beads() {
@@ -242,37 +206,98 @@ install_jq() {
     log_success "jq installed"
 }
 
-# Install noface itself
-install_noface() {
-    log_info "Installing noface..."
+# Download and install a prebuilt release
+install_from_release() {
+    local os_slug=""
+    local arch_slug=""
+    case "$OS" in
+        Darwin) os_slug="darwin" ;;
+        Linux) os_slug="linux" ;;
+        *)
+            log_error "Unsupported OS for prebuilt binaries: $OS"
+            return 1
+            ;;
+    esac
 
-    INSTALL_DIR="${HOME}/.local/bin"
+    case "$ARCH" in
+        x86_64|amd64) arch_slug="amd64" ;;
+        arm64|aarch64) arch_slug="arm64" ;;
+        *)
+            log_error "Unsupported architecture for prebuilt binaries: $ARCH"
+            return 1
+            ;;
+    esac
+
+    local asset="noface-${os_slug}-${arch_slug}.tar.gz"
+    local url="https://github.com/femtomc/noface/releases/download/v${VERSION}/${asset}"
+
+    log_info "Downloading noface v${VERSION} (${os_slug}-${arch_slug})..."
     mkdir -p "$INSTALL_DIR"
 
-    # Clone and build
-    TEMP_DIR=$(mktemp -d)
-    cd "$TEMP_DIR"
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
 
-    git clone --depth 1 https://github.com/femtomc/noface.git
-    cd noface
+    if ! curl -fL "$url" -o "$tmp/$asset"; then
+        log_warn "Failed to download release asset: $url"
+        return 1
+    fi
 
-    zig build -Doptimize=ReleaseFast
+    if ! tar -xzf "$tmp/$asset" -C "$tmp"; then
+        log_error "Failed to extract release archive"
+        return 1
+    fi
 
-    cp zig-out/bin/noface "$INSTALL_DIR/"
+    if [[ ! -f "$tmp/noface" ]]; then
+        # Try common packaging patterns
+        if [[ -f "$tmp/noface-${os_slug}-${arch_slug}/noface" ]]; then
+            cp "$tmp/noface-${os_slug}-${arch_slug}/noface" "$tmp/noface"
+        else
+            log_error "Extracted archive does not contain 'noface' binary"
+            return 1
+        fi
+    fi
 
-    # Clean up
-    cd /
-    rm -rf "$TEMP_DIR"
+    install -m 0755 "$tmp/noface" "$INSTALL_DIR/noface"
+    log_success "noface installed to $INSTALL_DIR/noface"
 
-    # Add to PATH if needed
     if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
         log_warn "Add $INSTALL_DIR to your PATH:"
         echo ""
         echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
         echo ""
     fi
+}
 
-    log_success "noface installed to $INSTALL_DIR/noface"
+# Optional: build from source (requires zig)
+install_from_source() {
+    log_info "Building noface from source (fallback)..."
+
+    if ! command -v zig &> /dev/null; then
+        log_error "zig is required to build from source. Install zig or use a prebuilt release."
+        exit 1
+    fi
+
+    mkdir -p "$INSTALL_DIR"
+
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+
+    git clone --depth 1 https://github.com/femtomc/noface.git "$tmp/noface"
+    cd "$tmp/noface"
+
+    zig build -Doptimize=ReleaseFast
+    install -m 0755 "zig-out/bin/noface" "$INSTALL_DIR/noface"
+
+    log_success "noface built and installed to $INSTALL_DIR/noface"
+
+    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+        log_warn "Add $INSTALL_DIR to your PATH:"
+        echo ""
+        echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        echo ""
+    fi
 }
 
 # Main installation flow
@@ -285,7 +310,6 @@ echo ""
 log_info "Checking dependencies..."
 echo ""
 
-check_zig || install_zig
 check_beads || install_beads
 check_claude || install_claude
 check_codex || install_codex
@@ -294,8 +318,16 @@ check_jq || install_jq
 
 echo ""
 
-# Install noface
-install_noface
+# Install noface (prefer release binary)
+if [[ "$BUILD_FROM_SOURCE" == "true" ]]; then
+    install_from_source
+else
+    if ! install_from_release; then
+        log_error "Failed to install prebuilt binary."
+        echo "Set BUILD_FROM_SOURCE=true to build locally (requires zig)."
+        exit 1
+    fi
+fi
 
 echo ""
 echo "============================================"

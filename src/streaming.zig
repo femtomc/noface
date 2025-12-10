@@ -28,6 +28,22 @@ pub const StreamEvent = struct {
     is_error: bool = false,
 };
 
+/// Free any allocated fields inside a StreamEvent
+pub fn deinitEvent(allocator: std.mem.Allocator, event: *StreamEvent) void {
+    if (event.text) |text| {
+        allocator.free(text);
+        event.text = null;
+    }
+    if (event.tool_name) |name| {
+        allocator.free(name);
+        event.tool_name = null;
+    }
+    if (event.result) |result_text| {
+        allocator.free(result_text);
+        event.result = null;
+    }
+}
+
 /// Parse a single JSON line from Claude's streaming output
 pub fn parseStreamLine(allocator: std.mem.Allocator, line: []const u8) !StreamEvent {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
