@@ -188,7 +188,7 @@ fn runInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
         break :blk "make test";
     };
 
-    var config_path = ".noface.toml";
+    const config_path = ".noface.toml";
     const config_exists = pathExists(config_path);
     if (config_exists and !force) {
         std.debug.print("Refusing to overwrite existing .noface.toml (use --force)\n", .{});

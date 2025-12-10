@@ -395,7 +395,7 @@ pub const AgentLoop = struct {
         var proc = try process.StreamingProcess.spawn(self.allocator, &argv);
 
         // Collect full response for final markdown rendering
-        var full_response: std.ArrayList(u8) = .empty;
+        var full_response = std.ArrayListUnmanaged(u8){};
         defer full_response.deinit(self.allocator);
 
         var line_buf: [64 * 1024]u8 = undefined;

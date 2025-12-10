@@ -28,10 +28,10 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !CommandResul
     try child.spawn();
 
     // Read all output BEFORE waiting (pipes close after wait)
-    var stdout_list: std.ArrayList(u8) = .empty;
+    var stdout_list = std.ArrayListUnmanaged(u8){};
     defer stdout_list.deinit(allocator);
 
-    var stderr_list: std.ArrayList(u8) = .empty;
+    var stderr_list = std.ArrayListUnmanaged(u8){};
     defer stderr_list.deinit(allocator);
 
     if (child.stdout) |stdout_file| {

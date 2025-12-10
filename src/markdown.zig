@@ -19,7 +19,7 @@ const Style = struct {
 
 /// Render markdown text to terminal with ANSI styling
 pub fn render(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-    var output: std.ArrayList(u8) = .empty;
+    var output = std.ArrayListUnmanaged(u8){};
 
     var lines = std.mem.splitScalar(u8, input, '\n');
     var in_code_block = false;
