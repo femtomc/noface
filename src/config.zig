@@ -3,6 +3,7 @@
 //! Supports loading from TOML files or using defaults.
 
 const std = @import("std");
+const monowiki = @import("monowiki.zig");
 
 /// Output format for agent sessions
 pub const OutputFormat = enum {
@@ -34,11 +35,11 @@ pub const Config = struct {
     /// Dry run mode - don't execute, just show what would happen
     dry_run: bool = false,
 
-    /// Enable scrum/grooming passes
-    enable_scrum: bool = true,
+    /// Enable planner passes (strategic planning from design docs)
+    enable_planner: bool = true,
 
-    /// Scrum pass interval (every N iterations)
-    scrum_interval: u32 = 5,
+    /// Planner pass interval (every N iterations)
+    planner_interval: u32 = 5,
 
     /// Enable code quality review passes
     enable_quality: bool = true,
@@ -63,8 +64,8 @@ pub const Config = struct {
     /// Custom implementation prompt template (null = use default)
     impl_prompt_template: ?[]const u8 = null,
 
-    /// Custom scrum prompt template (null = use default)
-    scrum_prompt_template: ?[]const u8 = null,
+    /// Custom planner prompt template (null = use default)
+    planner_prompt_template: ?[]const u8 = null,
 
     /// Custom quality prompt template (null = use default)
     quality_prompt_template: ?[]const u8 = null,
@@ -79,7 +80,11 @@ pub const Config = struct {
     progress_file: ?[]const u8 = null,
 
     /// Monowiki vault path for design documents (null = disabled)
+    /// Deprecated: Use monowiki_config instead
     monowiki_vault: ?[]const u8 = null,
+
+    /// Full monowiki configuration
+    monowiki_config: ?monowiki.MonowikiConfig = null,
 
     pub const IssueTracker = enum {
         beads,
@@ -159,10 +164,10 @@ pub const Config = struct {
                         try setOwnedString(allocator, &config.review_agent, &config.review_agent_owned, value);
                     }
                 } else if (std.mem.eql(u8, current_section.?, "passes")) {
-                    if (std.mem.eql(u8, key, "scrum_enabled")) {
-                        config.enable_scrum = std.mem.eql(u8, value, "true");
-                    } else if (std.mem.eql(u8, key, "scrum_interval")) {
-                        config.scrum_interval = std.fmt.parseInt(u32, value, 10) catch 5;
+                    if (std.mem.eql(u8, key, "planner_enabled")) {
+                        config.enable_planner = std.mem.eql(u8, value, "true");
+                    } else if (std.mem.eql(u8, key, "planner_interval")) {
+                        config.planner_interval = std.fmt.parseInt(u32, value, 10) catch 5;
                     } else if (std.mem.eql(u8, key, "quality_enabled")) {
                         config.enable_quality = std.mem.eql(u8, value, "true");
                     } else if (std.mem.eql(u8, key, "quality_interval")) {
@@ -177,6 +182,30 @@ pub const Config = struct {
                         }
                     } else if (std.mem.eql(u8, key, "sync_to_github")) {
                         config.sync_to_github = std.mem.eql(u8, value, "true");
+                    }
+                } else if (std.mem.eql(u8, current_section.?, "monowiki")) {
+                    // Initialize monowiki config if not yet done
+                    if (config.monowiki_config == null) {
+                        config.monowiki_config = .{ .vault = "" };
+                    }
+                    if (std.mem.eql(u8, key, "vault")) {
+                        config.monowiki_config.?.vault = try allocator.dupe(u8, value);
+                        // Also set legacy field for backwards compatibility
+                        config.monowiki_vault = config.monowiki_config.?.vault;
+                    } else if (std.mem.eql(u8, key, "proactive_search")) {
+                        config.monowiki_config.?.proactive_search = std.mem.eql(u8, value, "true");
+                    } else if (std.mem.eql(u8, key, "resolve_wikilinks")) {
+                        config.monowiki_config.?.resolve_wikilinks = std.mem.eql(u8, value, "true");
+                    } else if (std.mem.eql(u8, key, "expand_neighbors")) {
+                        config.monowiki_config.?.expand_neighbors = std.mem.eql(u8, value, "true");
+                    } else if (std.mem.eql(u8, key, "neighbor_depth")) {
+                        config.monowiki_config.?.neighbor_depth = std.fmt.parseInt(u8, value, 10) catch 1;
+                    } else if (std.mem.eql(u8, key, "api_docs_slug")) {
+                        config.monowiki_config.?.api_docs_slug = try allocator.dupe(u8, value);
+                    } else if (std.mem.eql(u8, key, "sync_api_docs")) {
+                        config.monowiki_config.?.sync_api_docs = std.mem.eql(u8, value, "true");
+                    } else if (std.mem.eql(u8, key, "max_context_docs")) {
+                        config.monowiki_config.?.max_context_docs = std.fmt.parseInt(u8, value, 10) catch 5;
                     }
                 }
             }
@@ -207,6 +236,15 @@ pub const Config = struct {
             allocator.free(self.review_agent);
             self.review_agent_owned = false;
         }
+        // Free monowiki config strings
+        if (self.monowiki_config) |*mwc| {
+            if (mwc.vault.len > 0) {
+                allocator.free(mwc.vault);
+            }
+            if (mwc.api_docs_slug) |slug| {
+                allocator.free(slug);
+            }
+        }
     }
 };
 
@@ -226,9 +264,9 @@ fn setOwnedString(
 
 test "default config" {
     const config = Config.default();
-    try std.testing.expectEqual(@as(u32, 5), config.scrum_interval);
+    try std.testing.expectEqual(@as(u32, 5), config.planner_interval);
     try std.testing.expectEqual(@as(u32, 10), config.quality_interval);
-    try std.testing.expect(config.enable_scrum);
+    try std.testing.expect(config.enable_planner);
 }
 
 test "parse toml" {
@@ -239,7 +277,7 @@ test "parse toml" {
         \\test = "zig build test"
         \\
         \\[passes]
-        \\scrum_interval = 3
+        \\planner_interval = 3
         \\quality_enabled = false
     ;
 
@@ -249,6 +287,36 @@ test "parse toml" {
     const config = try Config.parseToml(arena.allocator(), toml);
     try std.testing.expectEqualStrings("TestProject", config.project_name);
     try std.testing.expectEqualStrings("zig build", config.build_command);
-    try std.testing.expectEqual(@as(u32, 3), config.scrum_interval);
+    try std.testing.expectEqual(@as(u32, 3), config.planner_interval);
     try std.testing.expect(!config.enable_quality);
+}
+
+test "parse monowiki config" {
+    const toml =
+        \\[project]
+        \\name = "TestProject"
+        \\
+        \\[monowiki]
+        \\vault = "./docs"
+        \\proactive_search = true
+        \\resolve_wikilinks = true
+        \\expand_neighbors = false
+        \\api_docs_slug = "api-reference"
+        \\sync_api_docs = true
+        \\max_context_docs = 3
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expect(config.monowiki_config != null);
+    const mwc = config.monowiki_config.?;
+    try std.testing.expectEqualStrings("./docs", mwc.vault);
+    try std.testing.expect(mwc.proactive_search);
+    try std.testing.expect(mwc.resolve_wikilinks);
+    try std.testing.expect(!mwc.expand_neighbors);
+    try std.testing.expectEqualStrings("api-reference", mwc.api_docs_slug.?);
+    try std.testing.expect(mwc.sync_api_docs);
+    try std.testing.expectEqual(@as(u8, 3), mwc.max_context_docs);
 }

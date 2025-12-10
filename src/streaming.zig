@@ -22,6 +22,8 @@ pub const StreamEvent = struct {
     text: ?[]const u8 = null,
     /// For tool_use events, contains the tool name
     tool_name: ?[]const u8 = null,
+    /// For tool_use events, contains a summary of the tool input (e.g., file_path for Read/Edit)
+    tool_input_summary: ?[]const u8 = null,
     /// For result events, contains the final result
     result: ?[]const u8 = null,
     /// Whether this is an error
@@ -38,10 +40,71 @@ pub fn deinitEvent(allocator: std.mem.Allocator, event: *StreamEvent) void {
         allocator.free(name);
         event.tool_name = null;
     }
+    if (event.tool_input_summary) |summary| {
+        allocator.free(summary);
+        event.tool_input_summary = null;
+    }
     if (event.result) |result_text| {
         allocator.free(result_text);
         event.result = null;
     }
+}
+
+/// Extract a human-readable summary from tool input based on tool type
+fn extractToolSummary(allocator: std.mem.Allocator, tool_name: []const u8, input: std.json.ObjectMap) !?[]const u8 {
+    // Read, Edit, Write: show file_path
+    if (std.mem.eql(u8, tool_name, "Read") or
+        std.mem.eql(u8, tool_name, "Edit") or
+        std.mem.eql(u8, tool_name, "Write"))
+    {
+        if (input.get("file_path")) |fp| {
+            if (fp == .string) {
+                return try allocator.dupe(u8, fp.string);
+            }
+        }
+    }
+    // Bash: show command (truncated if long)
+    else if (std.mem.eql(u8, tool_name, "Bash")) {
+        if (input.get("command")) |cmd| {
+            if (cmd == .string) {
+                const max_len: usize = 60;
+                if (cmd.string.len <= max_len) {
+                    return try allocator.dupe(u8, cmd.string);
+                } else {
+                    // Truncate long commands
+                    const truncated = try allocator.alloc(u8, max_len + 3);
+                    @memcpy(truncated[0..max_len], cmd.string[0..max_len]);
+                    @memcpy(truncated[max_len..], "...");
+                    return truncated;
+                }
+            }
+        }
+    }
+    // Glob: show pattern
+    else if (std.mem.eql(u8, tool_name, "Glob")) {
+        if (input.get("pattern")) |pat| {
+            if (pat == .string) {
+                return try allocator.dupe(u8, pat.string);
+            }
+        }
+    }
+    // Grep: show pattern
+    else if (std.mem.eql(u8, tool_name, "Grep")) {
+        if (input.get("pattern")) |pat| {
+            if (pat == .string) {
+                return try allocator.dupe(u8, pat.string);
+            }
+        }
+    }
+    // Task: show description
+    else if (std.mem.eql(u8, tool_name, "Task")) {
+        if (input.get("description")) |desc| {
+            if (desc == .string) {
+                return try allocator.dupe(u8, desc.string);
+            }
+        }
+    }
+    return null;
 }
 
 /// Parse a single JSON line from Claude's streaming output
@@ -112,6 +175,13 @@ pub fn parseStreamLine(allocator: std.mem.Allocator, line: []const u8) !StreamEv
                                     if (first.object.get("name")) |name| {
                                         if (name == .string) {
                                             event.tool_name = try allocator.dupe(u8, name.string);
+
+                                            // Extract tool input summary based on tool type
+                                            if (first.object.get("input")) |input| {
+                                                if (input == .object) {
+                                                    event.tool_input_summary = try extractToolSummary(allocator, name.string, input.object);
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -149,7 +219,11 @@ pub fn printTextDelta(event: StreamEvent) void {
         _ = std.fs.File.stdout().write(text) catch {};
     }
     if (event.tool_name) |name| {
-        std.debug.print("\n\x1b[0;36m[TOOL]\x1b[0m {s}\n", .{name});
+        if (event.tool_input_summary) |summary| {
+            std.debug.print("\n\x1b[0;36m[TOOL]\x1b[0m {s}: {s}\n", .{ name, summary });
+        } else {
+            std.debug.print("\n\x1b[0;36m[TOOL]\x1b[0m {s}\n", .{name});
+        }
     }
 }
 
@@ -177,4 +251,32 @@ test "parse tool use" {
     const event = try parseStreamLine(arena.allocator(), json);
     try std.testing.expectEqual(EventType.assistant, event.event_type);
     try std.testing.expectEqualStrings("Bash", event.tool_name.?);
+}
+
+test "parse tool use with input" {
+    const json =
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","id":"123","input":{"file_path":"/src/main.zig"}}]}}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const event = try parseStreamLine(arena.allocator(), json);
+    try std.testing.expectEqual(EventType.assistant, event.event_type);
+    try std.testing.expectEqualStrings("Read", event.tool_name.?);
+    try std.testing.expectEqualStrings("/src/main.zig", event.tool_input_summary.?);
+}
+
+test "parse bash tool with command" {
+    const json =
+        \\{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","id":"456","input":{"command":"zig build test"}}]}}
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const event = try parseStreamLine(arena.allocator(), json);
+    try std.testing.expectEqual(EventType.assistant, event.event_type);
+    try std.testing.expectEqualStrings("Bash", event.tool_name.?);
+    try std.testing.expectEqualStrings("zig build test", event.tool_input_summary.?);
 }

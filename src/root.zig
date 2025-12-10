@@ -11,10 +11,13 @@ pub const process = @import("process.zig");
 pub const loop = @import("loop.zig");
 pub const signals = @import("signals.zig");
 pub const markdown = @import("markdown.zig");
+pub const monowiki = @import("monowiki.zig");
 
 pub const Config = config.Config;
 pub const OutputFormat = config.OutputFormat;
 pub const AgentLoop = loop.AgentLoop;
+pub const MonowikiConfig = monowiki.MonowikiConfig;
+pub const Monowiki = monowiki.Monowiki;
 
 test {
     std.testing.refAllDecls(@This());

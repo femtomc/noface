@@ -4,6 +4,7 @@ const noface = @import("noface");
 const Config = noface.Config;
 const AgentLoop = noface.AgentLoop;
 const process = noface.process;
+const MonowikiConfig = noface.MonowikiConfig;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -19,8 +20,8 @@ pub fn main() !void {
         return;
     }
 
-    // Parse command line arguments
-    var config = Config.default();
+    // Load config from .noface.toml (or use defaults)
+    var config = Config.loadOrDefault(allocator);
     defer config.deinit(allocator);
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -50,18 +51,18 @@ pub fn main() !void {
             config.specific_issue = args[i];
         } else if (std.mem.eql(u8, arg, "--dry-run")) {
             config.dry_run = true;
-        } else if (std.mem.eql(u8, arg, "--no-scrum")) {
-            config.enable_scrum = false;
+        } else if (std.mem.eql(u8, arg, "--no-planner")) {
+            config.enable_planner = false;
         } else if (std.mem.eql(u8, arg, "--no-quality")) {
             config.enable_quality = false;
-        } else if (std.mem.eql(u8, arg, "--scrum-interval")) {
+        } else if (std.mem.eql(u8, arg, "--planner-interval")) {
             i += 1;
             if (i >= args.len) {
-                std.debug.print("Error: --scrum-interval requires a value\n", .{});
+                std.debug.print("Error: --planner-interval requires a value\n", .{});
                 return error.InvalidArgument;
             }
-            config.scrum_interval = std.fmt.parseInt(u32, args[i], 10) catch {
-                std.debug.print("Error: invalid number for --scrum-interval\n", .{});
+            config.planner_interval = std.fmt.parseInt(u32, args[i], 10) catch {
+                std.debug.print("Error: invalid number for --planner-interval\n", .{});
                 return error.InvalidArgument;
             };
         } else if (std.mem.eql(u8, arg, "--quality-interval")) {
@@ -98,7 +99,37 @@ pub fn main() !void {
                 std.debug.print("Error: --monowiki-vault requires a path\n", .{});
                 return error.InvalidArgument;
             }
-            config.monowiki_vault = args[i];
+            // Initialize monowiki config if not already set
+            if (config.monowiki_config == null) {
+                config.monowiki_config = .{ .vault = args[i] };
+            } else {
+                config.monowiki_config.?.vault = args[i];
+            }
+            config.monowiki_vault = args[i]; // Legacy field
+        } else if (std.mem.eql(u8, arg, "--monowiki-api-docs")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: --monowiki-api-docs requires a slug\n", .{});
+                return error.InvalidArgument;
+            }
+            if (config.monowiki_config == null) {
+                std.debug.print("Error: --monowiki-api-docs requires --monowiki-vault to be set first\n", .{});
+                return error.InvalidArgument;
+            }
+            config.monowiki_config.?.api_docs_slug = args[i];
+            config.monowiki_config.?.sync_api_docs = true;
+        } else if (std.mem.eql(u8, arg, "--no-monowiki-search")) {
+            if (config.monowiki_config) |*mwc| {
+                mwc.proactive_search = false;
+            }
+        } else if (std.mem.eql(u8, arg, "--no-monowiki-wikilinks")) {
+            if (config.monowiki_config) |*mwc| {
+                mwc.resolve_wikilinks = false;
+            }
+        } else if (std.mem.eql(u8, arg, "--monowiki-expand-neighbors")) {
+            if (config.monowiki_config) |*mwc| {
+                mwc.expand_neighbors = true;
+            }
         } else if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             i += 1;
             if (i >= args.len) {
@@ -134,9 +165,9 @@ fn printUsage() void {
         \\  --max-iterations N      Stop after N iterations (default: unlimited)
         \\  --issue ISSUE_ID        Work on specific issue
         \\  --dry-run               Show what would be done without executing
-        \\  --no-scrum              Disable scrum passes
+        \\  --no-planner            Disable planner passes
         \\  --no-quality            Disable quality review passes
-        \\  --scrum-interval N      Run scrum every N iterations (default: 5)
+        \\  --planner-interval N    Run planner every N iterations (default: 5)
         \\  --quality-interval N    Run quality review every N iterations (default: 10)
         \\
         \\Output options:
@@ -145,8 +176,12 @@ fn printUsage() void {
         \\  --log-dir PATH          Directory to store JSON session logs (default: /tmp)
         \\  --progress-file PATH    Path to progress markdown file to update
         \\
-        \\Integrations:
-        \\  --monowiki-vault PATH   Path to monowiki vault for design documents
+        \\Monowiki integration:
+        \\  --monowiki-vault PATH       Path to monowiki vault for design documents
+        \\  --monowiki-api-docs SLUG    Slug for API docs (enables bidirectional sync)
+        \\  --no-monowiki-search        Disable proactive keyword search
+        \\  --no-monowiki-wikilinks     Disable [[wikilink]] resolution
+        \\  --monowiki-expand-neighbors Include graph neighbors in context
         \\
         \\Commands:
         \\  init [--force]          Create .noface.toml and initialize beads (if available)
@@ -208,14 +243,24 @@ fn runInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
         \\reviewer = "codex"
         \\
         \\[passes]
-        \\scrum_enabled = true
+        \\planner_enabled = true
         \\quality_enabled = true
-        \\scrum_interval = 5
+        \\planner_interval = 5
         \\quality_interval = 10
         \\
         \\[tracker]
         \\type = "beads"          # or "github"
         \\sync_to_github = true
+        \\
+        \\# Uncomment to enable monowiki integration for design documents
+        \\# [monowiki]
+        \\# vault = "./docs"                # Path to monowiki vault
+        \\# proactive_search = true         # Search for relevant docs before implementation
+        \\# resolve_wikilinks = true        # Fetch [[wikilinked]] docs from issues
+        \\# expand_neighbors = false        # Also fetch graph neighbors
+        \\# api_docs_slug = "api-reference" # Slug for API documentation
+        \\# sync_api_docs = false           # Enable bidirectional API doc sync
+        \\# max_context_docs = 5            # Max docs to inject into prompt
         \\
     , .{ project_name, build_cmd, test_cmd });
     defer allocator.free(template);
