@@ -518,14 +518,16 @@ pub const OrchestratorState = struct {
                             const worker_id: u32 = if (parseJsonInt(val_json, "\"worker_id\"")) |v| @intCast(v) else 0;
                             const acquired_at: i64 = parseJsonInt(val_json, "\"acquired_at\"") orelse 0;
 
+                            // Use single allocation for both HashMap key and lock.file
+                            const owned_file = try self.allocator.dupe(u8, file_path);
+
                             const lock = LockEntry{
-                                .file = try self.allocator.dupe(u8, file_path),
+                                .file = owned_file,
                                 .issue_id = issue_id,
                                 .worker_id = worker_id,
                                 .acquired_at = acquired_at,
                             };
 
-                            const owned_file = try self.allocator.dupe(u8, file_path);
                             try self.locks.put(owned_file, lock);
 
                             i = val_end + 1;
@@ -552,10 +554,18 @@ pub const OrchestratorState = struct {
             }
         }
 
-        // Acquire all locks
+        // Acquire all locks (skip files already locked by this issue)
         const now = std.time.timestamp();
         for (manifest.primary_files) |file| {
             const base_file = extractBaseFile(file);
+
+            // Skip if already locked by this issue
+            if (self.locks.get(base_file)) |existing| {
+                if (std.mem.eql(u8, existing.issue_id, issue_id)) {
+                    continue;
+                }
+            }
+
             const owned_file = try self.allocator.dupe(u8, base_file);
             const owned_issue = try self.allocator.dupe(u8, issue_id);
 
@@ -585,8 +595,9 @@ pub const OrchestratorState = struct {
         for (to_remove.items) |key| {
             if (self.locks.fetchRemove(key)) |kv| {
                 var lock = kv.value;
+                // Note: lock.file and kv.key point to the same memory,
+                // so deinit frees both the file path and issue_id
                 lock.deinit(self.allocator);
-                self.allocator.free(kv.key);
             }
         }
     }
@@ -609,8 +620,9 @@ pub const OrchestratorState = struct {
         for (to_remove.items) |key| {
             if (self.locks.fetchRemove(key)) |kv| {
                 var lock = kv.value;
+                // Note: lock.file and kv.key point to the same memory,
+                // so deinit frees both the file path and issue_id
                 lock.deinit(self.allocator);
-                self.allocator.free(kv.key);
                 removed += 1;
             }
         }
@@ -1120,4 +1132,180 @@ test "get pending batch count" {
 
     // Now pending count should be 0
     try std.testing.expectEqual(@as(usize, 0), state.getPendingBatchCount());
+}
+
+test "tryAcquireLocks acquires locks for manifest files" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Create a manifest with primary files
+    var primary = try std.testing.allocator.alloc([]const u8, 2);
+    primary[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
+    primary[1] = try std.testing.allocator.dupe(u8, "src/bar.zig");
+    const manifest = Manifest{ .primary_files = primary };
+
+    // Store manifest for cleanup
+    try state.setManifest("issue-1", manifest);
+
+    // Acquire locks for issue-1
+    const acquired = try state.tryAcquireLocks("issue-1", manifest, 0);
+    try std.testing.expect(acquired);
+
+    // Verify locks were created
+    try std.testing.expectEqual(@as(usize, 2), state.locks.count());
+    try std.testing.expect(state.locks.contains("src/foo.zig"));
+    try std.testing.expect(state.locks.contains("src/bar.zig"));
+
+    // Verify lock details
+    const lock = state.locks.get("src/foo.zig").?;
+    try std.testing.expect(std.mem.eql(u8, lock.issue_id, "issue-1"));
+    try std.testing.expectEqual(@as(u32, 0), lock.worker_id);
+}
+
+test "tryAcquireLocks fails when files locked by another issue" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Create manifests for two issues that conflict
+    var primary1 = try std.testing.allocator.alloc([]const u8, 1);
+    primary1[0] = try std.testing.allocator.dupe(u8, "src/shared.zig");
+    const manifest1 = Manifest{ .primary_files = primary1 };
+    try state.setManifest("issue-1", manifest1);
+
+    var primary2 = try std.testing.allocator.alloc([]const u8, 1);
+    primary2[0] = try std.testing.allocator.dupe(u8, "src/shared.zig");
+    const manifest2 = Manifest{ .primary_files = primary2 };
+    try state.setManifest("issue-2", manifest2);
+
+    // First issue acquires locks successfully
+    const acquired1 = try state.tryAcquireLocks("issue-1", manifest1, 0);
+    try std.testing.expect(acquired1);
+
+    // Second issue fails to acquire locks (file already locked)
+    const acquired2 = try state.tryAcquireLocks("issue-2", manifest2, 1);
+    try std.testing.expect(!acquired2);
+}
+
+test "tryAcquireLocks allows same issue to re-acquire its locks" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    var primary = try std.testing.allocator.alloc([]const u8, 1);
+    primary[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
+    const manifest = Manifest{ .primary_files = primary };
+    try state.setManifest("issue-1", manifest);
+
+    // Acquire locks
+    const acquired1 = try state.tryAcquireLocks("issue-1", manifest, 0);
+    try std.testing.expect(acquired1);
+
+    // Same issue can re-acquire (idempotent)
+    const acquired2 = try state.tryAcquireLocks("issue-1", manifest, 0);
+    try std.testing.expect(acquired2);
+}
+
+test "releaseLocks removes all locks for an issue" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    var primary = try std.testing.allocator.alloc([]const u8, 2);
+    primary[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
+    primary[1] = try std.testing.allocator.dupe(u8, "src/bar.zig");
+    const manifest = Manifest{ .primary_files = primary };
+    try state.setManifest("issue-1", manifest);
+
+    // Acquire locks
+    _ = try state.tryAcquireLocks("issue-1", manifest, 0);
+    try std.testing.expectEqual(@as(usize, 2), state.locks.count());
+
+    // Release locks
+    state.releaseLocks("issue-1");
+    try std.testing.expectEqual(@as(usize, 0), state.locks.count());
+}
+
+test "releaseLocks only removes locks for specified issue" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Two issues with different files
+    var primary1 = try std.testing.allocator.alloc([]const u8, 1);
+    primary1[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
+    const manifest1 = Manifest{ .primary_files = primary1 };
+    try state.setManifest("issue-1", manifest1);
+
+    var primary2 = try std.testing.allocator.alloc([]const u8, 1);
+    primary2[0] = try std.testing.allocator.dupe(u8, "src/bar.zig");
+    const manifest2 = Manifest{ .primary_files = primary2 };
+    try state.setManifest("issue-2", manifest2);
+
+    // Both acquire locks
+    _ = try state.tryAcquireLocks("issue-1", manifest1, 0);
+    _ = try state.tryAcquireLocks("issue-2", manifest2, 1);
+    try std.testing.expectEqual(@as(usize, 2), state.locks.count());
+
+    // Release only issue-1's locks
+    state.releaseLocks("issue-1");
+    try std.testing.expectEqual(@as(usize, 1), state.locks.count());
+    try std.testing.expect(!state.locks.contains("src/foo.zig"));
+    try std.testing.expect(state.locks.contains("src/bar.zig"));
+}
+
+test "cleanupStaleLocks removes old locks" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Manually add a stale lock (very old timestamp)
+    const file = try std.testing.allocator.dupe(u8, "src/stale.zig");
+    const issue = try std.testing.allocator.dupe(u8, "issue-old");
+    try state.locks.put(file, .{
+        .file = file,
+        .issue_id = issue,
+        .worker_id = 0,
+        .acquired_at = 0, // Very old timestamp (epoch)
+    });
+
+    try std.testing.expectEqual(@as(usize, 1), state.locks.count());
+
+    // Cleanup locks older than 1 second
+    const removed = state.cleanupStaleLocks(1);
+    try std.testing.expectEqual(@as(u32, 1), removed);
+    try std.testing.expectEqual(@as(usize, 0), state.locks.count());
+}
+
+test "cleanupStaleLocks preserves fresh locks" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    var primary = try std.testing.allocator.alloc([]const u8, 1);
+    primary[0] = try std.testing.allocator.dupe(u8, "src/fresh.zig");
+    const manifest = Manifest{ .primary_files = primary };
+    try state.setManifest("issue-1", manifest);
+
+    // Acquire fresh locks (timestamp will be now)
+    _ = try state.tryAcquireLocks("issue-1", manifest, 0);
+    try std.testing.expectEqual(@as(usize, 1), state.locks.count());
+
+    // Cleanup locks older than 1 hour - should not remove fresh lock
+    const removed = state.cleanupStaleLocks(3600);
+    try std.testing.expectEqual(@as(u32, 0), removed);
+    try std.testing.expectEqual(@as(usize, 1), state.locks.count());
+}
+
+test "tryAcquireLocks handles file spec with line ranges" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Manifest with line range format
+    var primary = try std.testing.allocator.alloc([]const u8, 1);
+    primary[0] = try std.testing.allocator.dupe(u8, "src/foo.zig:100-200");
+    const manifest = Manifest{ .primary_files = primary };
+    try state.setManifest("issue-1", manifest);
+
+    // Acquire locks - should extract base file
+    const acquired = try state.tryAcquireLocks("issue-1", manifest, 0);
+    try std.testing.expect(acquired);
+
+    // Lock should be on base file, not the spec with line range
+    try std.testing.expect(state.locks.contains("src/foo.zig"));
+    try std.testing.expect(!state.locks.contains("src/foo.zig:100-200"));
 }
