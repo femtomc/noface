@@ -164,6 +164,8 @@ pub fn main() !void {
                 return error.InvalidArgument;
             }
             config.planner_directions = args[i];
+        } else if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-V")) {
+            config.verbose = true;
         } else if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             i += 1;
             if (i >= args.len) {
@@ -205,6 +207,7 @@ fn printUsage() void {
         \\  --planner-directions S  Give directions to the planner (e.g., "prioritize issue X")
         \\  --quality-interval N    Run quality review every N iterations (default: 10)
         \\  --agent-timeout N       Kill agent if no output for N seconds (default: 300, must be >0)
+        \\  -V, --verbose           Enable detailed logging (commands, timings, prompts, API responses)
         \\
         \\Output options:
         \\  --stream-json           Output raw JSON streaming (for programmatic use)

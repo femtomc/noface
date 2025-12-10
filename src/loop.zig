@@ -127,6 +127,16 @@ pub const AgentLoop = struct {
         self.logInfo("Starting noface agent loop", .{});
         self.logInfo("Project: {s}", .{self.config.project_name});
 
+        if (self.config.verbose) {
+            self.logVerbose("Verbose mode enabled", .{});
+            self.logVerbose("Implementation agent: {s}", .{self.config.impl_agent});
+            self.logVerbose("Review agent: {s}", .{self.config.review_agent});
+            self.logVerbose("Build command: {s}", .{self.config.build_command});
+            self.logVerbose("Test command: {s}", .{self.config.test_command});
+            self.logVerbose("Agent timeout: {d} seconds", .{self.config.agent_timeout_seconds});
+            self.logVerbose("Num workers: {d}", .{self.config.num_workers});
+        }
+
         if (self.config.max_iterations > 0) {
             self.logInfo("Max iterations: {d}", .{self.config.max_iterations});
         } else {
@@ -234,8 +244,12 @@ pub const AgentLoop = struct {
         // Verify build works
         if (!self.config.dry_run) {
             self.logInfo("Running build: {s}", .{self.config.build_command});
+            self.logVerbose("Executing: {s}", .{self.config.build_command});
+            const build_start = std.time.nanoTimestamp();
             var result = try process.shell(self.allocator, self.config.build_command);
             defer result.deinit();
+            const build_elapsed = @as(u64, @intCast(std.time.nanoTimestamp() - build_start));
+            self.logVerboseTiming("Build command", build_elapsed);
 
             if (!result.success()) {
                 self.logError("Project doesn't build. Fix build errors first.", .{});
@@ -416,6 +430,9 @@ pub const AgentLoop = struct {
         // Build implementation prompt (includes monowiki context if available)
         const prompt = try self.buildImplementationPrompt(issue_id);
         defer self.allocator.free(prompt);
+
+        // Log truncated prompt in verbose mode
+        self.logVerbosePrompt("Implementation prompt", prompt);
 
         // Capture baseline of changed files before agent runs
         // This allows us to distinguish pre-existing changes from agent-made changes
@@ -777,8 +794,12 @@ pub const AgentLoop = struct {
             return true;
         }
 
+        const planner_start = std.time.nanoTimestamp();
+
         const prompt = try self.buildPlannerPrompt();
         defer self.allocator.free(prompt);
+
+        self.logVerbosePrompt("Planner prompt", prompt);
 
         // Retry logic for transient failures
         const retry_config = RetryConfig{};
@@ -799,6 +820,8 @@ pub const AgentLoop = struct {
             last_exit_code = try self.runCodexExec(prompt);
 
             if (last_exit_code == 0) {
+                const planner_elapsed = @as(u64, @intCast(std.time.nanoTimestamp() - planner_start));
+                self.logVerboseTiming("Planner pass", planner_elapsed);
                 self.logSuccess("Planner pass completed", .{});
 
                 // Load manifests from beads comments into state
@@ -1260,8 +1283,12 @@ pub const AgentLoop = struct {
             return true;
         }
 
+        const quality_start = std.time.nanoTimestamp();
+
         const prompt = try self.buildQualityPrompt();
         defer self.allocator.free(prompt);
+
+        self.logVerbosePrompt("Quality review prompt", prompt);
 
         // Retry logic for transient failures
         const retry_config = RetryConfig{};
@@ -1282,6 +1309,8 @@ pub const AgentLoop = struct {
             last_exit_code = try self.runCodexExec(prompt);
 
             if (last_exit_code == 0) {
+                const quality_elapsed = @as(u64, @intCast(std.time.nanoTimestamp() - quality_start));
+                self.logVerboseTiming("Quality review pass", quality_elapsed);
                 self.logSuccess("Code quality review completed", .{});
                 return true;
             }
@@ -1659,6 +1688,11 @@ pub const AgentLoop = struct {
             prompt,
         };
 
+        // Log command in verbose mode
+        self.logVerbose("Executing agent command: {s} -p --dangerously-skip-permissions --verbose --output-format stream-json --include-partial-messages <prompt>", .{agent});
+
+        const agent_start = std.time.nanoTimestamp();
+
         // Open transcript database
         var transcript_db = transcript_mod.TranscriptDb.open(self.allocator) catch |err| {
             self.logWarn("Failed to open transcript DB: {}, continuing without logging", .{err});
@@ -1782,6 +1816,11 @@ pub const AgentLoop = struct {
         }
 
         self.logInfo("Transcript saved to .noface/transcripts.db (session: {s})", .{session_id});
+
+        // Log timing and response summary in verbose mode
+        const agent_elapsed = @as(u64, @intCast(std.time.nanoTimestamp() - agent_start));
+        self.logVerboseTiming("Agent session", agent_elapsed);
+        self.logVerbose("Agent exit code: {d}, response length: {d} bytes", .{ exit_code, full_response.items.len });
 
         return exit_code;
     }
@@ -2196,6 +2235,37 @@ pub const AgentLoop = struct {
         _ = self;
         std.debug.print(Color.red ++ "[ERROR]" ++ Color.reset ++ " " ++ fmt ++ "\n", args);
     }
+
+    /// Log verbose output (only when --verbose is enabled)
+    fn logVerbose(self: *AgentLoop, comptime fmt: []const u8, args: anytype) void {
+        if (self.config.verbose) {
+            std.debug.print(Color.cyan ++ "[VERBOSE]" ++ Color.reset ++ " " ++ fmt ++ "\n", args);
+        }
+    }
+
+    /// Log verbose timing information
+    fn logVerboseTiming(self: *AgentLoop, label: []const u8, elapsed_ns: u64) void {
+        if (self.config.verbose) {
+            const elapsed_ms = elapsed_ns / std.time.ns_per_ms;
+            std.debug.print(Color.cyan ++ "[VERBOSE]" ++ Color.reset ++ " {s}: {d}ms\n", .{ label, elapsed_ms });
+        }
+    }
+
+    /// Log truncated prompt in verbose mode
+    fn logVerbosePrompt(self: *AgentLoop, label: []const u8, prompt: []const u8) void {
+        if (self.config.verbose) {
+            const max_len: usize = 500;
+            const truncated = prompt.len > max_len;
+            const display_len = if (truncated) max_len else prompt.len;
+            std.debug.print(Color.cyan ++ "[VERBOSE]" ++ Color.reset ++ " {s} ({d} chars):\n", .{ label, prompt.len });
+            std.debug.print("  {s}", .{prompt[0..display_len]});
+            if (truncated) {
+                std.debug.print("... (truncated)\n", .{});
+            } else {
+                std.debug.print("\n", .{});
+            }
+        }
+    }
 };
 
 test "agent loop init" {
@@ -2204,6 +2274,16 @@ test "agent loop init" {
     defer loop.deinit();
 
     try std.testing.expectEqual(@as(u32, 0), loop.iteration);
+}
+
+test "agent loop verbose mode" {
+    var cfg = Config.default();
+    cfg.verbose = true;
+
+    var loop = AgentLoop.init(std.testing.allocator, cfg);
+    defer loop.deinit();
+
+    try std.testing.expect(loop.config.verbose);
 }
 
 test "retry config defaults" {

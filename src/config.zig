@@ -168,6 +168,9 @@ pub const Config = struct {
     /// User directions for the planner (e.g., "prioritize issue X", "focus on Y")
     planner_directions: ?[]const u8 = null,
 
+    /// Verbose mode - show detailed logging (commands, timings, prompts, API responses)
+    verbose: bool = false,
+
     pub const IssueTracker = enum {
         beads,
         github,
@@ -264,6 +267,8 @@ pub const Config = struct {
                             continue;
                         }
                         config.num_workers = num;
+                    } else if (std.mem.eql(u8, key, "verbose")) {
+                        config.verbose = std.mem.eql(u8, value, "true");
                     }
                 } else if (std.mem.eql(u8, current_section.?, "passes")) {
                     if (std.mem.eql(u8, key, "planner_enabled")) {
@@ -481,4 +486,22 @@ test "parse monowiki config" {
     try std.testing.expectEqualStrings("api-reference", mwc.api_docs_slug.?);
     try std.testing.expect(mwc.sync_api_docs);
     try std.testing.expectEqual(@as(u8, 3), mwc.max_context_docs);
+}
+
+test "parse verbose config" {
+    const toml =
+        \\[agents]
+        \\verbose = true
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expect(config.verbose);
+}
+
+test "default verbose is false" {
+    const config = Config.default();
+    try std.testing.expect(!config.verbose);
 }
