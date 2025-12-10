@@ -54,10 +54,12 @@ pub const Manifest = struct {
 };
 
 /// Attempt record for tracking failed attempts
+pub const AttemptResult = enum { success, failed, timeout, violation };
+
 pub const AttemptRecord = struct {
     attempt_number: u32,
     timestamp: i64,
-    result: enum { success, failed, timeout, violation },
+    result: AttemptResult,
     files_touched: []const []const u8 = &.{},
     notes: []const u8 = "",
 
@@ -649,7 +651,7 @@ pub const OrchestratorState = struct {
     }
 
     /// Record an attempt on an issue
-    pub fn recordAttempt(self: *OrchestratorState, issue_id: []const u8, result: AttemptRecord.result, notes: []const u8) !void {
+    pub fn recordAttempt(self: *OrchestratorState, issue_id: []const u8, result: AttemptResult, notes: []const u8) !void {
         if (self.issues.getPtr(issue_id)) |issue| {
             issue.attempt_count += 1;
 

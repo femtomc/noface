@@ -366,11 +366,18 @@ pub const AgentLoop = struct {
         );
         defer self.allocator.free(json_log_path);
 
+        // Capture baseline of changed files before agent runs
+        // This allows us to distinguish pre-existing changes from agent-made changes
+        const baseline = try self.captureChangedFilesBaseline();
+        defer self.freeBaseline(baseline);
+
         // Run Claude with streaming and retry logic
         self.logInfo("Starting {s} session (streaming)...", .{self.config.impl_agent});
         const retry_config = RetryConfig{};
         var attempt: u8 = 0;
         var last_exit_code: u8 = 0;
+        var last_violation: ?ManifestComplianceResult = null;
+        defer if (last_violation) |*v| v.deinit(self.allocator);
 
         while (attempt < retry_config.max_attempts) : (attempt += 1) {
             if (attempt > 0) {
@@ -383,7 +390,16 @@ pub const AgentLoop = struct {
                 sleepMs(delay_ms);
             }
 
-            last_exit_code = try self.runAgentStreaming(self.config.impl_agent, prompt, json_log_path);
+            // Use stricter prompt if previous attempt had manifest violation
+            const effective_prompt = if (last_violation) |v| blk: {
+                const stricter = self.buildStricterPrompt(issue_id, v) catch prompt;
+                break :blk stricter;
+            } else prompt;
+            defer if (last_violation != null and effective_prompt.ptr != prompt.ptr) {
+                self.allocator.free(effective_prompt);
+            };
+
+            last_exit_code = try self.runAgentStreaming(self.config.impl_agent, effective_prompt, json_log_path);
 
             // Check if we were interrupted
             if (self.isInterrupted()) {
@@ -393,12 +409,70 @@ pub const AgentLoop = struct {
                 return false;
             }
 
-            // Success - break out of retry loop
-            if (last_exit_code == 0) {
-                break;
+            // Check manifest compliance regardless of agent exit code
+            // (failed agents might still have modified forbidden files)
+            self.logInfo("Checking manifest compliance...", .{});
+            var compliance = try self.verifyManifestCompliance(issue_id, baseline);
+
+            if (!compliance.compliant) {
+                // Manifest violation detected
+                self.logError("Manifest violation detected!", .{});
+
+                if (compliance.forbidden_files_touched.len > 0) {
+                    self.logError("Forbidden files touched: {d}", .{compliance.forbidden_files_touched.len});
+                    for (compliance.forbidden_files_touched) |f| {
+                        self.logError("  - {s}", .{f});
+                    }
+                }
+                if (compliance.unauthorized_files.len > 0) {
+                    self.logError("Unauthorized files modified: {d}", .{compliance.unauthorized_files.len});
+                    for (compliance.unauthorized_files) |f| {
+                        self.logError("  - {s}", .{f});
+                    }
+                }
+
+                // Record violation in state
+                if (self.state) |*s| {
+                    // Build violation notes
+                    var notes_buf: [1024]u8 = undefined;
+                    const notes = std.fmt.bufPrint(&notes_buf, "Manifest violation: {d} forbidden, {d} unauthorized files", .{
+                        compliance.forbidden_files_touched.len,
+                        compliance.unauthorized_files.len,
+                    }) catch "Manifest violation";
+
+                    s.recordAttempt(issue_id, .violation, notes) catch {};
+                }
+
+                // Rollback only the violating files (preserve pre-existing changes)
+                try self.rollbackViolatingFiles(compliance);
+
+                // Save violation for stricter prompt on retry
+                if (last_violation) |*v| v.deinit(self.allocator);
+                last_violation = compliance;
+
+                // Set exit code to indicate violation (for retry logic)
+                last_exit_code = EXIT_CODE_MANIFEST_VIOLATION;
+
+                // Check if we should retry
+                if (attempt + 1 < retry_config.max_attempts) {
+                    self.logWarn("Will retry with stricter prompt", .{});
+                    continue;
+                } else {
+                    self.logError("Max retries exceeded after manifest violations", .{});
+                    break;
+                }
+            } else {
+                // Compliant - clean up compliance result
+                compliance.deinit(self.allocator);
+
+                // If agent succeeded, we're done
+                if (last_exit_code == 0) {
+                    self.logSuccess("Manifest compliance verified", .{});
+                    break;
+                }
             }
 
-            // Check if we should retry
+            // Check if we should retry (agent failed but no manifest violation)
             if (!shouldRetry(last_exit_code) or attempt + 1 >= retry_config.max_attempts) {
                 break;
             }
@@ -1031,6 +1105,330 @@ pub const AgentLoop = struct {
     /// Special exit code indicating agent timeout
     pub const EXIT_CODE_TIMEOUT: u8 = 124; // Same as GNU timeout
 
+    /// Special exit code indicating manifest violation
+    pub const EXIT_CODE_MANIFEST_VIOLATION: u8 = 125;
+
+    /// Result of manifest compliance check
+    pub const ManifestComplianceResult = struct {
+        compliant: bool,
+        unauthorized_files: []const []const u8 = &.{},
+        forbidden_files_touched: []const []const u8 = &.{},
+
+        pub fn deinit(self: *ManifestComplianceResult, allocator: std.mem.Allocator) void {
+            for (self.unauthorized_files) |f| allocator.free(f);
+            if (self.unauthorized_files.len > 0) allocator.free(self.unauthorized_files);
+            for (self.forbidden_files_touched) |f| allocator.free(f);
+            if (self.forbidden_files_touched.len > 0) allocator.free(self.forbidden_files_touched);
+        }
+    };
+
+    /// Capture baseline of changed files before agent runs
+    /// Returns list of file paths that were already modified or untracked
+    fn captureChangedFilesBaseline(self: *AgentLoop) ![]const []const u8 {
+        var baseline = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (baseline.items) |f| self.allocator.free(f);
+            baseline.deinit(self.allocator);
+        }
+
+        // Helper to check if already in baseline
+        const isInBaseline = struct {
+            fn check(bl: []const []const u8, file: []const u8) bool {
+                for (bl) |b| {
+                    if (std.mem.eql(u8, b, file)) return true;
+                }
+                return false;
+            }
+        }.check;
+
+        // Get unstaged changes
+        var diff_result = try process.shell(self.allocator, "git diff --name-only HEAD");
+        defer diff_result.deinit();
+
+        if (diff_result.success()) {
+            var lines = std.mem.tokenizeScalar(u8, diff_result.stdout, '\n');
+            while (lines.next()) |file| {
+                const trimmed = std.mem.trim(u8, file, " \t\r");
+                if (trimmed.len > 0) {
+                    try baseline.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                }
+            }
+        }
+
+        // Get staged changes
+        var staged_result = try process.shell(self.allocator, "git diff --name-only --cached");
+        defer staged_result.deinit();
+
+        if (staged_result.success()) {
+            var lines = std.mem.tokenizeScalar(u8, staged_result.stdout, '\n');
+            while (lines.next()) |file| {
+                const trimmed = std.mem.trim(u8, file, " \t\r");
+                if (trimmed.len == 0) continue;
+                // Avoid duplicates
+                if (!isInBaseline(baseline.items, trimmed)) {
+                    try baseline.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                }
+            }
+        }
+
+        // Get untracked files (so we can distinguish pre-existing from agent-created)
+        var untracked_result = try process.shell(self.allocator, "git ls-files --others --exclude-standard");
+        defer untracked_result.deinit();
+
+        if (untracked_result.success()) {
+            var lines = std.mem.tokenizeScalar(u8, untracked_result.stdout, '\n');
+            while (lines.next()) |file| {
+                const trimmed = std.mem.trim(u8, file, " \t\r");
+                if (trimmed.len == 0) continue;
+                // Avoid duplicates
+                if (!isInBaseline(baseline.items, trimmed)) {
+                    try baseline.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                }
+            }
+        }
+
+        return try baseline.toOwnedSlice(self.allocator);
+    }
+
+    /// Free baseline file list
+    fn freeBaseline(self: *AgentLoop, baseline: []const []const u8) void {
+        for (baseline) |f| self.allocator.free(f);
+        if (baseline.len > 0) self.allocator.free(baseline);
+    }
+
+    /// Verify that agent changes comply with the issue's manifest
+    /// baseline contains files that were already modified before agent ran
+    /// Returns compliance result with details of any violations
+    fn verifyManifestCompliance(self: *AgentLoop, issue_id: []const u8, baseline: []const []const u8) !ManifestComplianceResult {
+        // Get manifest for this issue
+        const manifest = if (self.state) |*s| s.getManifest(issue_id) else null;
+
+        // No manifest means no restrictions (legacy behavior)
+        if (manifest == null) {
+            return .{ .compliant = true };
+        }
+        const m = manifest.?;
+
+        // Get list of changed files from git diff
+        var diff_result = try process.shell(self.allocator, "git diff --name-only HEAD");
+        defer diff_result.deinit();
+
+        if (!diff_result.success()) {
+            // If git diff fails, assume compliant (could be not in a git repo)
+            self.logWarn("git diff failed, skipping manifest check", .{});
+            return .{ .compliant = true };
+        }
+
+        // Also check staged changes
+        var staged_result = try process.shell(self.allocator, "git diff --name-only --cached");
+        defer staged_result.deinit();
+
+        // Also check untracked files (new files created by agent)
+        var untracked_result = try process.shell(self.allocator, "git ls-files --others --exclude-standard");
+        defer untracked_result.deinit();
+
+        // Parse changed files
+        var unauthorized = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (unauthorized.items) |f| self.allocator.free(f);
+            unauthorized.deinit(self.allocator);
+        }
+
+        var forbidden_touched = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (forbidden_touched.items) |f| self.allocator.free(f);
+            forbidden_touched.deinit(self.allocator);
+        }
+
+        // Helper to check if file was in baseline (pre-existing change)
+        const isInBaseline = struct {
+            fn check(bl: []const []const u8, file: []const u8) bool {
+                for (bl) |b| {
+                    if (std.mem.eql(u8, b, file)) return true;
+                }
+                return false;
+            }
+        }.check;
+
+        // Helper to check if file is already in violation lists
+        const isInList = struct {
+            fn check(list: []const []const u8, file: []const u8) bool {
+                for (list) |f| {
+                    if (std.mem.eql(u8, f, file)) return true;
+                }
+                return false;
+            }
+        }.check;
+
+        // Check unstaged changes
+        var lines = std.mem.tokenizeScalar(u8, diff_result.stdout, '\n');
+        while (lines.next()) |file| {
+            const trimmed = std.mem.trim(u8, file, " \t\r");
+            if (trimmed.len == 0) continue;
+
+            // Skip files that were already modified before agent ran
+            if (isInBaseline(baseline, trimmed)) continue;
+
+            // Check if file is forbidden
+            if (m.isForbidden(trimmed)) {
+                try forbidden_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+            } else if (!m.allowsWrite(trimmed)) {
+                // Check if file is outside allowed primary_files
+                try unauthorized.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+            }
+        }
+
+        // Check staged changes
+        var staged_lines = std.mem.tokenizeScalar(u8, staged_result.stdout, '\n');
+        while (staged_lines.next()) |file| {
+            const trimmed = std.mem.trim(u8, file, " \t\r");
+            if (trimmed.len == 0) continue;
+
+            // Skip files that were already modified before agent ran
+            if (isInBaseline(baseline, trimmed)) continue;
+
+            // Check if file is forbidden
+            if (m.isForbidden(trimmed)) {
+                // Avoid duplicates
+                if (!isInList(forbidden_touched.items, trimmed)) {
+                    try forbidden_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                }
+            } else if (!m.allowsWrite(trimmed)) {
+                // Avoid duplicates
+                if (!isInList(unauthorized.items, trimmed)) {
+                    try unauthorized.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                }
+            }
+        }
+
+        // Check untracked files (new files created by agent)
+        if (untracked_result.success()) {
+            var untracked_lines = std.mem.tokenizeScalar(u8, untracked_result.stdout, '\n');
+            while (untracked_lines.next()) |file| {
+                const trimmed = std.mem.trim(u8, file, " \t\r");
+                if (trimmed.len == 0) continue;
+
+                // Skip files that were already untracked before agent ran
+                if (isInBaseline(baseline, trimmed)) continue;
+
+                // Check if file is forbidden
+                if (m.isForbidden(trimmed)) {
+                    // Avoid duplicates
+                    if (!isInList(forbidden_touched.items, trimmed)) {
+                        try forbidden_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                    }
+                } else if (!m.allowsWrite(trimmed)) {
+                    // Avoid duplicates
+                    if (!isInList(unauthorized.items, trimmed)) {
+                        try unauthorized.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                    }
+                }
+            }
+        }
+
+        const has_violations = unauthorized.items.len > 0 or forbidden_touched.items.len > 0;
+
+        return .{
+            .compliant = !has_violations,
+            .unauthorized_files = try unauthorized.toOwnedSlice(self.allocator),
+            .forbidden_files_touched = try forbidden_touched.toOwnedSlice(self.allocator),
+        };
+    }
+
+    /// Rollback only the files that the agent touched (not pre-existing changes)
+    /// compliance_result contains the violating files to rollback
+    fn rollbackViolatingFiles(self: *AgentLoop, compliance_result: ManifestComplianceResult) !void {
+        self.logWarn("Rolling back violating files...", .{});
+
+        var files_to_rollback = std.ArrayListUnmanaged([]const u8){};
+        defer files_to_rollback.deinit(self.allocator);
+
+        // Collect all files that need to be rolled back
+        for (compliance_result.unauthorized_files) |f| {
+            try files_to_rollback.append(self.allocator, f);
+        }
+        for (compliance_result.forbidden_files_touched) |f| {
+            try files_to_rollback.append(self.allocator, f);
+        }
+
+        if (files_to_rollback.items.len == 0) {
+            self.logInfo("No files to rollback", .{});
+            return;
+        }
+
+        // Rollback each file individually
+        for (files_to_rollback.items) |file| {
+            // Unstage if staged
+            const unstage_cmd = try std.fmt.allocPrint(self.allocator, "git reset HEAD -- \"{s}\"", .{file});
+            defer self.allocator.free(unstage_cmd);
+            var unstage_result = try process.shell(self.allocator, unstage_cmd);
+            defer unstage_result.deinit();
+
+            // Restore file to HEAD state (for tracked files)
+            const checkout_cmd = try std.fmt.allocPrint(self.allocator, "git checkout HEAD -- \"{s}\" 2>/dev/null || true", .{file});
+            defer self.allocator.free(checkout_cmd);
+            var checkout_result = try process.shell(self.allocator, checkout_cmd);
+            defer checkout_result.deinit();
+
+            // For new untracked files, just remove them
+            const rm_cmd = try std.fmt.allocPrint(self.allocator, "git clean -f -- \"{s}\" 2>/dev/null || true", .{file});
+            defer self.allocator.free(rm_cmd);
+            var rm_result = try process.shell(self.allocator, rm_cmd);
+            defer rm_result.deinit();
+
+            self.logInfo("  Rolled back: {s}", .{file});
+        }
+
+        self.logInfo("Rollback complete ({d} file(s))", .{files_to_rollback.items.len});
+    }
+
+    /// Build a stricter prompt after manifest violation
+    fn buildStricterPrompt(self: *AgentLoop, issue_id: []const u8, violation_result: ManifestComplianceResult) ![]const u8 {
+        const base_prompt = try self.buildImplementationPrompt(issue_id);
+        defer self.allocator.free(base_prompt);
+
+        // Build violation details
+        var violation_details = std.ArrayListUnmanaged(u8){};
+        defer violation_details.deinit(self.allocator);
+
+        try violation_details.appendSlice(self.allocator,
+            \\
+            \\CRITICAL WARNING - PREVIOUS ATTEMPT VIOLATED FILE MANIFEST:
+            \\Your previous attempt modified files outside the allowed scope. This is NOT allowed.
+            \\
+            \\
+        );
+
+        if (violation_result.forbidden_files_touched.len > 0) {
+            try violation_details.appendSlice(self.allocator, "FORBIDDEN FILES TOUCHED (must NEVER modify):\n");
+            for (violation_result.forbidden_files_touched) |f| {
+                try violation_details.appendSlice(self.allocator, "  - ");
+                try violation_details.appendSlice(self.allocator, f);
+                try violation_details.appendSlice(self.allocator, "\n");
+            }
+        }
+
+        if (violation_result.unauthorized_files.len > 0) {
+            try violation_details.appendSlice(self.allocator, "UNAUTHORIZED FILES MODIFIED (not in primary_files):\n");
+            for (violation_result.unauthorized_files) |f| {
+                try violation_details.appendSlice(self.allocator, "  - ");
+                try violation_details.appendSlice(self.allocator, f);
+                try violation_details.appendSlice(self.allocator, "\n");
+            }
+        }
+
+        try violation_details.appendSlice(self.allocator,
+            \\
+            \\You MUST only modify the files explicitly allowed in the manifest.
+            \\Run `bd show <issue-id>` and check the MANIFEST comment for allowed files.
+            \\If you need to modify additional files, explain why in a comment and stop.
+            \\
+            \\
+        );
+
+        return std.fmt.allocPrint(self.allocator, "{s}{s}", .{ violation_details.items, base_prompt });
+    }
+
     /// Run an agent with streaming output and JSON logging
     fn runAgentStreaming(self: *AgentLoop, agent: []const u8, prompt: []const u8, json_log_path: []const u8) !u8 {
         // Build argv to avoid shell quoting pitfalls
@@ -1414,6 +1812,10 @@ pub const AgentLoop = struct {
         // Instead, let the issue breakdown flow handle it
         if (exit_code == EXIT_CODE_TIMEOUT) return false;
 
+        // Manifest violation (125) is handled specially in the main loop with stricter prompts
+        // Don't retry via the generic retry mechanism
+        if (exit_code == EXIT_CODE_MANIFEST_VIOLATION) return false;
+
         // Other non-zero exit codes may indicate transient failures
         // Claude/Codex CLI tools return non-zero on API errors (rate limits, 5xx, network issues)
         return exit_code != 0;
@@ -1494,9 +1896,19 @@ test "should not retry on timeout" {
     try std.testing.expect(!AgentLoop.shouldRetry(AgentLoop.EXIT_CODE_TIMEOUT));
 }
 
+test "should not retry on manifest violation" {
+    // Manifest violation (exit code 125) should NOT be retried via generic retry
+    // (it's handled specially with stricter prompts)
+    try std.testing.expect(!AgentLoop.shouldRetry(AgentLoop.EXIT_CODE_MANIFEST_VIOLATION));
+}
+
 test "timeout exit code is 124" {
     // Verify timeout exit code matches GNU timeout convention
     try std.testing.expectEqual(@as(u8, 124), AgentLoop.EXIT_CODE_TIMEOUT);
+}
+
+test "manifest violation exit code is 125" {
+    try std.testing.expectEqual(@as(u8, 125), AgentLoop.EXIT_CODE_MANIFEST_VIOLATION);
 }
 
 test "parse manifest line" {
