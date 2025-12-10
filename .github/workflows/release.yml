@@ -31,7 +31,7 @@ jobs:
 
       - name: Set up Zig
         run: |
-          ZIG_VERSION=$(curl -s https://ziglang.org/download/index.json | jq -r '.master.version')
+          ZIG_VERSION="0.15.2"
           if [ "${{ matrix.os_slug }}" = "linux" ]; then
             ZIG_ARCH="x86_64-linux"
           elif [ "${{ matrix.arch_slug }}" = "arm64" ]; then
@@ -39,7 +39,7 @@ jobs:
           else
             ZIG_ARCH="x86_64-macos"
           fi
-          curl -L "https://ziglang.org/builds/zig-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" | tar -xJ
+          curl -L "https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" | tar -xJ
           echo "$PWD/zig-${ZIG_ARCH}-${ZIG_VERSION}" >> $GITHUB_PATH
 
       - name: Build
