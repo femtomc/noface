@@ -1951,7 +1951,7 @@ pub const AgentLoop = struct {
             \\   - Check for: debugging artifacts, commented code, style inconsistencies
             \\5. Request review: `{s} review --uncommitted`
             \\6. Address ALL feedback - re-run review until approved
-            \\7. Create marker: `touch .codex-approved`
+            \\7. Create marker: `touch .noface/codex-approved`
             \\8. Commit with a clear message:
             \\   - Format: "<type>: <description>" (e.g., "fix: resolve null pointer in parser")
             \\   - Reference the issue in the body
