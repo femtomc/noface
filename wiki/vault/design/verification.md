@@ -30,22 +30,143 @@ And **manifest verification**:
 
 The survey also discusses **LLM critics** as an additional layer — a second agent that reviews the code.
 
-## Open Questions
+## Design Decisions
 
-1. **Test Coverage** — What if the tests don't cover the change? Agent could introduce a bug that passes existing tests.
+### 1. Test Coverage: Require tests for new behavior
 
-2. **Review Pass** — Should noface run a dedicated reviewer agent on each change before accepting? Cost vs. benefit?
+**Decision:** Add test-centric enhancements for changes that add new behavior.
 
-3. **Static Analysis** — Should we run linters, type checkers, security scanners as additional gates?
+**For changes that add new behavior:**
+- Ask agent to write or update tests as part of the task
+- Optionally run coverage diff if coverage tool exists:
+  - If new/changed lines have zero coverage → soft or hard gate
 
-4. **Semantic Verification** — Tests check behavior, manifests check scope. But what about "did the agent actually address the issue?" Sometimes code passes tests but doesn't solve the problem.
+**Where tooling is limited:**
+- At least ensure: "If tests exist in this module, check that they were updated"
+- Warn if tests not updated for behavioral changes
 
-5. **Confidence Signals** — Can we detect low-confidence completions? Agent says "done" but hedges in comments? Unusual patterns?
+### 2. Review Pass: Optional but recommended for non-trivial changes
 
-6. **Partial Acceptance** — If 2 of 3 acceptance criteria pass, do we accept partially? Or all-or-nothing?
+**Decision:** Add dedicated reviewer pass as an optional gate for non-trivial changes.
 
-7. **Human Review Gate** — For high-risk changes (security, config), should noface require human approval?
+**Reviewer inputs:**
+- Issue description
+- Old code vs new code diff
+- Test results
+
+**Reviewer outputs:**
+- Verdict: `OK` / `NOT_OK` / `NEEDS_HUMAN`
+- Specific comments
+
+**Trigger heuristics:**
+| Condition | Action |
+|-----------|--------|
+| Large diffs | Always review |
+| High-risk directories | Always review |
+| Changes without tests | Always review |
+| Small, well-tested changes | Skip or downgrade |
+
+### 3. Static Analysis: Integrate repo's existing tools
+
+**Decision:** Integrate whatever static analysis the repo already has.
+
+**Hard gates (block on failure):**
+- Type errors (`zig build`, `tsc`, `mypy`)
+- Formatter failures (`zig fmt`, `prettier`)
+
+**Soft gates (log, maybe create follow-up):**
+- New lint warnings
+- Security scanner findings (unless critical)
+
+```toml
+[verification.static_analysis]
+hard_gates = ["zig build", "zig fmt --check"]
+soft_gates = ["clippy", "eslint"]
+```
+
+### 4. Semantic Verification: Judge agent for complex issues
+
+**Decision:** Add semantic check step for complex issues.
+
+**Option 1: Explicit reasoning**
+- Have implementer/reviewer write: "Here is how the change addresses the issue…"
+- Check coherence between explanation and diff
+
+**Option 2: Judge agent**
+- Input: issue description + old code + new code
+- Question: "Does this change resolve the described behavior? Is anything missing or unrelated?"
+
+Doesn't need to be perfect; even catching obvious mismatches is a big win.
+
+### 5. Confidence Signals: Explicit confidence + risk metadata
+
+**Decision:** Ask agent to output explicit confidence and risks.
+
+**Prompt addition:**
+```
+After implementing, output:
+CONFIDENCE: X/5
+RISKS:
+- [list any edge cases or uncertainties]
+```
+
+**Policy:**
+- If confidence ≤ 2/5 → require reviewer + maybe human
+- Also watch for heuristics:
+  - Lots of TODOs in output
+  - "I think / maybe" in comments
+  - Weirdly small or huge diffs
+
+### 6. Partial Acceptance: Hard vs soft gates
+
+**Decision:** Define hard vs soft gates; never partially merge.
+
+**Hard gates (must pass for merge):**
+- Tests passing
+- No syntax/build errors
+- Manifest compliance
+
+**Soft gates (can proceed with warnings):**
+- Lint warnings
+- Coverage thresholds
+- Reviewer "nit" comments
+
+**Policy:**
+- Automated merge requires all hard gates
+- Soft gate failures:
+  - Either block and open follow-up issue, or
+  - Allow merge but log warnings and create cleanup issues
+
+Avoid partial merges of file subsets; use the branch model from [[failure-recovery]] instead.
+
+### 7. Human Review Gate: Risk classification for high-risk changes
+
+**Decision:** Build risk classification with hard human gate for sensitive areas.
+
+**High-risk triggers:**
+- Files/directories: `auth/`, `payments/`, `secrets/`, `infra/`, `prod-config/`
+- Labels: `security`, `compliance`, `breaking-change`
+
+**For high-risk changes:**
+- noface never auto-merges
+- Opens PR or surfaces diff with "requires human approval" flag
+- Optionally pre-annotated with AI reviewer's comments
+
+```toml
+[verification.human_required]
+paths = ["src/auth/", "src/payments/", "config/prod/"]
+labels = ["security", "compliance"]
+```
 
 ## Implementation Notes
 
 See `src/loop.zig:verifyManifestCompliance` and prompt instructions for self-testing.
+
+### TODO
+- [ ] Add test coverage checking (if coverage tool available)
+- [ ] Implement reviewer pass with risk-based triggering
+- [ ] Add static analysis integration (hard/soft gates)
+- [ ] Add judge agent for semantic verification
+- [ ] Parse confidence/risk metadata from agent output
+- [ ] Add human review gate for high-risk paths
+- [ ] Implement soft gate → follow-up issue creation

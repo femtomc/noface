@@ -233,14 +233,99 @@
     "type": "essay"
   },
   {
-    "id": "context-injection#open-questions",
-    "url": "/context-injection.html#open-questions",
-    "section_id": "open-questions-f585c1c5",
-    "section_hash": "f585c1c59b28cc431758c3d46edf8bcb7b95e1ece07f694d6956c28d41f883ba",
+    "id": "context-injection#1-context-budget-dynamic-based-on-token-budget-and-complexity",
+    "url": "/context-injection.html#1-context-budget-dynamic-based-on-token-budget-and-complexity",
+    "section_id": "1-context-budget-dynamic-based-on-token-budget-and-complexity-e1137167",
+    "section_hash": "e1137167fa11f4f807f23646445c027aa735c91021740404a9396bded994f8a9",
     "title": "Context Injection",
-    "section_title": "Open Questions #",
-    "content": "Context Budget — Is max_context_docs = 5 the right number? Should it be dynamic based on issue complexity? Relevance Ranking — Currently we fetch docs by wikilink or search. Should we score/rank by semantic relevance? Embeddings? Code Context — Should we inject relevant source files? Which ones? The survey mentions BM25 search over codebase (noface has src/bm25.zig ). Context Freshness — If a doc is stale (refers to old API), it could mislead the agent. How do we detect/handle this? Negative Context — What explicitly shouldn't be included? Large generated files? Vendored deps? How do we filter? Agent-Requested Context — Should agents be able to ask for more context mid-run? Or does the harness (Claude Code) handle this internally?",
-    "snippet": "Context Budget — Is max_context_docs = 5 the right number? Should it be dynamic based on issue complexity? Relevance Ranking — Currently we fetch docs by wikilink or search. Should we score/rank by...",
+    "section_title": "1. Context Budget: Dynamic based on token budget and complexity #",
+    "content": "Decision: Make context budget dynamic, not fixed. Approach: Define a target fraction of prompt tokens for retrieved docs (e.g., 30–40%) Fill that slot with as many top-ranked docs as fit Complexity heuristics: More files / cross-cutting change → allow more docs Tiny, local change → maybe 0–2 docs only Keep max_context_docs = 5 as a hard cap, but choose K ∈ [0, 5] per issue based on: Issue complexity score Available token budget Relevance scores of candidate docs",
+    "snippet": "Decision: Make context budget dynamic, not fixed. Approach: Define a target fraction of prompt tokens for retrieved docs (e.g., 30–40%) Fill that slot with as many top-ranked docs as fit Complexity...",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#2-relevance-ranking-hybrid-bm25-embeddings",
+    "url": "/context-injection.html#2-relevance-ranking-hybrid-bm25-embeddings",
+    "section_id": "2-relevance-ranking-hybrid-bm25-embeddings-756cb11e",
+    "section_hash": "756cb11e8a17e628b46466bc186eed031b58bc38b0716912cd35a2de1d7f87e2",
+    "title": "Context Injection",
+    "section_title": "2. Relevance Ranking: Hybrid BM25 + embeddings #",
+    "content": "Decision: Use hybrid ranking instead of simple wikilink fetching. Pipeline: Candidate generation: Wikilinks / explicit references from the issue BM25 search (already have src/bm25.zig ) Re-ranking: Embedding similarity (doc ↔ issue description) Final score: Copy score = α * BM25 + β * embedding_score + boost_if_explicitly_linked This will beat naive \"first N by wikilink\" in most repos.",
+    "snippet": "Decision: Use hybrid ranking instead of simple wikilink fetching. Pipeline: Candidate generation: Wikilinks / explicit references from the issue BM25 search (already have src/bm25.zig ) Re-ranking:...",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#3-code-context-manifest-files-relevant-snippets",
+    "url": "/context-injection.html#3-code-context-manifest-files-relevant-snippets",
+    "section_id": "3-code-context-manifest-files-relevant-snippets-42be166c",
+    "section_hash": "42be166ce253fab089f372f8f129e369ac9591c38770a7c154603dfaaaeccab0",
+    "title": "Context Injection",
+    "section_title": "3. Code Context: Manifest files + relevant snippets #",
+    "content": "Decision: Include manifest files plus targeted snippets from related code. Always include: The files in the manifest that the agent is allowed to edit Optionally include: Small snippets from related files: Direct callers/callees (if xref info available) BM25/embedding matches for key identifiers in the issue Guardrails: Truncate to relevant functions rather than whole files when possible If file is huge, include: Signature + docstring + 1–2 nearby functions Use BM25 over code to pick relevant ranges, not entire files",
+    "snippet": "Decision: Include manifest files plus targeted snippets from related code. Always include: The files in the manifest that the agent is allowed to edit Optionally include: Small snippets from related...",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#4-context-freshness-downrank-stale-docs-dont-hard-exclude",
+    "url": "/context-injection.html#4-context-freshness-downrank-stale-docs-dont-hard-exclude",
+    "section_id": "4-context-freshness-downrank-stale-docs-dont-hard-exclude-a54de363",
+    "section_hash": "a54de363bdea6279077720f2f8d7c12df75a43a3568649ad2fc03bc8d9bc4c0f",
+    "title": "Context Injection",
+    "section_title": "4. Context Freshness: Downrank stale docs, don't hard exclude #",
+    "content": "Decision: Add freshness metadata + downranking, not hard exclusion. For each doc, track: last_updated timestamp Optionally \"tied-to-commit\" info Heuristics: If doc references symbols that no longer exist in code → heavily downrank or mark stale If now - last_updated > threshold and code around it changed a lot → downrank In the prompt, for borderline docs: Copy Note: this doc may be outdated; prefer the current code as source of truth. Relevant but slightly stale docs can still help, but the model is warned.",
+    "snippet": "Decision: Add freshness metadata + downranking, not hard exclusion. For each doc, track: last_updated timestamp Optionally \"tied-to-commit\" info Heuristics: If doc references symbols that no longer...",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#5-negative-context-explicit-exclusion-list",
+    "url": "/context-injection.html#5-negative-context-explicit-exclusion-list",
+    "section_id": "5-negative-context-explicit-exclusion-list-55395f0a",
+    "section_hash": "55395f0a049637260f6acbdc95ae2ecd0e6e5924bee4d36cf2973990fce5e120",
+    "title": "Context Injection",
+    "section_title": "5. Negative Context: Explicit exclusion list #",
+    "content": "Decision: Define explicit exclusions + heuristics. Path-based exclusions: vendor/ , node_modules/ , dist/ , build/ , .cache/ *.min.js , large generated protobufs Size-based: Files > X KB not included unless explicitly requested Type-based: Binary blobs, lockfiles, big JSON dumps Implement in retrieval pipeline so excluded files never show up as candidates.",
+    "snippet": "Decision: Define explicit exclusions + heuristics. Path-based exclusions: vendor/ , node_modules/ , dist/ , build/ , .cache/ *.min.js , large generated protobufs Size-based: Files > X KB not included...",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#6-agent-requested-context-thin-orchestrator-layer-harness-delegation",
+    "url": "/context-injection.html#6-agent-requested-context-thin-orchestrator-layer-harness-delegation",
+    "section_id": "6-agent-requested-context-thin-orchestrator-layer-harness-delegation-dbbfeb62",
+    "section_hash": "dbbfeb62c20f7478973f307ac2354e270e68e0179e68a5014679a86a607a62f2",
+    "title": "Context Injection",
+    "section_title": "6. Agent-Requested Context: Thin orchestrator layer + harness delegation #",
+    "content": "Decision: Lean on Claude Code's native file-opening capabilities, add thin orchestrator layer for explicit requests. If using Claude Code / similar harness: Let the harness handle intra-session context (open file, run search, etc.) At orchestration level: Support structured \"needs more context\" signals: Copy NEED_CODE: auth/login.zig NEED_DOC: docs/auth.md When signal detected: Fetch & add context on next call, or Delegate to harness's file-opening APIs Don't build a whole second interactive context loop on top of Claude. Do add a thin layer to observe/log/respond when agent clearly asks for more info.",
+    "snippet": "Decision: Lean on Claude Code's native file-opening capabilities, add thin orchestrator layer for explicit requests. If using Claude Code / similar harness: Let the harness handle intra-session...",
     "tags": [
       "design",
       "context",
@@ -258,6 +343,23 @@
     "section_title": "Implementation Notes #",
     "content": "See src/loop.zig:buildImplementationPrompt and src/monowiki.zig .",
     "snippet": "See src/loop.zig:buildImplementationPrompt and src/monowiki.zig .",
+    "tags": [
+      "design",
+      "context",
+      "prompts",
+      "monowiki"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "context-injection#todo",
+    "url": "/context-injection.html#todo",
+    "section_id": "todo-22218856",
+    "section_hash": "2221885678d42157df1e3b35e6f8443f5f88943853d6fd7a4a4ca6d3e4d45d69",
+    "title": "Context Injection",
+    "section_title": "TODO #",
+    "content": "Implement dynamic context budget based on issue complexity Add hybrid ranking (BM25 + embeddings) Add freshness tracking to monowiki docs Implement exclusion list in retrieval pipeline Parse NEED_CODE / NEED_DOC signals from agent output",
+    "snippet": "Implement dynamic context budget based on issue complexity Add hybrid ranking (BM25 + embeddings) Add freshness tracking to monowiki docs Implement exclusion list in retrieval pipeline Parse...",
     "tags": [
       "design",
       "context",
@@ -318,14 +420,82 @@
     "type": "essay"
   },
   {
-    "id": "parallel-execution#open-questions",
-    "url": "/parallel-execution.html#open-questions",
-    "section_id": "open-questions-1d07ef8d",
-    "section_hash": "1d07ef8da2cb24f188e7a6b3a81623ea9a7a71015893a064705f2577a59f1c47",
+    "id": "parallel-execution#1-lock-granularity-file-level-only-for-now",
+    "url": "/parallel-execution.html#1-lock-granularity-file-level-only-for-now",
+    "section_id": "1-lock-granularity-file-level-only-for-now-1d37a559",
+    "section_hash": "1d37a5592cc2f093110cc8441de9f8869e67b0e222dad4122d9c5afd290f9a13",
     "title": "Parallel Execution",
-    "section_title": "Open Questions #",
-    "content": "Lock Granularity — File-level prevents conflicts but may be too conservative. Two agents could safely edit different functions in the same file. Is function-level locking worth the complexity? Batch Sizing — How do we decide how many issues to batch together? More parallelism = faster, but also more resource contention and harder debugging. Lock Contention — With many issues, popular files (e.g., main.zig ) become bottlenecks. How do we detect and mitigate hot files? Conflict Recovery — If a conflict somehow occurs (manifest was wrong), what's the resolution strategy? Currently undefined. CRDT Exploration — Is there a simpler middle ground between locks and full CRDTs? AST-aware merging?",
-    "snippet": "Lock Granularity — File-level prevents conflicts but may be too conservative. Two agents could safely edit different functions in the same file. Is function-level locking worth the complexity? Batch...",
+    "section_title": "1. Lock Granularity: File-level only (for now) #",
+    "content": "Decision: Start with file-level locking only. Add function-level as a future optimization for specific languages. File-level: Easy to reason about Guarantees no diff overlap Function-level (deferred): Needs parser, symbol table, stable function IDs Harder for languages with macros, generated code, ad-hoc patterns Instead, get most of the win by: Task design: aim one issue per file or small set of files Using manifest to ensure each issue's scope is small and minimally overlapping If later we need function-level: Limit to languages where we already have a good AST + symbol index Keep file-level as fallback",
+    "snippet": "Decision: Start with file-level locking only. Add function-level as a future optimization for specific languages. File-level: Easy to reason about Guarantees no diff overlap Function-level...",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#2-batch-sizing-adaptive-concurrency",
+    "url": "/parallel-execution.html#2-batch-sizing-adaptive-concurrency",
+    "section_id": "2-batch-sizing-adaptive-concurrency-10e572c1",
+    "section_hash": "10e572c17b7a8bbb8912afb03abaecca1ab771e15f419480d31c1cc2831951c1",
+    "title": "Parallel Execution",
+    "section_title": "2. Batch Sizing: Adaptive concurrency #",
+    "content": "Decision: Use adaptive concurrency based on runtime signals. Config: Copy [parallelism] max_concurrent_global = 8 # hard cap max_concurrent_per_repo = 4 # per-repo cap initial_concurrency = 2 # starting point Runtime signals: Average agent latency Queue length Error rate Policy: Start with N = 2 If queue backlog grows and success rate is high → increase toward max If failures/timeouts increase or host is resource constrained → back off Also: maintain a \"serial bucket\" for issues touching very hot files (see below).",
+    "snippet": "Decision: Use adaptive concurrency based on runtime signals. Config: Copy [parallelism] max_concurrent_global = 8 # hard cap max_concurrent_per_repo = 4 # per-repo cap initial_concurrency = 2 #...",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#3-lock-contention-hot-file-detection-mitigation",
+    "url": "/parallel-execution.html#3-lock-contention-hot-file-detection-mitigation",
+    "section_id": "3-lock-contention-hot-file-detection-mitigation-a38ebee2",
+    "section_hash": "a38ebee24fe7a9ba8bfdec9f41df58b642a346a1caf2ecd818e423bad726f0cb",
+    "title": "Parallel Execution",
+    "section_title": "3. Lock Contention: Hot file detection + mitigation #",
+    "content": "Decision: Track per-file lock statistics and treat \"hot files\" specially. Metrics to track: Lock wait time per file Number of pending issues referencing each file If a file (e.g., main.zig ) is often a bottleneck: Force tasks that touch that file into a single-threaded lane (queue) Encourage planner to batch related issues touching that file into one larger issue Suggest refactor tasks: spawn meta-issue \"split main.zig into modules\" Implementation: Copy // In-memory or persisted const HotFileStats = struct { lock_count: u32, avg_wait_ms: u64, queue_depth: u32, }; // Map: file_path -> HotFileStats Use this when scheduling new issues.",
+    "snippet": "Decision: Track per-file lock statistics and treat \"hot files\" specially. Metrics to track: Lock wait time per file Number of pending issues referencing each file If a file (e.g., main.zig ) is often...",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#4-conflict-recovery-three-step-policy",
+    "url": "/parallel-execution.html#4-conflict-recovery-three-step-policy",
+    "section_id": "4-conflict-recovery-three-step-policy-d2ac5c61",
+    "section_hash": "d2ac5c61529cab8eaaf75c1745abca2c264220567546abb7b10290322e5e7438",
+    "title": "Parallel Execution",
+    "section_title": "4. Conflict Recovery: Three-step policy #",
+    "content": "Decision: Define a concrete conflict resolution pipeline. Step 1: Detect Two diffs touch overlapping hunks, or git apply fails Step 2: Auto-merge Try a 3-way merge (base, A, B) If succeeds cleanly, run tests If tests pass, accept merged result Step 3: LLM-assisted merge Spawn a \"merge agent\" with both diffs + conflicts Ask it to produce a unified patch Run tests again Step 4: Escalate If merge agent fails or tests still fail Escalate to human Leave a merge PR with both original diffs + explanation",
+    "snippet": "Decision: Define a concrete conflict resolution pipeline. Step 1: Detect Two diffs touch overlapping hunks, or git apply fails Step 2: Auto-merge Try a 3-way merge (base, A, B) If succeeds cleanly,...",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#5-crdt-exploration-ast-aware-patching-as-middle-ground",
+    "url": "/parallel-execution.html#5-crdt-exploration-ast-aware-patching-as-middle-ground",
+    "section_id": "5-crdt-exploration-ast-aware-patching-as-middle-ground-f7f98dea",
+    "section_hash": "f7f98deaa551f4ec97548ab14cfe21ada63830d82af9c1cd62633d37d0292776",
+    "title": "Parallel Execution",
+    "section_title": "5. CRDT Exploration: AST-aware patching as middle ground #",
+    "content": "Decision: Use AST-aware patching + 3-way merge instead of full CRDTs. Approach: Ask agents to emit structured edits per file: \"Replace function foo body with …\" \"Add new function bar…\" Internally apply these as AST transformations, not raw text splice Merge behavior: Two agents modifying different functions in the same file → trivially merge Same function → conflict; go through the conflict policy above This gets most of the benefits of CRDT-style structural merges without full-blown replicated state machinery.",
+    "snippet": "Decision: Use AST-aware patching + 3-way merge instead of full CRDTs. Approach: Ask agents to emit structured edits per file: \"Replace function foo body with …\" \"Add new function bar…\" Internally...",
     "tags": [
       "design",
       "parallelism",
@@ -343,6 +513,23 @@
     "section_title": "Implementation Notes #",
     "content": "See src/worker_pool.zig:WorkerPool and src/state.zig:LockEntry .",
     "snippet": "See src/worker_pool.zig:WorkerPool and src/state.zig:LockEntry .",
+    "tags": [
+      "design",
+      "parallelism",
+      "batching",
+      "locking"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "parallel-execution#todo",
+    "url": "/parallel-execution.html#todo",
+    "section_id": "todo-45184ce8",
+    "section_hash": "45184ce845bcb1b966d08597b5456f3292bf83a22d6234f5d77a9fc9ef5e85fb",
+    "title": "Parallel Execution",
+    "section_title": "TODO #",
+    "content": "Add HotFileStats tracking Implement adaptive concurrency (start low, ramp up) Add serial lane for hot files Implement 3-way merge fallback Design structured edit format for AST-aware patching",
+    "snippet": "Add HotFileStats tracking Implement adaptive concurrency (start low, ramp up) Add serial lane for hot files Implement 3-way merge fallback Design structured edit format for AST-aware patching",
     "tags": [
       "design",
       "parallelism",
@@ -403,14 +590,116 @@
     "type": "essay"
   },
   {
-    "id": "failure-recovery#open-questions",
-    "url": "/failure-recovery.html#open-questions",
-    "section_id": "open-questions-69f12830",
-    "section_hash": "69f12830810f8074f420420d8980a34d94bd3936cb5e9b5fa878efa80caf6ff3",
+    "id": "failure-recovery#1-retry-strategies-informed-retries-not-blind",
+    "url": "/failure-recovery.html#1-retry-strategies-informed-retries-not-blind",
+    "section_id": "1-retry-strategies-informed-retries-not-blind-8943a372",
+    "section_hash": "8943a372677cdbe6c7c6a890a85b8b448cb44f56f266414194c3093fe7267b60",
     "title": "Failure Recovery",
-    "section_title": "Open Questions #",
-    "content": "Retry Strategies — Current retry is simple backoff. Should we modify the prompt on retry? Add more context? Summarize the failure? Task Breakdown — Timeout triggers breakdown, but how does noface actually break down an issue? Is this implemented or aspirational? Partial Progress — If an agent edits 3 files correctly but fails on the 4th, do we keep the 3? Currently unclear. Model Escalation — The survey mentions falling back to more powerful models. Should noface try a different model on failure? Failure Classification — Not all failures are equal. \"Syntax error\" vs \"doesn't understand the task\" vs \"timeout\" need different responses. Human Escalation — After N failures, should noface pause and ask for help? Current behavior is unclear. Learning from Failures — Should failure patterns inform future prompts? \"This type of issue often fails, add extra guidance.\"",
-    "snippet": "Retry Strategies — Current retry is simple backoff. Should we modify the prompt on retry? Add more context? Summarize the failure? Task Breakdown — Timeout triggers breakdown, but how does noface...",
+    "section_title": "1. Retry Strategies: Informed retries, not blind #",
+    "content": "Decision: Retries should include failure context and self-reflection. On retry, include: Previous attempt's diff Summarized test output / error Instructions: Copy Your previous attempt failed with: [error]. Fix that specific problem while preserving working parts. Optional self-reflection step: Ask model: \"Explain why your last attempt failed and how you will fix it\" Feed that back into the actual implementation prompt",
+    "snippet": "Decision: Retries should include failure context and self-reflection. On retry, include: Previous attempt's diff Summarized test output / error Instructions: Copy Your previous attempt failed with:...",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#2-task-breakdown-minimal-concrete-decomposition",
+    "url": "/failure-recovery.html#2-task-breakdown-minimal-concrete-decomposition",
+    "section_id": "2-task-breakdown-minimal-concrete-decomposition-e55066de",
+    "section_hash": "e55066de00c33e4314e81154fd100c69fb381d97341aee3114e0d2e2a23f41b8",
+    "title": "Failure Recovery",
+    "section_title": "2. Task Breakdown: Minimal, concrete decomposition #",
+    "content": "Decision: Implement a simple breakdown strategy when issues are too large. Trigger breakdown when: Issue times out repeatedly, or Fails after N attempts with \"too big\" signature (many files, large diff) Breakdown agent: Run planner with a different prompt to propose sub-issues: e.g., \"Update schema in A\", \"Update API in B\", \"Update tests in C\" Turn these into child issues, mark parent as an \"epic\" First version (simple): Split by file: if manifest has 5 files, create 5 issues, each scoped to one file Iterate toward more semantic breakdowns later.",
+    "snippet": "Decision: Implement a simple breakdown strategy when issues are too large. Trigger breakdown when: Issue times out repeatedly, or Fails after N attempts with \"too big\" signature (many files, large...",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#3-partial-progress-keep-on-branch-all-or-nothing-to-main",
+    "url": "/failure-recovery.html#3-partial-progress-keep-on-branch-all-or-nothing-to-main",
+    "section_id": "3-partial-progress-keep-on-branch-all-or-nothing-to-main-dcd4d852",
+    "section_hash": "dcd4d852ede0c91806abe945c211187c06793064409786ca0f7e4e9c579a6a61",
+    "title": "Failure Recovery",
+    "section_title": "3. Partial Progress: Keep on branch, all-or-nothing to main #",
+    "content": "Decision: Preserve partial progress in scratch branches, but merge atomically. Design: Each issue has a scratch branch or temp workspace Each attempt commits to that branch If one file fails, you still keep the other 3 as commits in the branch Only when tests + gates pass do you merge that branch to main This preserves partial progress for future attempts without exposing half-baked changes to main.",
+    "snippet": "Decision: Preserve partial progress in scratch branches, but merge atomically. Design: Each issue has a scratch branch or temp workspace Each attempt commits to that branch If one file fails, you...",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#4-model-escalation-simple-escalation-policy",
+    "url": "/failure-recovery.html#4-model-escalation-simple-escalation-policy",
+    "section_id": "4-model-escalation-simple-escalation-policy-22b0234c",
+    "section_hash": "22b0234ca42dcb4f54af9e8e0495f7d70149375b301731a09a936cb553743281",
+    "title": "Failure Recovery",
+    "section_title": "4. Model Escalation: Simple escalation policy #",
+    "content": "Decision: Define a simple model escalation policy. For each issue: First 1–2 attempts: default_model (cheaper) If still failing with \"correctable\" errors (tests, syntax): escalate to strong_model Cap total attempts across all models Keep configurable so users can opt-out if they only have access to one model. Copy [retry] default_model = \"claude-sonnet\" escalation_model = \"claude-opus\" escalate_after_attempts = 2 max_total_attempts = 5",
+    "snippet": "Decision: Define a simple model escalation policy. For each issue: First 1–2 attempts: default_model (cheaper) If still failing with \"correctable\" errors (tests, syntax): escalate to strong_model Cap...",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#5-failure-classification-taxonomy-with-strategy-mapping",
+    "url": "/failure-recovery.html#5-failure-classification-taxonomy-with-strategy-mapping",
+    "section_id": "5-failure-classification-taxonomy-with-strategy-mapping-be24205d",
+    "section_hash": "be24205d56b34fe9a3d59cadab61984ad27bef607f38a5989a4954e1921c0798",
+    "title": "Failure Recovery",
+    "section_title": "5. Failure Classification: Taxonomy with strategy mapping #",
+    "content": "Decision: Introduce a failure taxonomy and map each to a strategy. Taxonomy: Failure Type Strategy SYNTAX_ERROR Re-prompt with same context + \"fix syntax error\" RUNTIME_ERROR Include stack trace, ask to fix TEST_FAILURE Include test output, ask to fix NO_DIFF \"You must change code; your previous attempt changed nothing\" TIMEOUT Break down task / reduce scope MANIFEST_VIOLATION Replan + retry with expanded manifest AGENT_CONFUSION Involve planner or human for clarification",
+    "snippet": "Decision: Introduce a failure taxonomy and map each to a strategy. Taxonomy: Failure Type Strategy SYNTAX_ERROR Re-prompt with same context + \"fix syntax error\" RUNTIME_ERROR Include stack trace, ask...",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#6-human-escalation-clear-threshold-summary",
+    "url": "/failure-recovery.html#6-human-escalation-clear-threshold-summary",
+    "section_id": "6-human-escalation-clear-threshold-summary-70499551",
+    "section_hash": "70499551cb757656d9bc3218d0effcb362e9fc659e21776f6c10742adb87453b",
+    "title": "Failure Recovery",
+    "section_title": "6. Human Escalation: Clear threshold + summary #",
+    "content": "Decision: Define a clear escalation threshold with actionable summary. After N consecutive failed attempts (e.g., 3) or severe failure type: Mark issue as BLOCKED Post a summary: What was tried Errors encountered What the agent thinks is unclear (if any) Pause automation until human: Adds context Edits the issue, or Manually unblocks / retries",
+    "snippet": "Decision: Define a clear escalation threshold with actionable summary. After N consecutive failed attempts (e.g., 3) or severe failure type: Mark issue as BLOCKED Post a summary: What was tried...",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#7-learning-from-failures-lightweight-rule-based-lessons",
+    "url": "/failure-recovery.html#7-learning-from-failures-lightweight-rule-based-lessons",
+    "section_id": "7-learning-from-failures-lightweight-rule-based-lessons-d1c49f6e",
+    "section_hash": "d1c49f6ee92fda41f71b54a8c66e8a3d34d6eb2cb8146d4e21c84bda2f649948",
+    "title": "Failure Recovery",
+    "section_title": "7. Learning from Failures: Lightweight rule-based lessons #",
+    "content": "Decision: Start with manual rule-based \"lessons\", not ML. Maintain a small config/ruleset: Copy [[failure_hints]] label = \"migration\" hint = \"Migration issues often need schema changes first. Check schema files.\" [[failure_hints]] language = \"zig\" error_pattern = \"error.OutOfMemory\" hint = \"Consider using an arena allocator for temporary allocations.\" Periodically review failure logs, add new rules where patterns are obvious. Later: mine logs to auto-discover patterns, but manual rules get 80% of value quickly.",
+    "snippet": "Decision: Start with manual rule-based \"lessons\", not ML. Maintain a small config/ruleset: Copy [[failure_hints]] label = \"migration\" hint = \"Migration issues often need schema changes first. Check...",
     "tags": [
       "design",
       "failure",
@@ -428,6 +717,23 @@
     "section_title": "Implementation Notes #",
     "content": "See src/loop.zig:runIteration retry logic and src/state.zig:IssueState .",
     "snippet": "See src/loop.zig:runIteration retry logic and src/state.zig:IssueState .",
+    "tags": [
+      "design",
+      "failure",
+      "retry",
+      "recovery"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "failure-recovery#todo",
+    "url": "/failure-recovery.html#todo",
+    "section_id": "todo-691a9db4",
+    "section_hash": "691a9db47b0bb77e0c9f739df6c1df87a052caf0e10a98eb0e7bd8179ef79d75",
+    "title": "Failure Recovery",
+    "section_title": "TODO #",
+    "content": "Add failure context to retry prompts Implement self-reflection step Add breakdown agent with file-split strategy Implement scratch branch model for partial progress Add model escalation policy Implement failure taxonomy enum Add BLOCKED status with human escalation summary Add failure_hints config section",
+    "snippet": "Add failure context to retry prompts Implement self-reflection step Add breakdown agent with file-split strategy Implement scratch branch model for partial progress Add model escalation policy...",
     "tags": [
       "design",
       "failure",
@@ -485,14 +791,62 @@
     "type": "essay"
   },
   {
-    "id": "manifests#open-questions",
-    "url": "/manifests.html#open-questions",
-    "section_id": "open-questions-46f16f5f",
-    "section_hash": "46f16f5fa107686a809ca56018c6b0a52de977bac96267c02555e7465bc942dd",
+    "id": "manifests#1-granularity-file-level-with-soft-function-hints",
+    "url": "/manifests.html#1-granularity-file-level-with-soft-function-hints",
+    "section_id": "1-granularity-file-level-with-soft-function-hints-a89359cc",
+    "section_hash": "a89359ccafc9ee07ed0568b226d9a9e88c8d058d74893455be82cde3c507b30e",
     "title": "File Manifests",
-    "section_title": "Open Questions #",
-    "content": "Granularity — File-level is coarse. Should we support function-level or line-range manifests? Manifest Generation — How good is the planner at predicting which files an issue will touch? What's the false-negative rate (files needed but not declared)? Manifest Violations — Current behavior is rollback + retry. Should we ever accept a violation if the change is clearly correct? Dynamic Expansion — Should agents be able to request additional files mid-execution? Or does that break the isolation model?",
-    "snippet": "Granularity — File-level is coarse. Should we support function-level or line-range manifests? Manifest Generation — How good is the planner at predicting which files an issue will touch? What's the...",
+    "section_title": "1. Granularity: File-level with soft function hints #",
+    "content": "Decision: Stick to file-level manifests as the hard safety boundary. Add soft function-level hints inside the prompt. Use the manifest as: \"these are the only files you're allowed to change\" Inside each file, include function-level \"edit targets\" in the prompt: Copy You may edit only these functions in foo.zig: [foo, bar]. Line-ranges are brittle (they drift with edits and refactors) Function-level locking requires language-aware parsing and a robust symbol table — nice-to-have for later, not v1 safety",
+    "snippet": "Decision: Stick to file-level manifests as the hard safety boundary. Add soft function-level hints inside the prompt. Use the manifest as: \"these are the only files you're allowed to change\" Inside...",
+    "tags": [
+      "design",
+      "manifests",
+      "access-control"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "manifests#2-manifest-generation-instrumentation-replan-on-miss",
+    "url": "/manifests.html#2-manifest-generation-instrumentation-replan-on-miss",
+    "section_id": "2-manifest-generation-instrumentation-replan-on-miss-3a1cdb91",
+    "section_hash": "3a1cdb917f439fd2a75d81bd44e6e05b4f210eb8396c9fcd1afa0a0c03ac82ae",
+    "title": "File Manifests",
+    "section_title": "2. Manifest Generation: Instrumentation + replan on miss #",
+    "content": "Decision: Treat false negatives as an instrumentation problem first. Log for each issue: manifest_files_predicted files_actually_touched (from diff) Compute: False positives: predicted but unused (acceptable — widens safety sandbox) False negatives: needed but not declared (problematic) Short-term behavior: If the agent attempts to touch a non-manifest file: Reject that attempt Spawn a replan: run planner again with the new file explicitly mentioned e.g. \"You also needed X.zig; update your manifest\" Goal: Tune planner + retrieval so false negatives are rare.",
+    "snippet": "Decision: Treat false negatives as an instrumentation problem first. Log for each issue: manifest_files_predicted files_actually_touched (from diff) Compute: False positives: predicted but unused...",
+    "tags": [
+      "design",
+      "manifests",
+      "access-control"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "manifests#3-manifest-violations-never-accept-as-is",
+    "url": "/manifests.html#3-manifest-violations-never-accept-as-is",
+    "section_id": "3-manifest-violations-never-accept-as-is-e47cb45c",
+    "section_hash": "e47cb45c78fd5c0d0b5e65e68a0174c0ff08c0f9f188d7503ee2cc5be75a1613",
+    "title": "File Manifests",
+    "section_title": "3. Manifest Violations: Never accept as-is #",
+    "content": "Decision: Never accept a violation directly. Use violations as hints for replanning. If the change is clearly correct: Record: \"Agent wanted to touch foo.zig too\" Re-run planner with that fact, generate a new manifest including foo.zig Re-run the implementation under the new manifest Only then accept For interactive mode, offer: Copy Agent touched out-of-manifest file X, the change looks good. ➜ [Accept & expand manifest] / [Re-run] / [Discard] The automation path should always have a manifest-consistent attempt before merging.",
+    "snippet": "Decision: Never accept a violation directly. Use violations as hints for replanning. If the change is clearly correct: Record: \"Agent wanted to touch foo.zig too\" Re-run planner with that fact,...",
+    "tags": [
+      "design",
+      "manifests",
+      "access-control"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "manifests#4-dynamic-expansion-yes-via-orchestrator-mediated-manifest-v2",
+    "url": "/manifests.html#4-dynamic-expansion-yes-via-orchestrator-mediated-manifest-v2",
+    "section_id": "4-dynamic-expansion-yes-via-orchestrator-mediated-manifest-v2-98c7f6c8",
+    "section_hash": "98c7f6c8e9848a5cb98d7b74d35923a1403adc0b5d58c36ff2a4e1f2c7411721",
+    "title": "File Manifests",
+    "section_title": "4. Dynamic Expansion: Yes, via orchestrator-mediated \"manifest v2\" #",
+    "content": "Decision: Allow agents to request additional files mid-run, but only through explicit orchestrator coordination with locking rules applied. Flow: Agent hits missing symbol/doc and outputs: Copy NEED_FILE: src/auth.zig or Copy NEED_DOC: design/auth.md Orchestrator checks locks: If auth.zig is free: Acquire lock Produce manifest v2 including auth.zig Re-prompt the agent with expanded manifest and new file content If locked by another task: Tell agent: \"You cannot access auth.zig because it's locked; proceed without or wait\" This preserves the isolation model: No silent expansion All expansions are explicit, logged, and coordinated with concurrency control",
+    "snippet": "Decision: Allow agents to request additional files mid-run, but only through explicit orchestrator coordination with locking rules applied. Flow: Agent hits missing symbol/doc and outputs: Copy...",
     "tags": [
       "design",
       "manifests",
@@ -509,6 +863,22 @@
     "section_title": "Implementation Notes #",
     "content": "See src/state.zig:Manifest and src/loop.zig:verifyManifestCompliance .",
     "snippet": "See src/state.zig:Manifest and src/loop.zig:verifyManifestCompliance .",
+    "tags": [
+      "design",
+      "manifests",
+      "access-control"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "manifests#todo",
+    "url": "/manifests.html#todo",
+    "section_id": "todo-a4f0d1d8",
+    "section_hash": "a4f0d1d8295ee1b1858baacd285a80bfe145a3b1496ef859ce65728b9c981fb2",
+    "title": "File Manifests",
+    "section_title": "TODO #",
+    "content": "Add manifest instrumentation (predicted vs actual files) Implement replan-on-violation flow Add NEED_FILE / NEED_DOC signal parsing Add function-level hints to prompt builder",
+    "snippet": "Add manifest instrumentation (predicted vs actual files) Implement replan-on-violation flow Add NEED_FILE / NEED_DOC signal parsing Add function-level hints to prompt builder",
     "tags": [
       "design",
       "manifests",
@@ -568,14 +938,116 @@
     "type": "essay"
   },
   {
-    "id": "verification#open-questions",
-    "url": "/verification.html#open-questions",
-    "section_id": "open-questions-a7af6b6a",
-    "section_hash": "a7af6b6a29b3a65806a9ea6df45a3704eaa847a77ca4f99172c572a6ec3e6cfe",
+    "id": "verification#1-test-coverage-require-tests-for-new-behavior",
+    "url": "/verification.html#1-test-coverage-require-tests-for-new-behavior",
+    "section_id": "1-test-coverage-require-tests-for-new-behavior-1d7faa27",
+    "section_hash": "1d7faa279a4424da7191fdded93f7c18db6d58a1a0cd4193b65897674dbcafcc",
     "title": "Verification",
-    "section_title": "Open Questions #",
-    "content": "Test Coverage — What if the tests don't cover the change? Agent could introduce a bug that passes existing tests. Review Pass — Should noface run a dedicated reviewer agent on each change before accepting? Cost vs. benefit? Static Analysis — Should we run linters, type checkers, security scanners as additional gates? Semantic Verification — Tests check behavior, manifests check scope. But what about \"did the agent actually address the issue?\" Sometimes code passes tests but doesn't solve the problem. Confidence Signals — Can we detect low-confidence completions? Agent says \"done\" but hedges in comments? Unusual patterns? Partial Acceptance — If 2 of 3 acceptance criteria pass, do we accept partially? Or all-or-nothing? Human Review Gate — For high-risk changes (security, config), should noface require human approval?",
-    "snippet": "Test Coverage — What if the tests don't cover the change? Agent could introduce a bug that passes existing tests. Review Pass — Should noface run a dedicated reviewer agent on each change before...",
+    "section_title": "1. Test Coverage: Require tests for new behavior #",
+    "content": "Decision: Add test-centric enhancements for changes that add new behavior. For changes that add new behavior: Ask agent to write or update tests as part of the task Optionally run coverage diff if coverage tool exists: If new/changed lines have zero coverage → soft or hard gate Where tooling is limited: At least ensure: \"If tests exist in this module, check that they were updated\" Warn if tests not updated for behavioral changes",
+    "snippet": "Decision: Add test-centric enhancements for changes that add new behavior. For changes that add new behavior: Ask agent to write or update tests as part of the task Optionally run coverage diff if...",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#2-review-pass-optional-but-recommended-for-non-trivial-changes",
+    "url": "/verification.html#2-review-pass-optional-but-recommended-for-non-trivial-changes",
+    "section_id": "2-review-pass-optional-but-recommended-for-non-trivial-changes-d2d846df",
+    "section_hash": "d2d846df9840adfdfbd6d0af2a4c2056a819c8eb11585350b89c7d4a4cb403b8",
+    "title": "Verification",
+    "section_title": "2. Review Pass: Optional but recommended for non-trivial changes #",
+    "content": "Decision: Add dedicated reviewer pass as an optional gate for non-trivial changes. Reviewer inputs: Issue description Old code vs new code diff Test results Reviewer outputs: Verdict: OK / NOT_OK / NEEDS_HUMAN Specific comments Trigger heuristics: Condition Action Large diffs Always review High-risk directories Always review Changes without tests Always review Small, well-tested changes Skip or downgrade",
+    "snippet": "Decision: Add dedicated reviewer pass as an optional gate for non-trivial changes. Reviewer inputs: Issue description Old code vs new code diff Test results Reviewer outputs: Verdict: OK / NOT_OK /...",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#3-static-analysis-integrate-repos-existing-tools",
+    "url": "/verification.html#3-static-analysis-integrate-repos-existing-tools",
+    "section_id": "3-static-analysis-integrate-repos-existing-tools-7648da39",
+    "section_hash": "7648da39a612dee3d56db2a87e78f44f5b2191f550a1d8cdb5e60903c4b03343",
+    "title": "Verification",
+    "section_title": "3. Static Analysis: Integrate repo's existing tools #",
+    "content": "Decision: Integrate whatever static analysis the repo already has. Hard gates (block on failure): Type errors ( zig build , tsc , mypy ) Formatter failures ( zig fmt , prettier ) Soft gates (log, maybe create follow-up): New lint warnings Security scanner findings (unless critical) Copy [verification.static_analysis] hard_gates = [\"zig build\", \"zig fmt --check\"] soft_gates = [\"clippy\", \"eslint\"]",
+    "snippet": "Decision: Integrate whatever static analysis the repo already has. Hard gates (block on failure): Type errors ( zig build , tsc , mypy ) Formatter failures ( zig fmt , prettier ) Soft gates (log,...",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#4-semantic-verification-judge-agent-for-complex-issues",
+    "url": "/verification.html#4-semantic-verification-judge-agent-for-complex-issues",
+    "section_id": "4-semantic-verification-judge-agent-for-complex-issues-f39b463e",
+    "section_hash": "f39b463e5cba88a9a52a0fdab0ae8d2a3c6ae1b0abef13b4fbca059911c8c613",
+    "title": "Verification",
+    "section_title": "4. Semantic Verification: Judge agent for complex issues #",
+    "content": "Decision: Add semantic check step for complex issues. Option 1: Explicit reasoning Have implementer/reviewer write: \"Here is how the change addresses the issue…\" Check coherence between explanation and diff Option 2: Judge agent Input: issue description + old code + new code Question: \"Does this change resolve the described behavior? Is anything missing or unrelated?\" Doesn't need to be perfect; even catching obvious mismatches is a big win.",
+    "snippet": "Decision: Add semantic check step for complex issues. Option 1: Explicit reasoning Have implementer/reviewer write: \"Here is how the change addresses the issue…\" Check coherence between explanation...",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#5-confidence-signals-explicit-confidence-risk-metadata",
+    "url": "/verification.html#5-confidence-signals-explicit-confidence-risk-metadata",
+    "section_id": "5-confidence-signals-explicit-confidence-risk-metadata-ced49703",
+    "section_hash": "ced49703508b9f4cab5454a78ccc3614ecea30956956676f0c5d050fc7e09678",
+    "title": "Verification",
+    "section_title": "5. Confidence Signals: Explicit confidence + risk metadata #",
+    "content": "Decision: Ask agent to output explicit confidence and risks. Prompt addition: Copy After implementing, output: CONFIDENCE: X/5 RISKS: - [list any edge cases or uncertainties] Policy: If confidence ≤ 2/5 → require reviewer + maybe human Also watch for heuristics: Lots of TODOs in output \"I think / maybe\" in comments Weirdly small or huge diffs",
+    "snippet": "Decision: Ask agent to output explicit confidence and risks. Prompt addition: Copy After implementing, output: CONFIDENCE: X/5 RISKS: - [list any edge cases or uncertainties] Policy: If confidence ≤...",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#6-partial-acceptance-hard-vs-soft-gates",
+    "url": "/verification.html#6-partial-acceptance-hard-vs-soft-gates",
+    "section_id": "6-partial-acceptance-hard-vs-soft-gates-47f2928e",
+    "section_hash": "47f2928e23de5cf4ab51970b01fb9d70a24ca8cb3723ad373db3d03064836a0d",
+    "title": "Verification",
+    "section_title": "6. Partial Acceptance: Hard vs soft gates #",
+    "content": "Decision: Define hard vs soft gates; never partially merge. Hard gates (must pass for merge): Tests passing No syntax/build errors Manifest compliance Soft gates (can proceed with warnings): Lint warnings Coverage thresholds Reviewer \"nit\" comments Policy: Automated merge requires all hard gates Soft gate failures: Either block and open follow-up issue, or Allow merge but log warnings and create cleanup issues Avoid partial merges of file subsets; use the branch model from failure-recovery instead.",
+    "snippet": "Decision: Define hard vs soft gates; never partially merge. Hard gates (must pass for merge): Tests passing No syntax/build errors Manifest compliance Soft gates (can proceed with warnings): Lint...",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#7-human-review-gate-risk-classification-for-high-risk-changes",
+    "url": "/verification.html#7-human-review-gate-risk-classification-for-high-risk-changes",
+    "section_id": "7-human-review-gate-risk-classification-for-high-risk-changes-4fe391d6",
+    "section_hash": "4fe391d6c5ca356e0a6f896b29915c4f706cad01d1f05815e494967b2239a24e",
+    "title": "Verification",
+    "section_title": "7. Human Review Gate: Risk classification for high-risk changes #",
+    "content": "Decision: Build risk classification with hard human gate for sensitive areas. High-risk triggers: Files/directories: auth/ , payments/ , secrets/ , infra/ , prod-config/ Labels: security , compliance , breaking-change For high-risk changes: noface never auto-merges Opens PR or surfaces diff with \"requires human approval\" flag Optionally pre-annotated with AI reviewer's comments Copy [verification.human_required] paths = [\"src/auth/\", \"src/payments/\", \"config/prod/\"] labels = [\"security\", \"compliance\"]",
+    "snippet": "Decision: Build risk classification with hard human gate for sensitive areas. High-risk triggers: Files/directories: auth/ , payments/ , secrets/ , infra/ , prod-config/ Labels: security , compliance...",
     "tags": [
       "design",
       "verification",
@@ -593,6 +1065,23 @@
     "section_title": "Implementation Notes #",
     "content": "See src/loop.zig:verifyManifestCompliance and prompt instructions for self-testing.",
     "snippet": "See src/loop.zig:verifyManifestCompliance and prompt instructions for self-testing.",
+    "tags": [
+      "design",
+      "verification",
+      "testing",
+      "acceptance"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "verification#todo",
+    "url": "/verification.html#todo",
+    "section_id": "todo-24fc4f72",
+    "section_hash": "24fc4f7259a4c595674344dbb2a8c9c8139fb86529ad88ecc3376fe501d7ca33",
+    "title": "Verification",
+    "section_title": "TODO #",
+    "content": "Add test coverage checking (if coverage tool available) Implement reviewer pass with risk-based triggering Add static analysis integration (hard/soft gates) Add judge agent for semantic verification Parse confidence/risk metadata from agent output Add human review gate for high-risk paths Implement soft gate → follow-up issue creation",
+    "snippet": "Add test coverage checking (if coverage tool available) Implement reviewer pass with risk-based triggering Add static analysis integration (hard/soft gates) Add judge agent for semantic verification...",
     "tags": [
       "design",
       "verification",
@@ -653,14 +1142,99 @@
     "type": "essay"
   },
   {
-    "id": "multi-pass#open-questions",
-    "url": "/multi-pass.html#open-questions",
-    "section_id": "open-questions-ed024138",
-    "section_hash": "ed02413827dc7f83ec1f4e2cd3d5600ebc672b6607f40eb690aad53bbea41383",
+    "id": "multi-pass#1-pass-intervals-event-driven-adaptive-not-fixed",
+    "url": "/multi-pass.html#1-pass-intervals-event-driven-adaptive-not-fixed",
+    "section_id": "1-pass-intervals-event-driven-adaptive-not-fixed-65104122",
+    "section_hash": "65104122a397e04bf942b1d9e7106f3d94fcc2d5ab7ba4cfafaf8d90175f184b",
     "title": "Multi-Pass Architecture",
-    "section_title": "Open Questions #",
-    "content": "Pass Intervals — planner_interval = 5 and quality_interval = 10 are arbitrary. What's optimal? Should they be adaptive? Reviewer Pass — Should noface add a dedicated reviewer pass that checks each implementation before accepting? Current flow trusts tests + manifest. Feedback Loops — If the quality pass finds issues, they become new issues. But there's no direct feedback to the implementer. Should there be? Pass Ordering — Planner runs periodically, not before every implementation. Does this cause stale manifests? Should planner run on-demand? Diminishing Returns — The survey notes additional passes have diminishing returns. How do we measure if a pass is worth the cost? Model Selection — Planner/quality use Codex; implementation uses Claude. Is this the right split? Should we try other combinations?",
-    "snippet": "Pass Intervals — planner_interval = 5 and quality_interval = 10 are arbitrary. What's optimal? Should they be adaptive? Reviewer Pass — Should noface add a dedicated reviewer pass that checks each...",
+    "section_title": "1. Pass Intervals: Event-driven + adaptive (not fixed) #",
+    "content": "Decision: Move from fixed intervals to event-driven + adaptive. Planner: Run on-demand for new issues (always) Run periodically when: A manifest violation occurs (planner \"missed\" a file) Large codebase change merged (e.g., big refactor) Quality: Run when: A batch of N issues is completed A spike in failures or bug reports is observed Keep planner_interval and quality_interval as fallback periodic jobs, but teach orchestrator to invoke them in response to signals.",
+    "snippet": "Decision: Move from fixed intervals to event-driven + adaptive. Planner: Run on-demand for new issues (always) Run periodically when: A manifest violation occurs (planner \"missed\" a file) Large...",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#2-reviewer-pass-yes-for-high-risk-changes",
+    "url": "/multi-pass.html#2-reviewer-pass-yes-for-high-risk-changes",
+    "section_id": "2-reviewer-pass-yes-for-high-risk-changes-424f906f",
+    "section_hash": "424f906f81284fdb9aefbe7bc7acdd21148046316ea9b956980b085932a2a23b",
+    "title": "Multi-Pass Architecture",
+    "section_title": "2. Reviewer Pass: Yes, for high-risk changes #",
+    "content": "Decision: Add a dedicated reviewer pass, but only for certain classes of changes. Trigger reviewer when: Diff size > threshold Changed files in security/ , auth/ , infra/ , config/ No tests exist or coverage is low For low-risk, tiny changes where tests are strong: Tests + manifest is probably enough; skip reviewer to save cost",
+    "snippet": "Decision: Add a dedicated reviewer pass, but only for certain classes of changes. Trigger reviewer when: Diff size > threshold Changed files in security/ , auth/ , infra/ , config/ No tests exist or...",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#3-feedback-loops-quality-findings-feed-back-to-implementer",
+    "url": "/multi-pass.html#3-feedback-loops-quality-findings-feed-back-to-implementer",
+    "section_id": "3-feedback-loops-quality-findings-feed-back-to-implementer-15e0e916",
+    "section_hash": "15e0e91684688b6fbe76851ec2720387cac8b795d2b174d3e40df1d9a06094bb",
+    "title": "Multi-Pass Architecture",
+    "section_title": "3. Feedback Loops: Quality findings feed back to implementer #",
+    "content": "Decision: Quality findings should feed back directly to next implementation attempt. Implementation: When quality pass opens \"follow-up issues\", attach: Links to the original issue The quality agent's analysis (e.g., \"didn't handle null case in X\") When implementer picks up follow-up issue, include analysis in prompt: Copy The previous attempt failed because: [list]. Fix these specific problems. This turns the quality pass into a teacher, not just a bug generator.",
+    "snippet": "Decision: Quality findings should feed back directly to next implementation attempt. Implementation: When quality pass opens \"follow-up issues\", attach: Links to the original issue The quality...",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#4-pass-ordering-planner-on-demand-per-issue-not-just-periodic",
+    "url": "/multi-pass.html#4-pass-ordering-planner-on-demand-per-issue-not-just-periodic",
+    "section_id": "4-pass-ordering-planner-on-demand-per-issue-not-just-periodic-e3a2e535",
+    "section_hash": "e3a2e53508d68915a5b8a5f2689ff93e2b4d015cb0f0547a90fb07e3b9306136",
+    "title": "Multi-Pass Architecture",
+    "section_title": "4. Pass Ordering: Planner on-demand per-issue (not just periodic) #",
+    "content": "Decision: Run planner on-demand for manifests, keep periodic for backlog management. Flow: New issue arrives Planner runs, generates manifest + hints Implementation runs Periodic planner still exists for: Rebalancing / reprioritizing backlog Suggesting new refactor issues Relying only on periodic planner is where \"stale manifests\" come from.",
+    "snippet": "Decision: Run planner on-demand for manifests, keep periodic for backlog management. Flow: New issue arrives Planner runs, generates manifest + hints Implementation runs Periodic planner still exists...",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#5-diminishing-returns-data-driven-pass-value-metrics",
+    "url": "/multi-pass.html#5-diminishing-returns-data-driven-pass-value-metrics",
+    "section_id": "5-diminishing-returns-data-driven-pass-value-metrics-7ebeb943",
+    "section_hash": "7ebeb9435c6651e0ad69093141d834d314fad3e9d6c016abb68ce3268dee1def",
+    "title": "Multi-Pass Architecture",
+    "section_title": "5. Diminishing Returns: Data-driven pass value metrics #",
+    "content": "Decision: Log per-pass value metrics and make decisions data-driven. For each pass type (planner, reviewer, quality), count: How often it changes outcome: Reviewer finds a bug → implementation corrected Quality pass yields issues not caught otherwise Track: Average tokens / time per pass Compute: \"Bugs caught per thousand tokens\" or \"per minute\" If reviewer catches issues in 1/50 changes but costs a lot, restrict it to riskier paths.",
+    "snippet": "Decision: Log per-pass value metrics and make decisions data-driven. For each pass type (planner, reviewer, quality), count: How often it changes outcome: Reviewer finds a bug → implementation...",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#6-model-selection-abstract-behind-roles-default-to-strong-model",
+    "url": "/multi-pass.html#6-model-selection-abstract-behind-roles-default-to-strong-model",
+    "section_id": "6-model-selection-abstract-behind-roles-default-to-strong-model-842b6ca2",
+    "section_hash": "842b6ca2318cd325df110cf050c2c73674e0789ec9e7cb321757a4315d790b5b",
+    "title": "Multi-Pass Architecture",
+    "section_title": "6. Model Selection: Abstract behind roles, default to strong model #",
+    "content": "Decision: Short term, keep it simple and unify models where reasoning matters. Design: Copy [models] planner = \"claude\" # strong model for planning implementer = \"claude\" # strong model for implementation reviewer = \"claude\" # can use cheaper if cost-sensitive quality = \"codex\" # can use cheaper for triage Rationale: Planner quality matters a lot; using same strong model as implementer often improves plans Quality/triage can often use cheaper model if cost is a concern Make it easy to A/B test different combinations.",
+    "snippet": "Decision: Short term, keep it simple and unify models where reasoning matters. Design: Copy [models] planner = \"claude\" # strong model for planning implementer = \"claude\" # strong model for...",
     "tags": [
       "design",
       "planner",
@@ -678,6 +1252,23 @@
     "section_title": "Implementation Notes #",
     "content": "See src/loop.zig:runPlannerPass , runQualityPass , runIteration .",
     "snippet": "See src/loop.zig:runPlannerPass , runQualityPass , runIteration .",
+    "tags": [
+      "design",
+      "planner",
+      "reviewer",
+      "passes"
+    ],
+    "type": "essay"
+  },
+  {
+    "id": "multi-pass#todo",
+    "url": "/multi-pass.html#todo",
+    "section_id": "todo-14e628d6",
+    "section_hash": "14e628d6118ad7afd7ca06e4174f3538c19bbafa2781aa7179e4e558165711c0",
+    "title": "Multi-Pass Architecture",
+    "section_title": "TODO #",
+    "content": "Implement on-demand planner trigger for new issues Add reviewer pass with risk-based triggering Attach quality findings to follow-up issues Add per-pass metrics logging Abstract model selection behind role config",
+    "snippet": "Implement on-demand planner trigger for new issues Add reviewer pass with risk-based triggering Attach quality findings to follow-up issues Add per-pass metrics logging Abstract model selection...",
     "tags": [
       "design",
       "planner",

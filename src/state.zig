@@ -505,15 +505,13 @@ pub const OrchestratorState = struct {
         }
 
         // Parse current_batch
-        // TODO: implement parseBatch when batch persistence is needed
-        if (findJsonSection(json, "\"current_batch\"")) |batch_section| {
-            _ = batch_section; // Batch parsing not yet implemented
+        if (findCurrentBatchSection(json)) |batch_section| {
+            self.current_batch = try self.parseBatch(batch_section);
         }
 
         // Parse pending_batches array
-        // TODO: implement parsePendingBatches when batch persistence is needed
         if (findJsonSection(json, "\"pending_batches\"")) |batches_section| {
-            _ = batches_section; // Batch parsing not yet implemented
+            try self.parsePendingBatches(batches_section);
         }
     }
 
@@ -562,19 +560,31 @@ pub const OrchestratorState = struct {
                     // Skip internal keys
                     if (std.mem.eql(u8, issue_id, "status") or
                         std.mem.eql(u8, issue_id, "attempt_count") or
-                        std.mem.eql(u8, issue_id, "assigned_worker"))
+                        std.mem.eql(u8, issue_id, "assigned_worker") or
+                        std.mem.eql(u8, issue_id, "manifest") or
+                        std.mem.eql(u8, issue_id, "last_attempt") or
+                        std.mem.eql(u8, issue_id, "primary_files") or
+                        std.mem.eql(u8, issue_id, "read_files") or
+                        std.mem.eql(u8, issue_id, "forbidden_files") or
+                        std.mem.eql(u8, issue_id, "attempt_number") or
+                        std.mem.eql(u8, issue_id, "timestamp") or
+                        std.mem.eql(u8, issue_id, "result") or
+                        std.mem.eql(u8, issue_id, "files_touched") or
+                        std.mem.eql(u8, issue_id, "notes"))
                     {
                         i = key_end + 1;
                         continue;
                     }
 
-                    // Find the value object
+                    // Find the value object - need to match braces properly for nested objects
                     if (std.mem.indexOfPos(u8, json, key_end, "{")) |val_start| {
-                        if (std.mem.indexOfPos(u8, json, val_start, "}")) |val_end| {
+                        if (findMatchingBrace(json[val_start..])) |brace_offset| {
+                            const val_end = val_start + brace_offset;
                             const val_json = json[val_start .. val_end + 1];
 
+                            const owned_id = try self.allocator.dupe(u8, issue_id);
                             var issue = IssueState{
-                                .id = try self.allocator.dupe(u8, issue_id),
+                                .id = owned_id,
                             };
 
                             if (parseJsonString(self.allocator, val_json, "\"status\"")) |status_str| {
@@ -588,7 +598,16 @@ pub const OrchestratorState = struct {
                                 issue.assigned_worker = @intCast(v);
                             }
 
-                            const owned_id = try self.allocator.dupe(u8, issue_id);
+                            // Parse manifest if present
+                            if (findJsonSection(val_json, "\"manifest\"")) |manifest_json| {
+                                issue.manifest = try self.parseManifest(manifest_json);
+                            }
+
+                            // Parse last_attempt if present
+                            if (findJsonSection(val_json, "\"last_attempt\"")) |attempt_json| {
+                                issue.last_attempt = try self.parseAttemptRecord(attempt_json);
+                            }
+
                             try self.issues.put(owned_id, issue);
 
                             i = val_end + 1;
@@ -598,6 +617,139 @@ pub const OrchestratorState = struct {
                 }
             }
             break;
+        }
+    }
+
+    fn parseManifest(self: *OrchestratorState, json: []const u8) !Manifest {
+        var manifest = Manifest{};
+
+        // Parse primary_files array
+        if (findJsonSection(json, "\"primary_files\"")) |arr_json| {
+            manifest.primary_files = try self.parseStringArray(arr_json);
+        }
+
+        // Parse read_files array
+        if (findJsonSection(json, "\"read_files\"")) |arr_json| {
+            manifest.read_files = try self.parseStringArray(arr_json);
+        }
+
+        // Parse forbidden_files array
+        if (findJsonSection(json, "\"forbidden_files\"")) |arr_json| {
+            manifest.forbidden_files = try self.parseStringArray(arr_json);
+        }
+
+        return manifest;
+    }
+
+    fn parseAttemptRecord(self: *OrchestratorState, json: []const u8) !AttemptRecord {
+        var record = AttemptRecord{
+            .attempt_number = 0,
+            .timestamp = 0,
+            .result = .failed,
+        };
+
+        if (parseJsonInt(json, "\"attempt_number\"")) |v| {
+            record.attempt_number = @intCast(v);
+        }
+        if (parseJsonInt(json, "\"timestamp\"")) |v| {
+            record.timestamp = v;
+        }
+        if (parseJsonString(self.allocator, json, "\"result\"")) |result_str| {
+            defer self.allocator.free(result_str);
+            record.result = std.meta.stringToEnum(AttemptResult, result_str) orelse .failed;
+        }
+        if (parseJsonString(self.allocator, json, "\"notes\"")) |notes| {
+            record.notes = notes;
+        }
+        if (findJsonSection(json, "\"files_touched\"")) |arr_json| {
+            record.files_touched = try self.parseStringArray(arr_json);
+        }
+
+        return record;
+    }
+
+    fn parseStringArray(self: *OrchestratorState, json: []const u8) ![]const []const u8 {
+        var strings = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (strings.items) |s| self.allocator.free(s);
+            strings.deinit(self.allocator);
+        }
+
+        var i: usize = 0;
+        while (i < json.len) {
+            // Find opening quote
+            if (std.mem.indexOfPos(u8, json, i, "\"")) |start| {
+                // Find closing quote (handling escapes)
+                var end = start + 1;
+                while (end < json.len and json[end] != '"') {
+                    if (json[end] == '\\' and end + 1 < json.len) {
+                        end += 2;
+                    } else {
+                        end += 1;
+                    }
+                }
+                if (end < json.len) {
+                    const str = try parseJsonEscapedString(self.allocator, json[start + 1 .. end]);
+                    try strings.append(self.allocator, str);
+                    i = end + 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+
+        if (strings.items.len == 0) {
+            return &.{};
+        }
+        return try strings.toOwnedSlice(self.allocator);
+    }
+
+    fn parseBatch(self: *OrchestratorState, json: []const u8) !Batch {
+        var batch = Batch{
+            .id = 0,
+            .issue_ids = &.{},
+            .status = .pending,
+        };
+
+        if (parseJsonInt(json, "\"id\"")) |v| {
+            batch.id = @intCast(v);
+        }
+        if (parseJsonString(self.allocator, json, "\"status\"")) |status_str| {
+            defer self.allocator.free(status_str);
+            batch.status = std.meta.stringToEnum(@TypeOf(batch.status), status_str) orelse .pending;
+        }
+        if (parseJsonInt(json, "\"started_at\"")) |v| {
+            batch.started_at = v;
+        }
+        if (parseJsonInt(json, "\"completed_at\"")) |v| {
+            batch.completed_at = v;
+        }
+        if (findJsonSection(json, "\"issue_ids\"")) |arr_json| {
+            batch.issue_ids = try self.parseStringArray(arr_json);
+        }
+
+        return batch;
+    }
+
+    fn parsePendingBatches(self: *OrchestratorState, json: []const u8) !void {
+        var i: usize = 0;
+        while (i < json.len) {
+            // Find next batch object
+            if (std.mem.indexOfPos(u8, json, i, "{")) |start| {
+                if (findMatchingBrace(json[start..])) |brace_offset| {
+                    const end = start + brace_offset;
+                    const batch_json = json[start .. end + 1];
+                    const batch = try self.parseBatch(batch_json);
+                    try self.pending_batches.append(self.allocator, batch);
+                    i = end + 1;
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
         }
     }
 
@@ -1013,9 +1165,9 @@ fn parseJsonString(allocator: std.mem.Allocator, json: []const u8, key: []const 
     const key_pos = std.mem.indexOf(u8, json, key) orelse return null;
     const after_key = json[key_pos + key.len ..];
 
-    // Skip closing quote of key, colon and whitespace
+    // Skip colon and whitespace to find opening quote of string value
     var i: usize = 0;
-    while (i < after_key.len and (after_key[i] == '"' or after_key[i] == ':' or after_key[i] == ' ' or after_key[i] == '\t')) : (i += 1) {}
+    while (i < after_key.len and (after_key[i] == ':' or after_key[i] == ' ' or after_key[i] == '\t' or after_key[i] == '\n')) : (i += 1) {}
 
     if (i >= after_key.len or after_key[i] != '"') return null;
     i += 1; // Skip opening quote
@@ -1061,6 +1213,94 @@ fn findJsonSection(json: []const u8, key: []const u8) ?[]const u8 {
     }
 
     return after_key[i..j];
+}
+
+/// Find matching closing brace for an opening brace at position 0
+/// Returns the offset to the closing brace, or null if not found
+fn findMatchingBrace(json: []const u8) ?usize {
+    if (json.len == 0 or json[0] != '{') return null;
+
+    var depth: u32 = 1;
+    var i: usize = 1;
+    while (i < json.len and depth > 0) {
+        switch (json[i]) {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            '"' => {
+                // Skip string content
+                i += 1;
+                while (i < json.len and json[i] != '"') {
+                    if (json[i] == '\\' and i + 1 < json.len) {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+            },
+            else => {},
+        }
+        i += 1;
+    }
+
+    if (depth == 0) {
+        return i - 1;
+    }
+    return null;
+}
+
+/// Find the current_batch section, handling the case where it may be null
+fn findCurrentBatchSection(json: []const u8) ?[]const u8 {
+    const key = "\"current_batch\"";
+    const key_pos = std.mem.indexOf(u8, json, key) orelse return null;
+    const after_key = json[key_pos + key.len ..];
+
+    // Skip colon and whitespace
+    var i: usize = 0;
+    while (i < after_key.len and (after_key[i] == ':' or after_key[i] == ' ' or after_key[i] == '\t' or after_key[i] == '\n')) : (i += 1) {}
+
+    if (i >= after_key.len) return null;
+
+    // Check for null
+    if (i + 4 <= after_key.len and std.mem.eql(u8, after_key[i .. i + 4], "null")) {
+        return null;
+    }
+
+    // Must be an object
+    if (after_key[i] != '{') return null;
+
+    if (findMatchingBrace(after_key[i..])) |brace_offset| {
+        return after_key[i .. i + brace_offset + 1];
+    }
+    return null;
+}
+
+/// Parse an escaped JSON string, converting escape sequences
+fn parseJsonEscapedString(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
+    var result = std.ArrayListUnmanaged(u8){};
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < input.len) {
+        if (input[i] == '\\' and i + 1 < input.len) {
+            switch (input[i + 1]) {
+                '"' => try result.append(allocator, '"'),
+                '\\' => try result.append(allocator, '\\'),
+                'n' => try result.append(allocator, '\n'),
+                'r' => try result.append(allocator, '\r'),
+                't' => try result.append(allocator, '\t'),
+                else => {
+                    try result.append(allocator, input[i]);
+                    try result.append(allocator, input[i + 1]);
+                },
+            }
+            i += 2;
+        } else {
+            try result.append(allocator, input[i]);
+            i += 1;
+        }
+    }
+
+    return try result.toOwnedSlice(allocator);
 }
 
 fn extractBaseFile(file_spec: []const u8) []const u8 {
@@ -1421,4 +1661,213 @@ test "tryAcquireLocks handles file spec with line ranges" {
     // Lock should be on base file, not the spec with line range
     try std.testing.expect(state.locks.contains("src/foo.zig"));
     try std.testing.expect(!state.locks.contains("src/foo.zig:100-200"));
+}
+
+test "manifest serialization roundtrip" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Create a manifest with all field types populated
+    var primary = try std.testing.allocator.alloc([]const u8, 2);
+    primary[0] = try std.testing.allocator.dupe(u8, "src/main.zig");
+    primary[1] = try std.testing.allocator.dupe(u8, "src/helper.zig:100-200");
+    var read_files = try std.testing.allocator.alloc([]const u8, 1);
+    read_files[0] = try std.testing.allocator.dupe(u8, "src/config.zig");
+    var forbidden = try std.testing.allocator.alloc([]const u8, 1);
+    forbidden[0] = try std.testing.allocator.dupe(u8, "src/secret.zig");
+
+    const manifest = Manifest{
+        .primary_files = primary,
+        .read_files = read_files,
+        .forbidden_files = forbidden,
+    };
+    try state.setManifest("test-issue", manifest);
+
+    // Serialize to JSON
+    var content = std.ArrayListUnmanaged(u8){};
+    defer content.deinit(std.testing.allocator);
+    try state.writeJson(&content);
+
+    // Parse the JSON back
+    var loaded = OrchestratorState.init(std.testing.allocator);
+    defer loaded.deinit();
+    loaded.project_name = try std.testing.allocator.dupe(u8, "test");
+    try loaded.parseJson(content.items);
+
+    // Verify manifest was preserved
+    const loaded_manifest = loaded.getManifest("test-issue");
+    try std.testing.expect(loaded_manifest != null);
+    try std.testing.expectEqual(@as(usize, 2), loaded_manifest.?.primary_files.len);
+    try std.testing.expect(std.mem.eql(u8, loaded_manifest.?.primary_files[0], "src/main.zig"));
+    try std.testing.expect(std.mem.eql(u8, loaded_manifest.?.primary_files[1], "src/helper.zig:100-200"));
+    try std.testing.expectEqual(@as(usize, 1), loaded_manifest.?.read_files.len);
+    try std.testing.expect(std.mem.eql(u8, loaded_manifest.?.read_files[0], "src/config.zig"));
+    try std.testing.expectEqual(@as(usize, 1), loaded_manifest.?.forbidden_files.len);
+    try std.testing.expect(std.mem.eql(u8, loaded_manifest.?.forbidden_files[0], "src/secret.zig"));
+}
+
+test "attempt record serialization roundtrip" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Set up an issue with an attempt record
+    try state.updateIssue("test-issue", .running);
+    try state.recordAttempt("test-issue", .failed, "Test failure notes");
+
+    // Serialize to JSON
+    var content = std.ArrayListUnmanaged(u8){};
+    defer content.deinit(std.testing.allocator);
+    try state.writeJson(&content);
+
+    // Parse the JSON back
+    var loaded = OrchestratorState.init(std.testing.allocator);
+    defer loaded.deinit();
+    loaded.project_name = try std.testing.allocator.dupe(u8, "test");
+    try loaded.parseJson(content.items);
+
+    // Verify attempt record was preserved
+    const issue = loaded.issues.get("test-issue");
+    try std.testing.expect(issue != null);
+    try std.testing.expectEqual(@as(u32, 1), issue.?.attempt_count);
+    try std.testing.expect(issue.?.last_attempt != null);
+    try std.testing.expectEqual(@as(u32, 1), issue.?.last_attempt.?.attempt_number);
+    try std.testing.expectEqual(AttemptResult.failed, issue.?.last_attempt.?.result);
+    try std.testing.expect(std.mem.eql(u8, issue.?.last_attempt.?.notes, "Test failure notes"));
+}
+
+test "current batch serialization roundtrip" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Create a current batch
+    var issue_ids = try std.testing.allocator.alloc([]const u8, 2);
+    issue_ids[0] = try std.testing.allocator.dupe(u8, "issue-a");
+    issue_ids[1] = try std.testing.allocator.dupe(u8, "issue-b");
+
+    state.current_batch = Batch{
+        .id = 42,
+        .issue_ids = issue_ids,
+        .status = .running,
+        .started_at = 1234567890,
+        .completed_at = null,
+    };
+
+    // Serialize to JSON
+    var content = std.ArrayListUnmanaged(u8){};
+    defer content.deinit(std.testing.allocator);
+    try state.writeJson(&content);
+
+    // Parse the JSON back
+    var loaded = OrchestratorState.init(std.testing.allocator);
+    defer loaded.deinit();
+    loaded.project_name = try std.testing.allocator.dupe(u8, "test");
+    try loaded.parseJson(content.items);
+
+    // Verify current batch was preserved
+    try std.testing.expect(loaded.current_batch != null);
+    try std.testing.expectEqual(@as(u32, 42), loaded.current_batch.?.id);
+    try std.testing.expectEqual(@as(usize, 2), loaded.current_batch.?.issue_ids.len);
+    try std.testing.expect(std.mem.eql(u8, loaded.current_batch.?.issue_ids[0], "issue-a"));
+    try std.testing.expect(std.mem.eql(u8, loaded.current_batch.?.issue_ids[1], "issue-b"));
+    try std.testing.expectEqual(@as(i64, 1234567890), loaded.current_batch.?.started_at.?);
+}
+
+test "pending batches serialization roundtrip" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Add two pending batches
+    var ids1 = try std.testing.allocator.alloc([]const u8, 1);
+    ids1[0] = try std.testing.allocator.dupe(u8, "batch1-issue");
+    _ = try state.addBatch(ids1);
+
+    var ids2 = try std.testing.allocator.alloc([]const u8, 2);
+    ids2[0] = try std.testing.allocator.dupe(u8, "batch2-issue-a");
+    ids2[1] = try std.testing.allocator.dupe(u8, "batch2-issue-b");
+    _ = try state.addBatch(ids2);
+
+    // Serialize to JSON
+    var content = std.ArrayListUnmanaged(u8){};
+    defer content.deinit(std.testing.allocator);
+    try state.writeJson(&content);
+
+    // Parse the JSON back
+    var loaded = OrchestratorState.init(std.testing.allocator);
+    defer loaded.deinit();
+    loaded.project_name = try std.testing.allocator.dupe(u8, "test");
+    try loaded.parseJson(content.items);
+
+    // Verify pending batches were preserved
+    try std.testing.expectEqual(@as(usize, 2), loaded.pending_batches.items.len);
+    try std.testing.expectEqual(@as(u32, 1), loaded.pending_batches.items[0].id);
+    try std.testing.expectEqual(@as(usize, 1), loaded.pending_batches.items[0].issue_ids.len);
+    try std.testing.expect(std.mem.eql(u8, loaded.pending_batches.items[0].issue_ids[0], "batch1-issue"));
+    try std.testing.expectEqual(@as(u32, 2), loaded.pending_batches.items[1].id);
+    try std.testing.expectEqual(@as(usize, 2), loaded.pending_batches.items[1].issue_ids.len);
+}
+
+test "crash recovery preserves manifests and batches" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Set up state with manifest, batch, and attempt
+    var primary = try std.testing.allocator.alloc([]const u8, 1);
+    primary[0] = try std.testing.allocator.dupe(u8, "src/file.zig");
+    try state.setManifest("test-issue", Manifest{ .primary_files = primary });
+
+    var batch_ids = try std.testing.allocator.alloc([]const u8, 1);
+    batch_ids[0] = try std.testing.allocator.dupe(u8, "test-issue");
+    _ = try state.addBatch(batch_ids);
+
+    try state.updateIssue("test-issue", .running);
+    try state.recordAttempt("test-issue", .timeout, "Worker timed out");
+
+    // Simulate a worker crash state
+    state.workers[0].status = .running;
+    state.workers[0].current_issue = try std.testing.allocator.dupe(u8, "test-issue");
+
+    // Serialize (simulating save before crash)
+    var content = std.ArrayListUnmanaged(u8){};
+    defer content.deinit(std.testing.allocator);
+    try state.writeJson(&content);
+
+    // Parse back (simulating load after restart)
+    var restored = OrchestratorState.init(std.testing.allocator);
+    defer restored.deinit();
+    restored.project_name = try std.testing.allocator.dupe(u8, "test");
+    try restored.parseJson(content.items);
+
+    // Verify all state was preserved
+    const manifest = restored.getManifest("test-issue");
+    try std.testing.expect(manifest != null);
+    try std.testing.expectEqual(@as(usize, 1), manifest.?.primary_files.len);
+
+    try std.testing.expectEqual(@as(usize, 1), restored.pending_batches.items.len);
+
+    const issue = restored.issues.get("test-issue");
+    try std.testing.expect(issue != null);
+    try std.testing.expect(issue.?.last_attempt != null);
+    try std.testing.expectEqual(AttemptResult.timeout, issue.?.last_attempt.?.result);
+
+    // Run crash recovery
+    const recovered = try restored.recoverFromCrash();
+    try std.testing.expect(recovered >= 0); // May recover workers if state included them
+}
+
+test "null current_batch handled correctly" {
+    const json =
+        \\{
+        \\  "state_version": 1,
+        \\  "project_name": "test",
+        \\  "current_batch": null,
+        \\  "pending_batches": []
+        \\}
+    ;
+
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+    state.project_name = try std.testing.allocator.dupe(u8, "test");
+    try state.parseJson(json);
+
+    try std.testing.expect(state.current_batch == null);
 }

@@ -9,6 +9,10 @@
       "target": "orchestration-survey"
     },
     {
+      "source": "verification",
+      "target": "failure-recovery"
+    },
+    {
       "source": "multi-pass",
       "target": "orchestration-survey"
     },
