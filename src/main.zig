@@ -157,6 +157,13 @@ pub fn main() !void {
             if (config.monowiki_config) |*mwc| {
                 mwc.expand_neighbors = true;
             }
+        } else if (std.mem.eql(u8, arg, "--planner-directions")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: --planner-directions requires a value\n", .{});
+                return error.InvalidArgument;
+            }
+            config.planner_directions = args[i];
         } else if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             i += 1;
             if (i >= args.len) {
@@ -195,6 +202,7 @@ fn printUsage() void {
         \\  --no-planner            Disable planner passes
         \\  --no-quality            Disable quality review passes
         \\  --planner-interval N    Run planner every N iterations (default: 5)
+        \\  --planner-directions S  Give directions to the planner (e.g., "prioritize issue X")
         \\  --quality-interval N    Run quality review every N iterations (default: 10)
         \\  --agent-timeout N       Kill agent if no output for N seconds (default: 300, must be >0)
         \\

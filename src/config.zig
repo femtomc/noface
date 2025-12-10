@@ -93,6 +93,9 @@ pub const Config = struct {
     /// Full monowiki configuration
     monowiki_config: ?monowiki.MonowikiConfig = null,
 
+    /// User directions for the planner (e.g., "prioritize issue X", "focus on Y")
+    planner_directions: ?[]const u8 = null,
+
     pub const IssueTracker = enum {
         beads,
         github,

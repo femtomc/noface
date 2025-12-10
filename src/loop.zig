@@ -586,6 +586,21 @@ pub const AgentLoop = struct {
 
     /// Build planner pass prompt with optional monowiki integration
     fn buildPlannerPrompt(self: *AgentLoop) ![]const u8 {
+        // User directions section (if provided)
+        const directions_section = if (self.config.planner_directions) |directions|
+            try std.fmt.allocPrint(self.allocator,
+                \\
+                \\USER DIRECTIONS:
+                \\The user has provided the following directions for this planning pass.
+                \\These take priority over default planning heuristics:
+                \\
+                \\{s}
+                \\
+            , .{directions})
+        else
+            try self.allocator.dupe(u8, "");
+        defer self.allocator.free(directions_section);
+
         // Common manifest generation section
         const manifest_section =
             \\
@@ -688,7 +703,7 @@ pub const AgentLoop = struct {
                 \\Sequencing:
                 \\- Ensure dependencies flow correctly (foundations before features)
                 \\- Use `bd dep add <issue> <blocker>` to express dependencies
-                \\{s}
+                \\{s}{s}
                 \\CONSTRAINTS:
                 \\- READ-ONLY for code and design documents
                 \\- Only modify beads issues (create, update, close, add deps, comment)
@@ -701,7 +716,7 @@ pub const AgentLoop = struct {
                 \\3. Output PARALLEL_BATCH blocks grouping non-conflicting issues
                 \\4. Summarize gaps identified, issues created, and recommended critical path
                 \\End with: PLANNING_COMPLETE
-            , .{ self.config.project_name, mwc.vault, manifest_section });
+            , .{ self.config.project_name, mwc.vault, directions_section, manifest_section });
         } else {
             // No design docs - simpler backlog management prompt
             return std.fmt.allocPrint(self.allocator,
@@ -735,7 +750,7 @@ pub const AgentLoop = struct {
                 \\Issue Quality:
                 \\- Each issue should have a clear, actionable title
                 \\- Description should explain what, why, and acceptance criteria
-                \\{s}
+                \\{s}{s}
                 \\CONSTRAINTS:
                 \\- READ-ONLY for code files
                 \\- Only modify beads issues (create, update, close, add deps, comment)
@@ -748,7 +763,7 @@ pub const AgentLoop = struct {
                 \\3. Output PARALLEL_BATCH blocks grouping non-conflicting issues
                 \\4. Summarize any changes made and recommend the critical path
                 \\End with: PLANNING_COMPLETE
-            , .{ self.config.project_name, manifest_section });
+            , .{ self.config.project_name, directions_section, manifest_section });
         }
     }
 
