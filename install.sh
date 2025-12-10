@@ -15,10 +15,10 @@
 set -e
 
 # Configurable via environment:
-#   NOFACE_VERSION       Override version tag (default: 0.1.0)
+#   NOFACE_VERSION       Override version tag (default: 0.1.1)
 #   INSTALL_DIR          Override install directory (default: ~/.local/bin)
 #   BUILD_FROM_SOURCE    Set to "true" to force source build
-VERSION="${NOFACE_VERSION:-0.1.0}"
+VERSION="${NOFACE_VERSION:-0.1.1}"
 INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 
