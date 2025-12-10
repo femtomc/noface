@@ -14,6 +14,7 @@ const github = @import("github.zig");
 const state_mod = @import("state.zig");
 const worker_pool_mod = @import("worker_pool.zig");
 const transcript_mod = @import("transcript.zig");
+const bm25 = @import("bm25.zig");
 
 const Config = config_mod.Config;
 const OutputFormat = config_mod.OutputFormat;
@@ -49,6 +50,7 @@ pub const AgentLoop = struct {
     session_log_path: ?[]const u8 = null,
     state: ?OrchestratorState = null,
     worker_pool: ?WorkerPool = null,
+    code_index: ?bm25.Index = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: Config) AgentLoop {
         // Install signal handlers (skip during tests to avoid interfering with test runner IPC)
@@ -79,6 +81,11 @@ pub const AgentLoop = struct {
                 self.logWarn("Failed to save state on exit: {}", .{err});
             };
             s.deinit();
+        }
+
+        // Clean up code index
+        if (self.code_index) |*idx| {
+            idx.deinit();
         }
 
         // Clean up any allocated resources
@@ -114,6 +121,71 @@ pub const AgentLoop = struct {
                 self.logWarn("Failed to save state: {}", .{err});
             };
         }
+    }
+
+    /// Build BM25 code index for the project
+    /// Indexes source files to enable token-efficient code search
+    fn buildCodeIndex(self: *AgentLoop) !void {
+        if (self.code_index != null) return; // Already built
+
+        self.logInfo("Building code index for token-efficient search...", .{});
+        var index = bm25.Index.init(self.allocator);
+        errdefer index.deinit();
+
+        // Index common source file extensions
+        const extensions = [_][]const u8{ ".zig", ".go", ".rs", ".py", ".js", ".ts", ".c", ".h", ".cpp", ".hpp" };
+
+        // Try src/ first, fall back to current directory
+        const indexed = index.indexDirectory("src", &extensions) catch |err| blk: {
+            self.logWarn("Failed to index src directory: {}", .{err});
+            break :blk index.indexDirectory(".", &extensions) catch {
+                self.logWarn("Code indexing failed, prompts will not include code references", .{});
+                return;
+            };
+        };
+
+        self.code_index = index;
+        self.logInfo("Indexed {d} source files", .{indexed});
+    }
+
+    /// Extract code references relevant to an issue
+    /// Returns a slice of reference strings in format "path:start-end"
+    /// Caller owns the returned slice and must free it.
+    fn extractCodeReferences(self: *AgentLoop, issue_text: []const u8, max_refs: u32) ![]const bm25.SearchResult {
+        // Access the optional field directly via pointer to avoid copying
+        const index_ptr = &self.code_index;
+        if (index_ptr.*) |*index| {
+            // Search the index with the issue text as query
+            return index.search(issue_text, max_refs);
+        }
+        // No index available - return allocator-owned empty slice so caller can safely free it
+        return try self.allocator.alloc(bm25.SearchResult, 0);
+    }
+
+    /// Format code references as a prompt section
+    fn formatCodeReferencesSection(self: *AgentLoop, refs: []const bm25.SearchResult) ![]const u8 {
+        if (refs.len == 0) return try self.allocator.dupe(u8, "");
+
+        var section = std.ArrayListUnmanaged(u8){};
+        errdefer section.deinit(self.allocator);
+
+        try section.appendSlice(self.allocator,
+            \\
+            \\RELEVANT CODE REFERENCES:
+            \\The orchestrator has pre-analyzed the codebase for this issue.
+            \\These file:line-range references point to potentially relevant code sections.
+            \\Use the Read tool to fetch content as needed - don't read everything at once.
+            \\
+            \\
+        );
+
+        for (refs) |ref| {
+            try section.appendSlice(self.allocator, "- ");
+            try section.appendSlice(self.allocator, ref.id);
+            try section.appendSlice(self.allocator, "\n");
+        }
+
+        return section.toOwnedSlice(self.allocator);
     }
 
     /// Check if we've been interrupted
@@ -156,6 +228,9 @@ pub const AgentLoop = struct {
         // Initialize orchestrator state (with crash recovery)
         try self.initState();
         self.logInfo("State initialized ({d} previous iterations)", .{self.iteration});
+
+        // Build code index for token-efficient prompts
+        try self.buildCodeIndex();
 
         // Main loop
         if (self.iteration == 0) self.iteration = 1;
@@ -1947,6 +2022,12 @@ pub const AgentLoop = struct {
         const issue_json = try self.getIssueDetails(issue_id);
         defer if (issue_json) |json| self.allocator.free(json);
 
+        // Extract code references using BM25 search (token-efficient: refs not content)
+        const code_refs = try self.extractCodeReferences(issue_json orelse "", 10);
+        defer self.allocator.free(code_refs);
+        const code_refs_section = try self.formatCodeReferencesSection(code_refs);
+        defer self.allocator.free(code_refs_section);
+
         // Fetch monowiki context proactively
         const design_context = try self.fetchMonowikiContext(issue_json orelse "");
         defer self.allocator.free(design_context);
@@ -2013,11 +2094,11 @@ pub const AgentLoop = struct {
 
         return std.fmt.allocPrint(self.allocator,
             \\You are a senior software engineer working autonomously on issue {s} in the {s} project.
-            \\{s}
+            \\{s}{s}
             \\APPROACH:
             \\Before writing any code, take a moment to:
             \\1. Understand the issue fully - run `bd show {s}` and read carefully
-            \\2. Explore related code - understand existing patterns and conventions
+            \\2. Review the code references above - use Read tool to fetch specific sections as needed
             \\3. Plan your approach - consider edge cases, error handling, and testability
             \\4. Keep changes minimal and focused - solve the issue, don't refactor unrelated code
             \\
@@ -2053,6 +2134,7 @@ pub const AgentLoop = struct {
         , .{
             issue_id,
             self.config.project_name,
+            code_refs_section,
             monowiki_section,
             issue_id,
             issue_id,
