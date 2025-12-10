@@ -166,6 +166,8 @@ pub fn main() !void {
             config.planner_directions = args[i];
         } else if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "-V")) {
             config.verbose = true;
+        } else if (std.mem.eql(u8, arg, "--event-driven-planner")) {
+            config.planner_mode = .event_driven;
         } else if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             i += 1;
             if (i >= args.len) {
@@ -204,6 +206,7 @@ fn printUsage() void {
         \\  --no-scrum              Disable scrum passes (alias: --no-planner)
         \\  --no-quality            Disable quality review passes
         \\  --scrum-interval N      Run scrum every N iterations (default: 5, alias: --planner-interval)
+        \\  --event-driven-planner  Run planner on-demand instead of every N iterations
         \\  --planner-directions S  Give directions to the scrum planner (e.g., "prioritize issue X")
         \\  --quality-interval N    Run quality review every N iterations (default: 10)
         \\  --agent-timeout N       Kill agent if no output for N seconds (default: 300, must be >0)

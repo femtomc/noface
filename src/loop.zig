@@ -18,6 +18,7 @@ const bm25 = @import("bm25.zig");
 
 const Config = config_mod.Config;
 const OutputFormat = config_mod.OutputFormat;
+const PlannerMode = config_mod.PlannerMode;
 const Monowiki = monowiki_mod.Monowiki;
 const OrchestratorState = state_mod.OrchestratorState;
 const WorkerPool = worker_pool_mod.WorkerPool;
@@ -216,7 +217,10 @@ pub const AgentLoop = struct {
         }
 
         if (self.config.enable_planner) {
-            self.logInfo("Planner interval: every {d} iteration(s)", .{self.config.planner_interval});
+            switch (self.config.planner_mode) {
+                .interval => self.logInfo("Planner mode: interval (every {d} iteration(s))", .{self.config.planner_interval}),
+                .event_driven => self.logInfo("Planner mode: event-driven (on-demand)", .{}),
+            }
         }
         if (self.config.enable_quality) {
             self.logInfo("Quality interval: every {d} iteration(s)", .{self.config.quality_interval});
@@ -235,11 +239,15 @@ pub const AgentLoop = struct {
         // Main loop
         if (self.iteration == 0) self.iteration = 1;
         while (!self.isInterrupted()) {
-            // Run planner pass if due
+            // Run planner pass based on mode
             if (self.config.enable_planner) {
-                if (self.last_planner_iteration == 0 or
-                    (self.iteration - self.last_planner_iteration) >= self.config.planner_interval)
-                {
+                const should_run_planner = switch (self.config.planner_mode) {
+                    .interval => self.last_planner_iteration == 0 or
+                        (self.iteration - self.last_planner_iteration) >= self.config.planner_interval,
+                    .event_driven => self.last_planner_iteration == 0, // Only run on first iteration initially
+                };
+
+                if (should_run_planner) {
                     if (!try self.runPlannerPass()) {
                         self.logInfo("Agent loop stopping after failed planner pass", .{});
                         break;
@@ -261,9 +269,29 @@ pub const AgentLoop = struct {
             const batch_executed = try self.runBatchIteration();
 
             if (!batch_executed) {
+                // No batches available - in event-driven mode, trigger planner if not already run this iteration
+                const planner_ran_this_iter = self.last_planner_iteration == self.iteration;
+                if (self.config.enable_planner and self.config.planner_mode == .event_driven and !planner_ran_this_iter) {
+                    self.logInfo("No pending batches, triggering planner (event-driven)", .{});
+                    if (!try self.runPlannerPass()) {
+                        self.logInfo("Agent loop stopping after failed planner pass", .{});
+                        break;
+                    }
+                    self.last_planner_iteration = self.iteration;
+
+                    // Retry batch execution after planner creates new work
+                    const retry_batch = try self.runBatchIteration();
+                    if (retry_batch) {
+                        // Successfully executed new batch from planner
+                        continue;
+                    }
+                }
+
                 // No batches available, run sequential iteration
-                if (!try self.runIteration()) {
-                    self.logInfo("Agent loop stopping", .{});
+                const iteration_result = try self.runIteration();
+                if (!iteration_result) {
+                    // No ready issues - in event-driven mode, planner already ran this iteration, so stop
+                    self.logInfo("Agent loop stopping (no work available)", .{});
                     break;
                 }
             }

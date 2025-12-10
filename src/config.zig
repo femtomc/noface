@@ -84,6 +84,12 @@ pub const OutputFormat = enum {
     raw, // Plain text without markdown rendering
 };
 
+/// Planner invocation mode
+pub const PlannerMode = enum {
+    interval, // Run planner every N iterations (default, backwards compatible)
+    event_driven, // Run planner only when needed: no ready issues, batch completed
+};
+
 /// Agent loop configuration
 pub const Config = struct {
     /// Project name (used in prompts)
@@ -110,8 +116,11 @@ pub const Config = struct {
     /// Enable planner passes (strategic planning from design docs)
     enable_planner: bool = true,
 
-    /// Planner pass interval (every N iterations)
+    /// Planner pass interval (every N iterations, only used in interval mode)
     planner_interval: u32 = 5,
+
+    /// Planner invocation mode (interval or event_driven)
+    planner_mode: PlannerMode = .interval,
 
     /// Enable code quality review passes
     enable_quality: bool = true,
@@ -276,6 +285,12 @@ pub const Config = struct {
                         config.enable_planner = std.mem.eql(u8, value, "true");
                     } else if (std.mem.eql(u8, key, "scrum_interval") or std.mem.eql(u8, key, "planner_interval")) {
                         config.planner_interval = std.fmt.parseInt(u32, value, 10) catch 5;
+                    } else if (std.mem.eql(u8, key, "scrum_mode") or std.mem.eql(u8, key, "planner_mode")) {
+                        if (std.mem.eql(u8, value, "event_driven")) {
+                            config.planner_mode = .event_driven;
+                        } else {
+                            config.planner_mode = .interval;
+                        }
                     } else if (std.mem.eql(u8, key, "quality_enabled")) {
                         config.enable_quality = std.mem.eql(u8, value, "true");
                     } else if (std.mem.eql(u8, key, "quality_interval")) {
@@ -535,4 +550,48 @@ test "parse planner config keys as aliases" {
     const config = try Config.parseToml(arena.allocator(), toml);
     try std.testing.expect(!config.enable_planner);
     try std.testing.expectEqual(@as(u32, 8), config.planner_interval);
+}
+
+test "parse planner mode event_driven" {
+    const toml =
+        \\[passes]
+        \\planner_mode = "event_driven"
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expectEqual(PlannerMode.event_driven, config.planner_mode);
+}
+
+test "parse planner mode interval (explicit)" {
+    const toml =
+        \\[passes]
+        \\planner_mode = "interval"
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expectEqual(PlannerMode.interval, config.planner_mode);
+}
+
+test "default planner mode is interval" {
+    const config = Config.default();
+    try std.testing.expectEqual(PlannerMode.interval, config.planner_mode);
+}
+
+test "parse scrum_mode as alias for planner_mode" {
+    const toml =
+        \\[passes]
+        \\scrum_mode = "event_driven"
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expectEqual(PlannerMode.event_driven, config.planner_mode);
 }
