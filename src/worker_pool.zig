@@ -465,6 +465,7 @@ const WorkerProcess = struct {
     /// Updates last_output_time if any output is received.
     /// Forwards output to stdout/stderr for visibility.
     pub fn pollOutput(self: *WorkerProcess) void {
+        const is_test = @import("builtin").is_test;
         var buf: [4096]u8 = undefined;
         var received_output = false;
 
@@ -482,8 +483,10 @@ const WorkerProcess = struct {
                     const n = stdout_file.read(&buf) catch break;
                     if (n == 0) break;
                     received_output = true;
-                    // Forward to real stdout
-                    _ = std.fs.File.stdout().write(buf[0..n]) catch {};
+                    // Forward to real stdout (skip during tests to avoid corrupting test harness IPC)
+                    if (!is_test) {
+                        _ = std.fs.File.stdout().write(buf[0..n]) catch {};
+                    }
 
                     // Check if more data available without blocking
                     const more = std.posix.poll(&poll_fds, 0) catch 0;
@@ -505,8 +508,10 @@ const WorkerProcess = struct {
                     const n = stderr_file.read(&buf) catch break;
                     if (n == 0) break;
                     received_output = true;
-                    // Forward to real stderr
-                    _ = std.fs.File.stderr().write(buf[0..n]) catch {};
+                    // Forward to real stderr (skip during tests to avoid corrupting test harness IPC)
+                    if (!is_test) {
+                        _ = std.fs.File.stderr().write(buf[0..n]) catch {};
+                    }
 
                     const more = std.posix.poll(&poll_fds, 0) catch 0;
                     if (more == 0 or (poll_fds[0].revents & std.posix.POLL.IN) == 0) break;

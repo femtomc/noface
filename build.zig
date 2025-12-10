@@ -42,10 +42,14 @@ pub fn build(b: *std.Build) void {
     serve_step.dependOn(&serve_cmd.step);
     serve_cmd.step.dependOn(b.getInstallStep());
 
-    // Test step
+    // Test step - only run lib_tests since exe_tests duplicates them via the noface import
+    // (exe.root_module imports noface which is lib_mod, so all tests run through lib_tests)
     const lib_tests = b.addTest(.{ .root_module = lib_mod });
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });
+    const run_lib_tests = b.addRunArtifact(lib_tests);
+    const run_exe_tests = b.addRunArtifact(exe_tests);
+    // Run exe_tests after lib_tests to avoid parallel test conflicts
+    run_exe_tests.step.dependOn(&run_lib_tests.step);
     const test_step = b.step("test", "Run tests");
-    test_step.dependOn(&b.addRunArtifact(lib_tests).step);
-    test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    test_step.dependOn(&run_exe_tests.step);
 }

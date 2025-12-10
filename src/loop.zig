@@ -50,8 +50,10 @@ pub const AgentLoop = struct {
     worker_pool: ?WorkerPool = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: Config) AgentLoop {
-        // Install signal handlers
-        signals.install();
+        // Install signal handlers (skip during tests to avoid interfering with test runner IPC)
+        if (!@import("builtin").is_test) {
+            signals.install();
+        }
 
         return .{
             .allocator = allocator,
@@ -60,8 +62,10 @@ pub const AgentLoop = struct {
     }
 
     pub fn deinit(self: *AgentLoop) void {
-        // Reset signal handlers
-        signals.reset();
+        // Reset signal handlers (skip during tests - we didn't install them)
+        if (!@import("builtin").is_test) {
+            signals.reset();
+        }
 
         // Clean up worker pool
         if (self.worker_pool) |*pool| {
