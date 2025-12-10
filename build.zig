@@ -35,6 +35,13 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    // Serve step (shortcut for `zig build serve`)
+    const serve_step = b.step("serve", "Run the web dashboard");
+    const serve_cmd = b.addRunArtifact(exe);
+    serve_cmd.addArg("serve");
+    serve_step.dependOn(&serve_cmd.step);
+    serve_cmd.step.dependOn(b.getInstallStep());
+
     // Test step
     const lib_tests = b.addTest(.{ .root_module = lib_mod });
     const exe_tests = b.addTest(.{ .root_module = exe.root_module });

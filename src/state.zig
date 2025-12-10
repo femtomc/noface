@@ -70,6 +70,9 @@ pub const AttemptRecord = struct {
     }
 };
 
+/// Issue status enum
+pub const IssueStatus = enum { pending, assigned, running, completed, failed };
+
 /// State for a single issue (our annotations on top of beads)
 pub const IssueState = struct {
     id: []const u8,
@@ -77,7 +80,7 @@ pub const IssueState = struct {
     assigned_worker: ?u32 = null,
     attempt_count: u32 = 0,
     last_attempt: ?AttemptRecord = null,
-    status: enum { pending, assigned, running, completed, failed } = .pending,
+    status: IssueStatus = .pending,
 
     pub fn deinit(self: *IssueState, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -646,7 +649,7 @@ pub const OrchestratorState = struct {
     // === Issue Management ===
 
     /// Update or create issue state
-    pub fn updateIssue(self: *OrchestratorState, issue_id: []const u8, status: IssueState.status) !void {
+    pub fn updateIssue(self: *OrchestratorState, issue_id: []const u8, status: IssueStatus) !void {
         if (self.issues.getPtr(issue_id)) |issue| {
             issue.status = status;
         } else {

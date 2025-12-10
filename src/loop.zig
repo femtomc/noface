@@ -12,11 +12,13 @@ const markdown = @import("markdown.zig");
 const monowiki_mod = @import("monowiki.zig");
 const github = @import("github.zig");
 const state_mod = @import("state.zig");
+const worker_pool_mod = @import("worker_pool.zig");
 
 const Config = config_mod.Config;
 const OutputFormat = config_mod.OutputFormat;
 const Monowiki = monowiki_mod.Monowiki;
 const OrchestratorState = state_mod.OrchestratorState;
+const WorkerPool = worker_pool_mod.WorkerPool;
 
 /// Colors for terminal output
 const Color = struct {
@@ -45,6 +47,7 @@ pub const AgentLoop = struct {
     current_issue: ?[]const u8 = null,
     session_log_path: ?[]const u8 = null,
     state: ?OrchestratorState = null,
+    worker_pool: ?WorkerPool = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: Config) AgentLoop {
         // Install signal handlers
@@ -59,6 +62,11 @@ pub const AgentLoop = struct {
     pub fn deinit(self: *AgentLoop) void {
         // Reset signal handlers
         signals.reset();
+
+        // Clean up worker pool
+        if (self.worker_pool) |*pool| {
+            pool.deinit();
+        }
 
         // Save and clean up state
         if (self.state) |*s| {
@@ -86,6 +94,11 @@ pub const AgentLoop = struct {
 
         // Restore iteration count from state
         self.iteration = self.state.?.total_iterations;
+
+        // Initialize worker pool with config-specified worker count
+        self.state.?.num_workers = self.config.num_workers;
+        self.worker_pool = WorkerPool.init(self.allocator, self.config, &self.state.?);
+        self.logInfo("Worker pool initialized with {d} workers", .{self.state.?.num_workers});
     }
 
     /// Save state periodically
@@ -153,10 +166,16 @@ pub const AgentLoop = struct {
                 }
             }
 
-            // Run main iteration
-            if (!try self.runIteration()) {
-                self.logInfo("Agent loop stopping", .{});
-                break;
+            // Try batch execution first (parallel workers)
+            // If no batches available, fall back to sequential single-issue execution
+            const batch_executed = try self.runBatchIteration();
+
+            if (!batch_executed) {
+                // No batches available, run sequential iteration
+                if (!try self.runIteration()) {
+                    self.logInfo("Agent loop stopping", .{});
+                    break;
+                }
             }
 
             // Check iteration limit
@@ -299,6 +318,41 @@ pub const AgentLoop = struct {
         }
 
         return .{ .issue_id = null, .reason = .empty_backlog };
+    }
+
+    /// Try to execute the next pending batch using the worker pool.
+    /// Returns true if a batch was executed, false if no batches are available.
+    fn runBatchIteration(self: *AgentLoop) !bool {
+        var state = &(self.state orelse return false);
+        var pool = &(self.worker_pool orelse return false);
+
+        // Check if we have pending batches
+        const batch = state.getNextPendingBatch() orelse return false;
+
+        self.logInfo("=== Batch Iteration {d} (Batch {d}) ===", .{ self.iteration, batch.id });
+
+        if (self.config.dry_run) {
+            self.logInfo("[DRY RUN] Would execute batch {d} with {d} issue(s)", .{ batch.id, batch.issue_ids.len });
+            batch.status = .completed;
+            return true;
+        }
+
+        // Execute the batch using the worker pool
+        const successful = try pool.executeBatch(batch);
+
+        self.logInfo("Batch {d} completed: {d}/{d} issues successful", .{
+            batch.id,
+            successful,
+            batch.issue_ids.len,
+        });
+
+        // Sync to GitHub after batch completion
+        try self.syncGitHub();
+
+        // Save state after batch
+        self.saveState();
+
+        return true;
     }
 
     /// Run one iteration of the agent loop

@@ -20,6 +20,12 @@ pub fn main() !void {
         return;
     }
 
+    // Subcommand: serve
+    if (args.len > 1 and std.mem.eql(u8, args[1], "serve")) {
+        try noface.web.runServe(allocator, args[2..]);
+        return;
+    }
+
     // Load config from .noface.toml (or use defaults)
     var config = Config.loadOrDefault(allocator);
     defer config.deinit(allocator);

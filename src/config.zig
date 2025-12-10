@@ -74,6 +74,9 @@ pub const Config = struct {
     /// If an agent produces no output for this duration, it is killed
     agent_timeout_seconds: u32 = 300,
 
+    /// Number of parallel workers for batch execution (1-8)
+    num_workers: u32 = 3,
+
     /// Output format
     output_format: OutputFormat = .text,
 
@@ -176,6 +179,16 @@ pub const Config = struct {
                             continue;
                         }
                         config.agent_timeout_seconds = timeout;
+                    } else if (std.mem.eql(u8, key, "num_workers")) {
+                        const num = std.fmt.parseInt(u32, value, 10) catch {
+                            std.debug.print("Warning: invalid num_workers value '{s}', using default 3\n", .{value});
+                            continue;
+                        };
+                        if (num == 0 or num > 8) {
+                            std.debug.print("Warning: num_workers must be 1-8, using default 3\n", .{});
+                            continue;
+                        }
+                        config.num_workers = num;
                     }
                 } else if (std.mem.eql(u8, current_section.?, "passes")) {
                     if (std.mem.eql(u8, key, "planner_enabled")) {
@@ -336,6 +349,33 @@ test "parse agents timeout zero rejected" {
     const config = try Config.parseToml(arena.allocator(), toml);
     // Zero is rejected, should keep default
     try std.testing.expectEqual(@as(u32, 300), config.agent_timeout_seconds);
+}
+
+test "parse agents num_workers config" {
+    const toml =
+        \\[agents]
+        \\num_workers = 5
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expectEqual(@as(u32, 5), config.num_workers);
+}
+
+test "parse agents num_workers invalid rejected" {
+    const toml =
+        \\[agents]
+        \\num_workers = 10
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    // 10 is too high, should keep default 3
+    try std.testing.expectEqual(@as(u32, 3), config.num_workers);
 }
 
 test "parse monowiki config" {

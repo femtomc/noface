@@ -16,6 +16,8 @@ pub const github = @import("github.zig");
 pub const state = @import("state.zig");
 pub const bm25 = @import("bm25.zig");
 pub const lsp = @import("lsp.zig");
+pub const worker_pool = @import("worker_pool.zig");
+pub const web = @import("web.zig");
 
 pub const Config = config.Config;
 pub const OutputFormat = config.OutputFormat;
@@ -27,6 +29,8 @@ pub const SyncResult = github.SyncResult;
 pub const OrchestratorState = state.OrchestratorState;
 pub const Manifest = state.Manifest;
 pub const WorkerState = state.WorkerState;
+pub const IssueStatus = state.IssueStatus;
+pub const WorkerPool = worker_pool.WorkerPool;
 
 test {
     std.testing.refAllDecls(@This());

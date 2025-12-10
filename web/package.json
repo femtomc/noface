@@ -1,0 +1,19 @@
+{
+  "name": "noface-web",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run server & bun run vite",
+    "server": "bun run server/index.ts",
+    "vite": "vite --host",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "preact": "^10.19.3"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "^2.8.2",
+    "vite": "^5.0.10"
+  }
+}
