@@ -54,7 +54,7 @@ fn handleSignal(sig: i32) callconv(.c) void {
 pub fn install() void {
     const sigint_action = std.posix.Sigaction{
         .handler = .{ .handler = handleSignal },
-        .mask = @as(std.posix.sigset_t, 0),
+        .mask = std.posix.sigemptyset(),
         .flags = 0,
     };
 
@@ -66,7 +66,7 @@ pub fn install() void {
 pub fn reset() void {
     const default_action = std.posix.Sigaction{
         .handler = .{ .handler = std.posix.SIG.DFL },
-        .mask = @as(std.posix.sigset_t, 0),
+        .mask = std.posix.sigemptyset(),
         .flags = 0,
     };
 
