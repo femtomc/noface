@@ -673,6 +673,30 @@ pub const OrchestratorState = struct {
         }
     }
 
+    /// Set or update manifest for an issue
+    pub fn setManifest(self: *OrchestratorState, issue_id: []const u8, manifest: Manifest) !void {
+        if (self.issues.getPtr(issue_id)) |issue| {
+            // Free existing manifest
+            if (issue.manifest) |*m| m.deinit(self.allocator);
+            issue.manifest = manifest;
+        } else {
+            // Create new issue state with manifest
+            const owned_id = try self.allocator.dupe(u8, issue_id);
+            try self.issues.put(owned_id, .{
+                .id = owned_id,
+                .manifest = manifest,
+            });
+        }
+    }
+
+    /// Get manifest for an issue (returns null if not set)
+    pub fn getManifest(self: *OrchestratorState, issue_id: []const u8) ?Manifest {
+        if (self.issues.get(issue_id)) |issue| {
+            return issue.manifest;
+        }
+        return null;
+    }
+
     // === Crash Recovery ===
 
     /// Recover from a crash - reset any in-progress work
@@ -883,4 +907,35 @@ test "parse json int" {
     try std.testing.expectEqual(@as(?i64, 42), parseJsonInt(json, "\"count\""));
     try std.testing.expectEqual(@as(?i64, -10), parseJsonInt(json, "\"negative\""));
     try std.testing.expectEqual(@as(?i64, null), parseJsonInt(json, "\"missing\""));
+}
+
+test "set and get manifest" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Create a manifest with owned strings
+    const primary = try std.testing.allocator.dupe(u8, "src/loop.zig");
+    const read = try std.testing.allocator.dupe(u8, "src/state.zig");
+    const forbidden = try std.testing.allocator.dupe(u8, "src/main.zig");
+
+    var primary_arr = try std.testing.allocator.alloc([]const u8, 1);
+    primary_arr[0] = primary;
+    var read_arr = try std.testing.allocator.alloc([]const u8, 1);
+    read_arr[0] = read;
+    var forbidden_arr = try std.testing.allocator.alloc([]const u8, 1);
+    forbidden_arr[0] = forbidden;
+
+    const manifest = Manifest{
+        .primary_files = primary_arr,
+        .read_files = read_arr,
+        .forbidden_files = forbidden_arr,
+    };
+
+    try state.setManifest("test-issue", manifest);
+
+    // Verify we can retrieve it
+    const retrieved = state.getManifest("test-issue");
+    try std.testing.expect(retrieved != null);
+    try std.testing.expect(retrieved.?.primary_files.len == 1);
+    try std.testing.expect(std.mem.eql(u8, retrieved.?.primary_files[0], "src/loop.zig"));
 }

@@ -458,6 +458,40 @@ pub const AgentLoop = struct {
 
     /// Build planner pass prompt with optional monowiki integration
     fn buildPlannerPrompt(self: *AgentLoop) ![]const u8 {
+        // Common manifest generation section
+        const manifest_section =
+            \\
+            \\FILE MANIFEST GENERATION:
+            \\For each issue that will be worked on, predict which files will be modified.
+            \\This is CRITICAL for enabling parallel execution without file conflicts.
+            \\
+            \\After analyzing each issue, output a MANIFEST block:
+            \\
+            \\```manifest
+            \\ISSUE: <issue-id>
+            \\PRIMARY_FILES:
+            \\- src/path/to/file.zig
+            \\- src/another/file.zig
+            \\READ_FILES:
+            \\- src/shared/types.zig
+            \\FORBIDDEN_FILES:
+            \\- src/main.zig
+            \\```
+            \\
+            \\Guidelines for manifest generation:
+            \\- PRIMARY_FILES: Files this issue will modify (exclusive access needed)
+            \\- READ_FILES: Files that will be read but not modified (shared access OK)
+            \\- FORBIDDEN_FILES: Files that must NOT be touched (e.g., unrelated modules)
+            \\- Analyze the issue description and acceptance criteria carefully
+            \\- Consider which modules/files are relevant based on the codebase structure
+            \\- If unsure, include more files in PRIMARY_FILES (safer for conflict detection)
+            \\- Use glob patterns sparingly: prefer explicit file paths
+            \\
+            \\After outputting a manifest, store it as a comment on the issue:
+            \\  bd comment <issue-id> "MANIFEST: primary=[file1,file2] read=[file3] forbidden=[file4]"
+            \\
+        ;
+
         // Two different prompts: with design docs (monowiki) or without
         if (self.config.monowiki_config) |mwc| {
             return std.fmt.allocPrint(self.allocator,
@@ -480,6 +514,7 @@ pub const AgentLoop = struct {
                 \\1. Run `bd list` to see all issues
                 \\2. Run `bd ready` to see the implementation queue
                 \\3. Survey design documents to understand target architecture
+                \\4. For each ready issue, analyze which files will need modification
                 \\
                 \\PLANNING TASKS:
                 \\
@@ -497,17 +532,19 @@ pub const AgentLoop = struct {
                 \\Sequencing:
                 \\- Ensure dependencies flow correctly (foundations before features)
                 \\- Use `bd dep add <issue> <blocker>` to express dependencies
-                \\
+                \\{s}
                 \\CONSTRAINTS:
                 \\- READ-ONLY for code and design documents
-                \\- Only modify beads issues (create, update, close, add deps)
+                \\- Only modify beads issues (create, update, close, add deps, comment)
                 \\- Do not begin implementation work
                 \\- Do NOT search for design docs outside the monowiki vault
                 \\
                 \\OUTPUT:
-                \\Summarize gaps identified, issues created, and recommended critical path.
+                \\1. Output MANIFEST blocks for all ready issues
+                \\2. Store each manifest as a bd comment
+                \\3. Summarize gaps identified, issues created, and recommended critical path
                 \\End with: PLANNING_COMPLETE
-            , .{ self.config.project_name, mwc.vault });
+            , .{ self.config.project_name, mwc.vault, manifest_section });
         } else {
             // No design docs - simpler backlog management prompt
             return std.fmt.allocPrint(self.allocator,
@@ -523,6 +560,7 @@ pub const AgentLoop = struct {
                 \\1. Run `bd list` to see all issues
                 \\2. Run `bd ready` to see the implementation queue
                 \\3. Run `bd blocked` to see what's waiting on dependencies
+                \\4. For each ready issue, analyze which files will need modification
                 \\
                 \\PLANNING TASKS:
                 \\
@@ -540,17 +578,19 @@ pub const AgentLoop = struct {
                 \\Issue Quality:
                 \\- Each issue should have a clear, actionable title
                 \\- Description should explain what, why, and acceptance criteria
-                \\
+                \\{s}
                 \\CONSTRAINTS:
                 \\- READ-ONLY for code files
-                \\- Only modify beads issues (create, update, close, add deps)
+                \\- Only modify beads issues (create, update, close, add deps, comment)
                 \\- Do not begin implementation work
                 \\- Do NOT search for design docs - there are none configured
                 \\
                 \\OUTPUT:
-                \\Summarize any changes made and recommend the critical path.
+                \\1. Output MANIFEST blocks for all ready issues
+                \\2. Store each manifest as a bd comment
+                \\3. Summarize any changes made and recommend the critical path
                 \\End with: PLANNING_COMPLETE
-            , .{self.config.project_name});
+            , .{ self.config.project_name, manifest_section });
         }
     }
 
@@ -586,6 +626,13 @@ pub const AgentLoop = struct {
 
             if (last_exit_code == 0) {
                 self.logSuccess("Planner pass completed", .{});
+
+                // Load manifests from beads comments into state
+                const loaded = try self.loadManifestsFromComments();
+                if (loaded > 0) {
+                    self.logInfo("Loaded {d} manifest(s) from beads comments", .{loaded});
+                }
+
                 return true;
             }
 
@@ -598,6 +645,157 @@ pub const AgentLoop = struct {
 
         self.logWarn("Planner pass failed after {d} attempt(s) (exit code: {d})", .{ attempt + 1, last_exit_code });
         return false;
+    }
+
+    /// Load manifests from beads comments for all ready issues
+    fn loadManifestsFromComments(self: *AgentLoop) !u32 {
+        var state = &(self.state orelse return 0);
+        var loaded: u32 = 0;
+
+        // Get list of ready issues
+        var ready_result = try process.shell(self.allocator, "bd ready --json 2>/dev/null | jq -r '.[].id'");
+        defer ready_result.deinit();
+
+        if (!ready_result.success() or ready_result.stdout.len == 0) {
+            return 0;
+        }
+
+        // Parse issue IDs (one per line)
+        var lines = std.mem.tokenizeScalar(u8, ready_result.stdout, '\n');
+        while (lines.next()) |issue_id| {
+            const trimmed_id = std.mem.trim(u8, issue_id, " \t\r");
+            if (trimmed_id.len == 0) continue;
+
+            // Fetch comments for this issue
+            const cmd = try std.fmt.allocPrint(
+                self.allocator,
+                "bd comments {s} --json 2>/dev/null",
+                .{trimmed_id},
+            );
+            defer self.allocator.free(cmd);
+
+            var comments_result = try process.shell(self.allocator, cmd);
+            defer comments_result.deinit();
+
+            if (!comments_result.success()) continue;
+
+            // Look for MANIFEST comment and parse it
+            if (try self.parseManifestFromComments(comments_result.stdout)) |manifest| {
+                try state.setManifest(trimmed_id, manifest);
+                loaded += 1;
+            }
+        }
+
+        return loaded;
+    }
+
+    /// Parse a manifest from beads comments JSON
+    /// Looks for comment text matching: "MANIFEST: primary=[...] read=[...] forbidden=[...]"
+    fn parseManifestFromComments(self: *AgentLoop, comments_json: []const u8) !?state_mod.Manifest {
+        // Simple parsing - look for "MANIFEST:" pattern in the JSON
+        const manifest_marker = "MANIFEST:";
+
+        // Find the marker in any comment text
+        var search_start: usize = 0;
+        while (std.mem.indexOfPos(u8, comments_json, search_start, manifest_marker)) |pos| {
+            // Find the end of this manifest line (either newline or end of string value)
+            const after_marker = comments_json[pos + manifest_marker.len ..];
+
+            // Extract the manifest content (until newline, quote, or end)
+            var end_idx: usize = 0;
+            while (end_idx < after_marker.len) : (end_idx += 1) {
+                const c = after_marker[end_idx];
+                if (c == '\n' or c == '"' or c == '\\') break;
+            }
+
+            const manifest_content = std.mem.trim(u8, after_marker[0..end_idx], " \t");
+
+            // Parse the manifest content
+            if (self.parseManifestLine(manifest_content)) |manifest| {
+                return manifest;
+            }
+
+            search_start = pos + manifest_marker.len;
+        }
+
+        return null;
+    }
+
+    /// Parse manifest line: "primary=[file1,file2] read=[file3] forbidden=[file4]"
+    fn parseManifestLine(self: *AgentLoop, line: []const u8) ?state_mod.Manifest {
+        var primary_files = std.ArrayListUnmanaged([]const u8){};
+        var read_files = std.ArrayListUnmanaged([]const u8){};
+        var forbidden_files = std.ArrayListUnmanaged([]const u8){};
+
+        errdefer {
+            for (primary_files.items) |f| self.allocator.free(f);
+            primary_files.deinit(self.allocator);
+            for (read_files.items) |f| self.allocator.free(f);
+            read_files.deinit(self.allocator);
+            for (forbidden_files.items) |f| self.allocator.free(f);
+            forbidden_files.deinit(self.allocator);
+        }
+
+        // Parse primary=[...]
+        if (std.mem.indexOf(u8, line, "primary=[")) |start| {
+            const bracket_start = start + "primary=[".len;
+            if (std.mem.indexOfPos(u8, line, bracket_start, "]")) |bracket_end| {
+                const files_str = line[bracket_start..bracket_end];
+                var files = std.mem.splitScalar(u8, files_str, ',');
+                while (files.next()) |file| {
+                    const trimmed = std.mem.trim(u8, file, " \t");
+                    if (trimmed.len > 0) {
+                        primary_files.append(self.allocator, self.allocator.dupe(u8, trimmed) catch continue) catch continue;
+                    }
+                }
+            }
+        }
+
+        // Parse read=[...]
+        if (std.mem.indexOf(u8, line, "read=[")) |start| {
+            const bracket_start = start + "read=[".len;
+            if (std.mem.indexOfPos(u8, line, bracket_start, "]")) |bracket_end| {
+                const files_str = line[bracket_start..bracket_end];
+                var files = std.mem.splitScalar(u8, files_str, ',');
+                while (files.next()) |file| {
+                    const trimmed = std.mem.trim(u8, file, " \t");
+                    if (trimmed.len > 0) {
+                        read_files.append(self.allocator, self.allocator.dupe(u8, trimmed) catch continue) catch continue;
+                    }
+                }
+            }
+        }
+
+        // Parse forbidden=[...]
+        if (std.mem.indexOf(u8, line, "forbidden=[")) |start| {
+            const bracket_start = start + "forbidden=[".len;
+            if (std.mem.indexOfPos(u8, line, bracket_start, "]")) |bracket_end| {
+                const files_str = line[bracket_start..bracket_end];
+                var files = std.mem.splitScalar(u8, files_str, ',');
+                while (files.next()) |file| {
+                    const trimmed = std.mem.trim(u8, file, " \t");
+                    if (trimmed.len > 0) {
+                        forbidden_files.append(self.allocator, self.allocator.dupe(u8, trimmed) catch continue) catch continue;
+                    }
+                }
+            }
+        }
+
+        // Only return manifest if we parsed at least some primary files
+        if (primary_files.items.len == 0) {
+            for (read_files.items) |f| self.allocator.free(f);
+            read_files.deinit(self.allocator);
+            for (forbidden_files.items) |f| self.allocator.free(f);
+            forbidden_files.deinit(self.allocator);
+            primary_files.deinit(self.allocator);
+            return null;
+        }
+
+        return state_mod.Manifest{
+            .primary_files = primary_files.toOwnedSlice(self.allocator) catch return null,
+            .read_files = read_files.toOwnedSlice(self.allocator) catch return null,
+            .forbidden_files = forbidden_files.toOwnedSlice(self.allocator) catch return null,
+        };
     }
 
     /// Request the planner to break down a failed issue into sub-issues
@@ -1299,4 +1497,55 @@ test "should not retry on timeout" {
 test "timeout exit code is 124" {
     // Verify timeout exit code matches GNU timeout convention
     try std.testing.expectEqual(@as(u8, 124), AgentLoop.EXIT_CODE_TIMEOUT);
+}
+
+test "parse manifest line" {
+    const cfg = Config.default();
+    var loop = AgentLoop.init(std.testing.allocator, cfg);
+    defer loop.deinit();
+
+    // Test valid manifest line
+    const line = "primary=[src/loop.zig,src/state.zig] read=[src/config.zig] forbidden=[src/main.zig]";
+    const manifest = loop.parseManifestLine(line);
+
+    try std.testing.expect(manifest != null);
+
+    const m = manifest.?;
+    defer {
+        for (m.primary_files) |f| std.testing.allocator.free(f);
+        if (m.primary_files.len > 0) std.testing.allocator.free(m.primary_files);
+        for (m.read_files) |f| std.testing.allocator.free(f);
+        if (m.read_files.len > 0) std.testing.allocator.free(m.read_files);
+        for (m.forbidden_files) |f| std.testing.allocator.free(f);
+        if (m.forbidden_files.len > 0) std.testing.allocator.free(m.forbidden_files);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), m.primary_files.len);
+    try std.testing.expectEqual(@as(usize, 1), m.read_files.len);
+    try std.testing.expectEqual(@as(usize, 1), m.forbidden_files.len);
+
+    try std.testing.expect(std.mem.eql(u8, m.primary_files[0], "src/loop.zig"));
+    try std.testing.expect(std.mem.eql(u8, m.primary_files[1], "src/state.zig"));
+    try std.testing.expect(std.mem.eql(u8, m.read_files[0], "src/config.zig"));
+    try std.testing.expect(std.mem.eql(u8, m.forbidden_files[0], "src/main.zig"));
+}
+
+test "parse manifest line - no primary files returns null" {
+    const cfg = Config.default();
+    var loop = AgentLoop.init(std.testing.allocator, cfg);
+    defer loop.deinit();
+
+    // Test line without primary files returns null
+    const line = "read=[src/config.zig] forbidden=[src/main.zig]";
+    const manifest = loop.parseManifestLine(line);
+    try std.testing.expect(manifest == null);
+}
+
+test "parse manifest line - empty returns null" {
+    const cfg = Config.default();
+    var loop = AgentLoop.init(std.testing.allocator, cfg);
+    defer loop.deinit();
+
+    const manifest = loop.parseManifestLine("");
+    try std.testing.expect(manifest == null);
 }
