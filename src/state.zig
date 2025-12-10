@@ -56,17 +56,134 @@ pub const Manifest = struct {
 /// Attempt record for tracking failed attempts
 pub const AttemptResult = enum { success, failed, timeout, violation };
 
+/// Manifest instrumentation for tracking prediction accuracy
+/// Computes false positives (predicted but unused) and false negatives (needed but not declared)
+pub const ManifestInstrumentation = struct {
+    /// Files from manifest's primary_files (predicted to be modified)
+    manifest_files_predicted: []const []const u8 = &.{},
+    /// Files actually modified (from git diff, excluding baseline)
+    files_actually_touched: []const []const u8 = &.{},
+
+    pub fn deinit(self: *ManifestInstrumentation, allocator: std.mem.Allocator) void {
+        for (self.manifest_files_predicted) |f| allocator.free(f);
+        if (self.manifest_files_predicted.len > 0) allocator.free(self.manifest_files_predicted);
+        for (self.files_actually_touched) |f| allocator.free(f);
+        if (self.files_actually_touched.len > 0) allocator.free(self.files_actually_touched);
+    }
+
+    /// Count false positives: files predicted but not actually touched
+    pub fn countFalsePositives(self: ManifestInstrumentation) u32 {
+        var count: u32 = 0;
+        for (self.manifest_files_predicted) |predicted| {
+            const base_predicted = extractBaseFile(predicted);
+            var found = false;
+            for (self.files_actually_touched) |actual| {
+                if (std.mem.eql(u8, base_predicted, actual)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) count += 1;
+        }
+        return count;
+    }
+
+    /// Count false negatives: files touched but not predicted in manifest
+    pub fn countFalseNegatives(self: ManifestInstrumentation) u32 {
+        var count: u32 = 0;
+        for (self.files_actually_touched) |actual| {
+            var found = false;
+            for (self.manifest_files_predicted) |predicted| {
+                const base_predicted = extractBaseFile(predicted);
+                if (std.mem.eql(u8, base_predicted, actual)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) count += 1;
+        }
+        return count;
+    }
+
+    /// Get false positive files (predicted but not touched)
+    /// Caller owns returned slice and must free it
+    pub fn getFalsePositives(self: ManifestInstrumentation, allocator: std.mem.Allocator) ![]const []const u8 {
+        var result = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (result.items) |f| allocator.free(f);
+            result.deinit(allocator);
+        }
+
+        for (self.manifest_files_predicted) |predicted| {
+            const base_predicted = extractBaseFile(predicted);
+            var found = false;
+            for (self.files_actually_touched) |actual| {
+                if (std.mem.eql(u8, base_predicted, actual)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try result.append(allocator, try allocator.dupe(u8, base_predicted));
+            }
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// Get false negative files (touched but not predicted)
+    /// Caller owns returned slice and must free it
+    pub fn getFalseNegatives(self: ManifestInstrumentation, allocator: std.mem.Allocator) ![]const []const u8 {
+        var result = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (result.items) |f| allocator.free(f);
+            result.deinit(allocator);
+        }
+
+        for (self.files_actually_touched) |actual| {
+            var found = false;
+            for (self.manifest_files_predicted) |predicted| {
+                const base_predicted = extractBaseFile(predicted);
+                if (std.mem.eql(u8, base_predicted, actual)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                try result.append(allocator, try allocator.dupe(u8, actual));
+            }
+        }
+        return result.toOwnedSlice(allocator);
+    }
+
+    /// Compute manifest accuracy as a percentage (0-100)
+    /// Accuracy = true_positives / (predicted_count + false_negatives)
+    /// Returns null if no predictions were made
+    pub fn computeAccuracy(self: ManifestInstrumentation) ?f32 {
+        const predicted = self.manifest_files_predicted.len;
+        const false_neg = self.countFalseNegatives();
+        const total_relevant = predicted + false_neg;
+
+        if (total_relevant == 0) return null;
+
+        const true_positives = predicted - self.countFalsePositives();
+        return @as(f32, @floatFromInt(true_positives * 100)) / @as(f32, @floatFromInt(total_relevant));
+    }
+};
+
 pub const AttemptRecord = struct {
     attempt_number: u32,
     timestamp: i64,
     result: AttemptResult,
     files_touched: []const []const u8 = &.{},
     notes: []const u8 = "",
+    /// Manifest instrumentation data for this attempt
+    instrumentation: ?ManifestInstrumentation = null,
 
     pub fn deinit(self: *AttemptRecord, allocator: std.mem.Allocator) void {
         for (self.files_touched) |f| allocator.free(f);
         if (self.files_touched.len > 0) allocator.free(self.files_touched);
         if (self.notes.len > 0) allocator.free(self.notes);
+        if (self.instrumentation) |*inst| inst.deinit(allocator);
     }
 };
 
@@ -1873,4 +1990,127 @@ test "null current_batch handled correctly" {
     try state.parseJson(json);
 
     try std.testing.expect(state.current_batch == null);
+}
+
+test "ManifestInstrumentation counts false positives correctly" {
+    // Predicted: a.zig, b.zig, c.zig
+    // Touched: a.zig, b.zig
+    // False positives: c.zig (predicted but not touched)
+    const predicted = &[_][]const u8{ "src/a.zig", "src/b.zig", "src/c.zig" };
+    const touched = &[_][]const u8{ "src/a.zig", "src/b.zig" };
+
+    const inst = ManifestInstrumentation{
+        .manifest_files_predicted = predicted,
+        .files_actually_touched = touched,
+    };
+
+    try std.testing.expectEqual(@as(u32, 1), inst.countFalsePositives());
+}
+
+test "ManifestInstrumentation counts false negatives correctly" {
+    // Predicted: a.zig
+    // Touched: a.zig, b.zig, c.zig
+    // False negatives: b.zig, c.zig (touched but not predicted)
+    const predicted = &[_][]const u8{"src/a.zig"};
+    const touched = &[_][]const u8{ "src/a.zig", "src/b.zig", "src/c.zig" };
+
+    const inst = ManifestInstrumentation{
+        .manifest_files_predicted = predicted,
+        .files_actually_touched = touched,
+    };
+
+    try std.testing.expectEqual(@as(u32, 2), inst.countFalseNegatives());
+}
+
+test "ManifestInstrumentation handles line range format in predictions" {
+    // Predicted with line range: a.zig:100-200
+    // Touched: a.zig (base file matches)
+    const predicted = &[_][]const u8{"src/a.zig:100-200"};
+    const touched = &[_][]const u8{"src/a.zig"};
+
+    const inst = ManifestInstrumentation{
+        .manifest_files_predicted = predicted,
+        .files_actually_touched = touched,
+    };
+
+    try std.testing.expectEqual(@as(u32, 0), inst.countFalsePositives());
+    try std.testing.expectEqual(@as(u32, 0), inst.countFalseNegatives());
+}
+
+test "ManifestInstrumentation computes accuracy" {
+    // Predicted: a.zig, b.zig (2 predictions)
+    // Touched: a.zig, c.zig (2 actual)
+    // True positives: 1 (a.zig)
+    // False positives: 1 (b.zig)
+    // False negatives: 1 (c.zig)
+    // Accuracy = 1 / (2 + 1) = 33.33%
+    const predicted = &[_][]const u8{ "src/a.zig", "src/b.zig" };
+    const touched = &[_][]const u8{ "src/a.zig", "src/c.zig" };
+
+    const inst = ManifestInstrumentation{
+        .manifest_files_predicted = predicted,
+        .files_actually_touched = touched,
+    };
+
+    const accuracy = inst.computeAccuracy().?;
+    try std.testing.expect(accuracy > 33.0 and accuracy < 34.0);
+}
+
+test "ManifestInstrumentation returns null accuracy for empty prediction" {
+    const inst = ManifestInstrumentation{};
+    try std.testing.expect(inst.computeAccuracy() == null);
+}
+
+test "ManifestInstrumentation getFalsePositives returns correct files" {
+    const predicted = &[_][]const u8{ "src/a.zig", "src/b.zig", "src/c.zig" };
+    const touched = &[_][]const u8{"src/a.zig"};
+
+    const inst = ManifestInstrumentation{
+        .manifest_files_predicted = predicted,
+        .files_actually_touched = touched,
+    };
+
+    const false_pos = try inst.getFalsePositives(std.testing.allocator);
+    defer {
+        for (false_pos) |f| std.testing.allocator.free(f);
+        if (false_pos.len > 0) std.testing.allocator.free(false_pos);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), false_pos.len);
+    try std.testing.expect(std.mem.eql(u8, false_pos[0], "src/b.zig"));
+    try std.testing.expect(std.mem.eql(u8, false_pos[1], "src/c.zig"));
+}
+
+test "ManifestInstrumentation getFalseNegatives returns correct files" {
+    const predicted = &[_][]const u8{"src/a.zig"};
+    const touched = &[_][]const u8{ "src/a.zig", "src/b.zig" };
+
+    const inst = ManifestInstrumentation{
+        .manifest_files_predicted = predicted,
+        .files_actually_touched = touched,
+    };
+
+    const false_neg = try inst.getFalseNegatives(std.testing.allocator);
+    defer {
+        for (false_neg) |f| std.testing.allocator.free(f);
+        if (false_neg.len > 0) std.testing.allocator.free(false_neg);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), false_neg.len);
+    try std.testing.expect(std.mem.eql(u8, false_neg[0], "src/b.zig"));
+}
+
+test "ManifestInstrumentation perfect prediction has 100% accuracy" {
+    // Perfect prediction: all predicted files are touched, nothing unexpected
+    const predicted = &[_][]const u8{ "src/a.zig", "src/b.zig" };
+    const touched = &[_][]const u8{ "src/a.zig", "src/b.zig" };
+
+    const inst = ManifestInstrumentation{
+        .manifest_files_predicted = predicted,
+        .files_actually_touched = touched,
+    };
+
+    try std.testing.expectEqual(@as(u32, 0), inst.countFalsePositives());
+    try std.testing.expectEqual(@as(u32, 0), inst.countFalseNegatives());
+    try std.testing.expectEqual(@as(f32, 100.0), inst.computeAccuracy().?);
 }

@@ -585,6 +585,9 @@ pub const AgentLoop = struct {
             self.logInfo("Checking manifest compliance...", .{});
             var compliance = try self.verifyManifestCompliance(issue_id, baseline);
 
+            // Log manifest instrumentation metrics (predicted vs actual files)
+            self.logManifestInstrumentation(compliance);
+
             if (!compliance.compliant) {
                 // Manifest violation detected
                 self.logError("Manifest violation detected!", .{});
@@ -1461,12 +1464,15 @@ pub const AgentLoop = struct {
         compliant: bool,
         unauthorized_files: []const []const u8 = &.{},
         forbidden_files_touched: []const []const u8 = &.{},
+        /// Instrumentation data for tracking manifest prediction accuracy
+        instrumentation: ?state_mod.ManifestInstrumentation = null,
 
         pub fn deinit(self: *ManifestComplianceResult, allocator: std.mem.Allocator) void {
             for (self.unauthorized_files) |f| allocator.free(f);
             if (self.unauthorized_files.len > 0) allocator.free(self.unauthorized_files);
             for (self.forbidden_files_touched) |f| allocator.free(f);
             if (self.forbidden_files_touched.len > 0) allocator.free(self.forbidden_files_touched);
+            if (self.instrumentation) |*inst| inst.deinit(allocator);
         }
     };
 
@@ -1546,7 +1552,7 @@ pub const AgentLoop = struct {
 
     /// Verify that agent changes comply with the issue's manifest
     /// baseline contains files that were already modified before agent ran
-    /// Returns compliance result with details of any violations
+    /// Returns compliance result with details of any violations and instrumentation data
     fn verifyManifestCompliance(self: *AgentLoop, issue_id: []const u8, baseline: []const []const u8) !ManifestComplianceResult {
         // Get manifest for this issue
         const manifest = if (self.state) |*s| s.getManifest(issue_id) else null;
@@ -1588,6 +1594,13 @@ pub const AgentLoop = struct {
             forbidden_touched.deinit(self.allocator);
         }
 
+        // Track all files actually touched by the agent (for instrumentation)
+        var all_touched = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (all_touched.items) |f| self.allocator.free(f);
+            all_touched.deinit(self.allocator);
+        }
+
         // Helper to check if file was in baseline (pre-existing change)
         const isInBaseline = struct {
             fn check(bl: []const []const u8, file: []const u8) bool {
@@ -1598,7 +1611,7 @@ pub const AgentLoop = struct {
             }
         }.check;
 
-        // Helper to check if file is already in violation lists
+        // Helper to check if file is already in a list
         const isInList = struct {
             fn check(list: []const []const u8, file: []const u8) bool {
                 for (list) |f| {
@@ -1617,6 +1630,11 @@ pub const AgentLoop = struct {
             // Skip files that were already modified before agent ran
             if (isInBaseline(baseline, trimmed)) continue;
 
+            // Track all touched files for instrumentation
+            if (!isInList(all_touched.items, trimmed)) {
+                try all_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+            }
+
             // Check if file is forbidden
             if (m.isForbidden(trimmed)) {
                 try forbidden_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
@@ -1634,6 +1652,11 @@ pub const AgentLoop = struct {
 
             // Skip files that were already modified before agent ran
             if (isInBaseline(baseline, trimmed)) continue;
+
+            // Track all touched files for instrumentation
+            if (!isInList(all_touched.items, trimmed)) {
+                try all_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+            }
 
             // Check if file is forbidden
             if (m.isForbidden(trimmed)) {
@@ -1659,6 +1682,11 @@ pub const AgentLoop = struct {
                 // Skip files that were already untracked before agent ran
                 if (isInBaseline(baseline, trimmed)) continue;
 
+                // Track all touched files for instrumentation
+                if (!isInList(all_touched.items, trimmed)) {
+                    try all_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                }
+
                 // Check if file is forbidden
                 if (m.isForbidden(trimmed)) {
                     // Avoid duplicates
@@ -1676,10 +1704,24 @@ pub const AgentLoop = struct {
 
         const has_violations = unauthorized.items.len > 0 or forbidden_touched.items.len > 0;
 
+        // Build instrumentation data: copy manifest's primary_files as predictions
+        var predicted_files = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (predicted_files.items) |f| self.allocator.free(f);
+            predicted_files.deinit(self.allocator);
+        }
+        for (m.primary_files) |pf| {
+            try predicted_files.append(self.allocator, try self.allocator.dupe(u8, pf));
+        }
+
         return .{
             .compliant = !has_violations,
             .unauthorized_files = try unauthorized.toOwnedSlice(self.allocator),
             .forbidden_files_touched = try forbidden_touched.toOwnedSlice(self.allocator),
+            .instrumentation = .{
+                .manifest_files_predicted = try predicted_files.toOwnedSlice(self.allocator),
+                .files_actually_touched = try all_touched.toOwnedSlice(self.allocator),
+            },
         };
     }
 
@@ -2373,6 +2415,71 @@ pub const AgentLoop = struct {
                 std.debug.print("... (truncated)\n", .{});
             } else {
                 std.debug.print("\n", .{});
+            }
+        }
+    }
+
+    /// Log manifest instrumentation metrics (predicted vs actual files)
+    fn logManifestInstrumentation(self: *AgentLoop, compliance: ManifestComplianceResult) void {
+        const inst = compliance.instrumentation orelse return;
+
+        const predicted_count = inst.manifest_files_predicted.len;
+        const touched_count = inst.files_actually_touched.len;
+        const false_pos = inst.countFalsePositives();
+        const false_neg = inst.countFalseNegatives();
+
+        // Log summary metrics
+        self.logInfo("Manifest instrumentation: predicted={d}, touched={d}, false_positives={d}, false_negatives={d}", .{
+            predicted_count,
+            touched_count,
+            false_pos,
+            false_neg,
+        });
+
+        // Log accuracy if we have predictions
+        if (inst.computeAccuracy()) |accuracy| {
+            self.logInfo("Manifest accuracy: {d:.1}%", .{accuracy});
+        }
+
+        // In verbose mode, log the actual file lists
+        if (self.config.verbose) {
+            if (predicted_count > 0) {
+                self.logVerbose("Manifest predicted files:", .{});
+                for (inst.manifest_files_predicted) |f| {
+                    std.debug.print("    - {s}\n", .{f});
+                }
+            }
+            if (touched_count > 0) {
+                self.logVerbose("Files actually touched:", .{});
+                for (inst.files_actually_touched) |f| {
+                    std.debug.print("    - {s}\n", .{f});
+                }
+            }
+
+            // Log false positives (predicted but not touched)
+            if (false_pos > 0) {
+                self.logVerbose("False positives (predicted but not touched):", .{});
+                const fp_files = inst.getFalsePositives(self.allocator) catch return;
+                defer {
+                    for (fp_files) |f| self.allocator.free(f);
+                    if (fp_files.len > 0) self.allocator.free(fp_files);
+                }
+                for (fp_files) |f| {
+                    std.debug.print("    - {s}\n", .{f});
+                }
+            }
+
+            // Log false negatives (touched but not predicted)
+            if (false_neg > 0) {
+                self.logVerbose("False negatives (touched but not predicted):", .{});
+                const fn_files = inst.getFalseNegatives(self.allocator) catch return;
+                defer {
+                    for (fn_files) |f| self.allocator.free(f);
+                    if (fn_files.len > 0) self.allocator.free(fn_files);
+                }
+                for (fn_files) |f| {
+                    std.debug.print("    - {s}\n", .{f});
+                }
             }
         }
     }
