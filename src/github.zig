@@ -247,15 +247,15 @@ pub const GitHubSync = struct {
         const gh_number = self.github_map.get(issue.id);
 
         if (gh_number == null) {
-            // No GitHub issue exists yet
-            if (std.mem.eql(u8, issue.status, "closed")) {
-                logSkip("{s}: Already closed, not creating GitHub issue", .{issue.id});
-                result.skipped += 1;
-                return;
-            }
+            // No GitHub issue exists yet - create it
+            const created_num = try self.createGitHubIssue(issue, result);
 
-            // Create new GitHub issue
-            try self.createGitHubIssue(issue, result);
+            // If issue is closed in beads and we successfully created it, close it on GitHub too
+            if (created_num) |num| {
+                if (std.mem.eql(u8, issue.status, "closed")) {
+                    try self.closeGitHubIssue(num, result);
+                }
+            }
         } else {
             // GitHub issue exists, sync status
             try self.syncExistingIssue(issue, gh_number.?, result);
@@ -263,13 +263,17 @@ pub const GitHubSync = struct {
     }
 
     /// Create a new GitHub issue
-    fn createGitHubIssue(self: *GitHubSync, issue: BeadsIssue, result: *SyncResult) !void {
+    /// Returns the GitHub issue number if successful, null otherwise
+    fn createGitHubIssue(self: *GitHubSync, issue: BeadsIssue, result: *SyncResult) !?[]const u8 {
         logInfo("Creating GitHub issue for {s}: {s}", .{ issue.id, issue.title });
 
         if (self.dry_run) {
             logSkip("[DRY RUN] Would create: {s}", .{issue.title});
+            if (std.mem.eql(u8, issue.status, "closed")) {
+                logSkip("[DRY RUN] Would then close (already closed in beads)", .{});
+            }
             result.skipped += 1;
-            return;
+            return null;
         }
 
         // Build labels
@@ -294,16 +298,41 @@ pub const GitHubSync = struct {
         try body.writer(self.allocator).print("**Priority:** P{d}\n", .{issue.priority});
         try body.writer(self.allocator).print("**Type:** {s}\n", .{issue.issue_type});
 
-        // Build title with beads ID prefix
+        // Build title with beads ID prefix, escaping double quotes for shell
         var title = std.ArrayListUnmanaged(u8){};
         defer title.deinit(self.allocator);
-        try title.writer(self.allocator).print("[{s}] {s}", .{ issue.id, issue.title });
+        try title.writer(self.allocator).print("[{s}] ", .{issue.id});
+        // Escape double quotes in title
+        for (issue.title) |c| {
+            if (c == '"') {
+                try title.appendSlice(self.allocator, "\\\"");
+            } else {
+                try title.append(self.allocator, c);
+            }
+        }
 
-        // Create the issue
+        // Write body to temp file to avoid shell escaping issues
+        const body_file_path = "/tmp/noface-gh-body.md";
+        {
+            const file = std.fs.cwd().createFile(body_file_path, .{}) catch |err| {
+                logError("Failed to create temp file: {}", .{err});
+                result.errors += 1;
+                return null;
+            };
+            defer file.close();
+            file.writeAll(body.items) catch |err| {
+                logError("Failed to write temp file: {}", .{err});
+                result.errors += 1;
+                return null;
+            };
+        }
+        defer std.fs.cwd().deleteFile(body_file_path) catch {};
+
+        // Create the issue using --body-file to avoid shell escaping
         const cmd = try std.fmt.allocPrint(
             self.allocator,
-            "gh issue create --title \"{s}\" --label \"{s}\" --body \"$(cat <<'BEADS_EOF'\n{s}\nBEADS_EOF\n)\"",
-            .{ title.items, labels.items, body.items },
+            "gh issue create --title \"{s}\" --label \"{s}\" --body-file {s}",
+            .{ title.items, labels.items, body_file_path },
         );
         defer self.allocator.free(cmd);
 
@@ -322,12 +351,43 @@ pub const GitHubSync = struct {
 
                 logSuccess("{s} -> GitHub #{s}", .{ issue.id, num });
                 result.created += 1;
+                return owned_num;
             } else {
                 logError("Failed to extract issue number from: {s}", .{create_result.stdout});
                 result.errors += 1;
+                return null;
             }
         } else {
             logError("Failed to create issue: {s}", .{create_result.stderr});
+            result.errors += 1;
+            return null;
+        }
+    }
+
+    /// Close a GitHub issue (used when syncing a closed beads issue that was just created)
+    fn closeGitHubIssue(self: *GitHubSync, gh_number: []const u8, result: *SyncResult) !void {
+        logInfo("Closing newly created GitHub #{s} (beads issue was already closed)", .{gh_number});
+
+        if (self.dry_run) {
+            logSkip("[DRY RUN] Would close #{s}", .{gh_number});
+            return;
+        }
+
+        const close_cmd = try std.fmt.allocPrint(
+            self.allocator,
+            "gh issue close {s} --comment \"Created and closed via beads sync (historical closed issue)\"",
+            .{gh_number},
+        );
+        defer self.allocator.free(close_cmd);
+
+        var close_result = try process.shell(self.allocator, close_cmd);
+        defer close_result.deinit();
+
+        if (close_result.success()) {
+            logSuccess("Closed GitHub #{s}", .{gh_number});
+            result.closed += 1;
+        } else {
+            logError("Failed to close #{s}: {s}", .{ gh_number, close_result.stderr });
             result.errors += 1;
         }
     }

@@ -32,6 +32,13 @@ pub fn main() !void {
         return;
     }
 
+    // Subcommand: sync
+    if (args.len > 1 and std.mem.eql(u8, args[1], "sync")) {
+        const dry_run = args.len > 2 and std.mem.eql(u8, args[2], "--dry-run");
+        try runSync(allocator, dry_run);
+        return;
+    }
+
     // Load config from .noface.toml (or use defaults)
     var config = Config.loadOrDefault(allocator);
     defer config.deinit(allocator);
@@ -229,6 +236,7 @@ fn printUsage() void {
         \\  init [--force] [--skip-deps]   Create .noface.toml (checks dependencies first)
         \\  doctor                         Check system health and dependencies
         \\  serve [-p PORT]                Run the web dashboard (default port: 3000)
+        \\  sync [--dry-run]               Sync beads issues to GitHub
         \\
         \\Configuration:
         \\  noface looks for .noface.toml in the current directory.
@@ -456,6 +464,29 @@ fn runDoctor(allocator: std.mem.Allocator) !void {
         std.debug.print("\x1b[31mMissing required dependencies.\x1b[0m Install them first.\n", .{});
     } else {
         std.debug.print("\x1b[33mRun 'noface init' to get started.\x1b[0m\n", .{});
+    }
+    std.debug.print("\n", .{});
+}
+
+fn runSync(allocator: std.mem.Allocator, dry_run: bool) !void {
+    std.debug.print("\n\x1b[1mnoface sync\x1b[0m - syncing beads issues to GitHub\n\n", .{});
+
+    if (dry_run) {
+        std.debug.print("\x1b[33m[DRY RUN]\x1b[0m Would sync the following:\n\n", .{});
+    }
+
+    const result = noface.github.syncToGitHub(allocator, dry_run) catch |err| {
+        std.debug.print("\x1b[31mSync failed:\x1b[0m {}\n", .{err});
+        return err;
+    };
+
+    std.debug.print("\n\x1b[1mSync complete:\x1b[0m\n", .{});
+    std.debug.print("  Created: {d}\n", .{result.created});
+    std.debug.print("  Updated: {d}\n", .{result.updated});
+    std.debug.print("  Closed:  {d}\n", .{result.closed});
+    std.debug.print("  Skipped: {d}\n", .{result.skipped});
+    if (result.errors > 0) {
+        std.debug.print("  \x1b[31mErrors:  {d}\x1b[0m\n", .{result.errors});
     }
     std.debug.print("\n", .{});
 }
