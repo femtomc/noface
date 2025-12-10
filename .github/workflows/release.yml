@@ -30,9 +30,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Set up Zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.15.2
+        run: |
+          ZIG_VERSION=$(curl -s https://ziglang.org/download/index.json | jq -r '.master.version')
+          if [ "${{ matrix.os_slug }}" = "linux" ]; then
+            ZIG_ARCH="x86_64-linux"
+          elif [ "${{ matrix.arch_slug }}" = "arm64" ]; then
+            ZIG_ARCH="aarch64-macos"
+          else
+            ZIG_ARCH="x86_64-macos"
+          fi
+          curl -L "https://ziglang.org/builds/zig-${ZIG_ARCH}-${ZIG_VERSION}.tar.xz" | tar -xJ
+          echo "$PWD/zig-${ZIG_ARCH}-${ZIG_VERSION}" >> $GITHUB_PATH
 
       - name: Build
         run: zig build -Doptimize=ReleaseFast
