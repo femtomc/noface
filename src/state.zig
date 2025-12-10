@@ -340,6 +340,51 @@ pub const OrchestratorState = struct {
                 try out.appendSlice(self.allocator, ", ");
                 try appendJsonField(self.allocator, out, "\"assigned_worker\"", w);
             }
+            // Serialize manifest
+            if (issue.manifest) |manifest| {
+                try out.appendSlice(self.allocator, ", \"manifest\": {");
+                try out.appendSlice(self.allocator, "\"primary_files\": [");
+                for (manifest.primary_files, 0..) |f, idx| {
+                    if (idx > 0) try out.appendSlice(self.allocator, ", ");
+                    try out.appendSlice(self.allocator, "\"");
+                    try appendJsonEscapedString(self.allocator, out, f);
+                    try out.appendSlice(self.allocator, "\"");
+                }
+                try out.appendSlice(self.allocator, "], \"read_files\": [");
+                for (manifest.read_files, 0..) |f, idx| {
+                    if (idx > 0) try out.appendSlice(self.allocator, ", ");
+                    try out.appendSlice(self.allocator, "\"");
+                    try appendJsonEscapedString(self.allocator, out, f);
+                    try out.appendSlice(self.allocator, "\"");
+                }
+                try out.appendSlice(self.allocator, "], \"forbidden_files\": [");
+                for (manifest.forbidden_files, 0..) |f, idx| {
+                    if (idx > 0) try out.appendSlice(self.allocator, ", ");
+                    try out.appendSlice(self.allocator, "\"");
+                    try appendJsonEscapedString(self.allocator, out, f);
+                    try out.appendSlice(self.allocator, "\"");
+                }
+                try out.appendSlice(self.allocator, "]}");
+            }
+            // Serialize last_attempt
+            if (issue.last_attempt) |attempt| {
+                try out.appendSlice(self.allocator, ", \"last_attempt\": {");
+                try appendJsonField(self.allocator, out, "\"attempt_number\"", attempt.attempt_number);
+                try out.appendSlice(self.allocator, ", ");
+                try appendJsonField(self.allocator, out, "\"timestamp\"", attempt.timestamp);
+                try out.appendSlice(self.allocator, ", ");
+                try appendJsonStringField(self.allocator, out, "\"result\"", @tagName(attempt.result));
+                try out.appendSlice(self.allocator, ", \"files_touched\": [");
+                for (attempt.files_touched, 0..) |f, idx| {
+                    if (idx > 0) try out.appendSlice(self.allocator, ", ");
+                    try out.appendSlice(self.allocator, "\"");
+                    try appendJsonEscapedString(self.allocator, out, f);
+                    try out.appendSlice(self.allocator, "\"");
+                }
+                try out.appendSlice(self.allocator, "], ");
+                try appendJsonStringField(self.allocator, out, "\"notes\"", attempt.notes);
+                try out.appendSlice(self.allocator, "}");
+            }
             try out.appendSlice(self.allocator, "}");
         }
         try out.appendSlice(self.allocator, "\n  },\n");
@@ -362,7 +407,60 @@ pub const OrchestratorState = struct {
             try appendJsonField(self.allocator, out, "\"acquired_at\"", lock.acquired_at);
             try out.appendSlice(self.allocator, "}");
         }
-        try out.appendSlice(self.allocator, "\n  }\n");
+        try out.appendSlice(self.allocator, "\n  },\n");
+
+        // Current batch
+        if (self.current_batch) |batch| {
+            try out.appendSlice(self.allocator, "  \"current_batch\": {");
+            try appendJsonField(self.allocator, out, "\"id\"", batch.id);
+            try out.appendSlice(self.allocator, ", ");
+            try appendJsonStringField(self.allocator, out, "\"status\"", @tagName(batch.status));
+            if (batch.started_at) |t| {
+                try out.appendSlice(self.allocator, ", ");
+                try appendJsonField(self.allocator, out, "\"started_at\"", t);
+            }
+            if (batch.completed_at) |t| {
+                try out.appendSlice(self.allocator, ", ");
+                try appendJsonField(self.allocator, out, "\"completed_at\"", t);
+            }
+            try out.appendSlice(self.allocator, ", \"issue_ids\": [");
+            for (batch.issue_ids, 0..) |id, idx| {
+                if (idx > 0) try out.appendSlice(self.allocator, ", ");
+                try out.appendSlice(self.allocator, "\"");
+                try appendJsonEscapedString(self.allocator, out, id);
+                try out.appendSlice(self.allocator, "\"");
+            }
+            try out.appendSlice(self.allocator, "]},\n");
+        } else {
+            try out.appendSlice(self.allocator, "  \"current_batch\": null,\n");
+        }
+
+        // Pending batches
+        try out.appendSlice(self.allocator, "  \"pending_batches\": [\n");
+        for (self.pending_batches.items, 0..) |batch, batch_idx| {
+            if (batch_idx > 0) try out.appendSlice(self.allocator, ",\n");
+            try out.appendSlice(self.allocator, "    {");
+            try appendJsonField(self.allocator, out, "\"id\"", batch.id);
+            try out.appendSlice(self.allocator, ", ");
+            try appendJsonStringField(self.allocator, out, "\"status\"", @tagName(batch.status));
+            if (batch.started_at) |t| {
+                try out.appendSlice(self.allocator, ", ");
+                try appendJsonField(self.allocator, out, "\"started_at\"", t);
+            }
+            if (batch.completed_at) |t| {
+                try out.appendSlice(self.allocator, ", ");
+                try appendJsonField(self.allocator, out, "\"completed_at\"", t);
+            }
+            try out.appendSlice(self.allocator, ", \"issue_ids\": [");
+            for (batch.issue_ids, 0..) |id, idx| {
+                if (idx > 0) try out.appendSlice(self.allocator, ", ");
+                try out.appendSlice(self.allocator, "\"");
+                try appendJsonEscapedString(self.allocator, out, id);
+                try out.appendSlice(self.allocator, "\"");
+            }
+            try out.appendSlice(self.allocator, "]}");
+        }
+        try out.appendSlice(self.allocator, "\n  ]\n");
 
         try out.appendSlice(self.allocator, "}\n");
     }
@@ -404,6 +502,18 @@ pub const OrchestratorState = struct {
         // Parse locks object
         if (findJsonSection(json, "\"locks\"")) |locks_section| {
             try self.parseLocks(locks_section);
+        }
+
+        // Parse current_batch
+        // TODO: implement parseBatch when batch persistence is needed
+        if (findJsonSection(json, "\"current_batch\"")) |batch_section| {
+            _ = batch_section; // Batch parsing not yet implemented
+        }
+
+        // Parse pending_batches array
+        // TODO: implement parsePendingBatches when batch persistence is needed
+        if (findJsonSection(json, "\"pending_batches\"")) |batches_section| {
+            _ = batches_section; // Batch parsing not yet implemented
         }
     }
 
@@ -858,7 +968,11 @@ fn appendJsonField(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8
 fn appendJsonStringField(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), key: []const u8, value: []const u8) !void {
     try out.appendSlice(allocator, key);
     try out.appendSlice(allocator, ": \"");
-    // Escape special characters
+    try appendJsonEscapedString(allocator, out, value);
+    try out.appendSlice(allocator, "\"");
+}
+
+fn appendJsonEscapedString(allocator: std.mem.Allocator, out: *std.ArrayListUnmanaged(u8), value: []const u8) !void {
     for (value) |c| {
         switch (c) {
             '"' => try out.appendSlice(allocator, "\\\""),
@@ -869,7 +983,6 @@ fn appendJsonStringField(allocator: std.mem.Allocator, out: *std.ArrayListUnmana
             else => try out.append(allocator, c),
         }
     }
-    try out.appendSlice(allocator, "\"");
 }
 
 fn parseJsonInt(json: []const u8, key: []const u8) ?i64 {

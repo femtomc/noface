@@ -26,6 +26,12 @@ pub fn main() !void {
         return;
     }
 
+    // Subcommand: doctor
+    if (args.len > 1 and std.mem.eql(u8, args[1], "doctor")) {
+        try runDoctor(allocator);
+        return;
+    }
+
     // Load config from .noface.toml (or use defaults)
     var config = Config.loadOrDefault(allocator);
     defer config.deinit(allocator);
@@ -206,7 +212,9 @@ fn printUsage() void {
         \\  --monowiki-expand-neighbors Include graph neighbors in context
         \\
         \\Commands:
-        \\  init [--force]          Create .noface.toml and initialize beads (if available)
+        \\  init [--force] [--skip-deps]   Create .noface.toml (checks dependencies first)
+        \\  doctor                         Check system health and dependencies
+        \\  serve [-p PORT]                Run the web dashboard (default port: 3000)
         \\
         \\Configuration:
         \\  noface looks for .noface.toml in the current directory.
@@ -218,12 +226,27 @@ fn printUsage() void {
 
 fn runInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
     var force = false;
+    var skip_deps = false;
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--force")) {
             force = true;
+        } else if (std.mem.eql(u8, arg, "--skip-deps")) {
+            skip_deps = true;
         } else {
             std.debug.print("Unknown init option: {s}\n", .{arg});
             return error.InvalidArgument;
+        }
+    }
+
+    // Check dependencies first
+    if (!skip_deps) {
+        std.debug.print("\nChecking dependencies...\n\n", .{});
+        const has_required = checkDependencies(allocator);
+        std.debug.print("\n", .{});
+
+        if (!has_required) {
+            std.debug.print("Missing required dependencies. Install them and retry, or use --skip-deps to continue anyway.\n\n", .{});
+            return error.MissingDependency;
         }
     }
 
@@ -263,7 +286,7 @@ fn runInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
         \\[agents]
         \\implementer = "claude"
         \\reviewer = "codex"
-        \\timeout_seconds = 300        # Kill agent if no output for this many seconds (must be >0)
+        \\timeout_seconds = 900        # Kill agent if no output for this many seconds (must be >0)
         \\
         \\[passes]
         \\planner_enabled = true
@@ -315,6 +338,112 @@ fn runInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
 fn pathExists(path: []const u8) bool {
     _ = std.fs.cwd().statFile(path) catch return false;
     return true;
+}
+
+const Dependency = struct {
+    name: []const u8,
+    required: bool,
+    install_cmd: []const u8,
+    description: []const u8,
+};
+
+const dependencies = [_]Dependency{
+    .{
+        .name = "claude",
+        .required = true,
+        .install_cmd = "npm install -g @anthropic-ai/claude-code",
+        .description = "Implementation agent (Claude Code CLI)",
+    },
+    .{
+        .name = "codex",
+        .required = false,
+        .install_cmd = "npm install -g @openai/codex",
+        .description = "Review agent (use --no-quality to skip)",
+    },
+    .{
+        .name = "gh",
+        .required = false,
+        .install_cmd = "brew install gh  # or: https://cli.github.com",
+        .description = "GitHub CLI for issue sync",
+    },
+    .{
+        .name = "bd",
+        .required = false,
+        .install_cmd = "cargo install beads",
+        .description = "Beads issue tracker",
+    },
+    .{
+        .name = "monowiki",
+        .required = false,
+        .install_cmd = "cargo install monowiki",
+        .description = "Design document integration",
+    },
+};
+
+fn checkDependencies(allocator: std.mem.Allocator) bool {
+    var all_required_found = true;
+
+    for (dependencies) |dep| {
+        const found = process.commandExists(allocator, dep.name);
+        const mark = if (found) "\x1b[32m✓\x1b[0m" else if (dep.required) "\x1b[31m✗\x1b[0m" else "\x1b[33m○\x1b[0m";
+        const req_tag = if (dep.required) " (required)" else " (optional)";
+
+        std.debug.print("{s} {s}{s}\n", .{ mark, dep.name, req_tag });
+        std.debug.print("    {s}\n", .{dep.description});
+
+        if (!found) {
+            std.debug.print("    Install: {s}\n", .{dep.install_cmd});
+            if (dep.required) {
+                all_required_found = false;
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+
+    return all_required_found;
+}
+
+fn runDoctor(allocator: std.mem.Allocator) !void {
+    std.debug.print("\n\x1b[1mnoface doctor\x1b[0m - checking system health\n\n", .{});
+
+    // Check dependencies
+    std.debug.print("\x1b[1mDependencies:\x1b[0m\n", .{});
+    const deps_ok = checkDependencies(allocator);
+
+    // Check config
+    std.debug.print("\x1b[1mConfiguration:\x1b[0m\n", .{});
+    if (pathExists(".noface.toml")) {
+        std.debug.print("\x1b[32m✓\x1b[0m .noface.toml found\n", .{});
+    } else {
+        std.debug.print("\x1b[33m○\x1b[0m .noface.toml not found (run: noface init)\n", .{});
+    }
+
+    // Check issue tracker
+    std.debug.print("\n\x1b[1mIssue Tracker:\x1b[0m\n", .{});
+    if (pathExists(".beads/issues.jsonl")) {
+        std.debug.print("\x1b[32m✓\x1b[0m beads initialized (.beads/issues.jsonl)\n", .{});
+    } else {
+        std.debug.print("\x1b[33m○\x1b[0m beads not initialized (run: bd init)\n", .{});
+    }
+
+    // Check state
+    std.debug.print("\n\x1b[1mState:\x1b[0m\n", .{});
+    if (pathExists(".noface/state.json")) {
+        std.debug.print("\x1b[32m✓\x1b[0m noface state exists (.noface/state.json)\n", .{});
+    } else {
+        std.debug.print("\x1b[33m○\x1b[0m no previous run state\n", .{});
+    }
+
+    // Summary
+    std.debug.print("\n", .{});
+    if (deps_ok and pathExists(".noface.toml")) {
+        std.debug.print("\x1b[32mReady to run!\x1b[0m Use: noface\n", .{});
+    } else if (!deps_ok) {
+        std.debug.print("\x1b[31mMissing required dependencies.\x1b[0m Install them first.\n", .{});
+    } else {
+        std.debug.print("\x1b[33mRun 'noface init' to get started.\x1b[0m\n", .{});
+    }
+    std.debug.print("\n", .{});
 }
 
 test "argument parsing" {
