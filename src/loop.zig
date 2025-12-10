@@ -564,6 +564,34 @@ pub const AgentLoop = struct {
             \\After outputting a manifest, store it as a comment on the issue:
             \\  bd comment <issue-id> "MANIFEST: primary=[file1,file2] read=[file3] forbidden=[file4]"
             \\
+            \\PARALLEL BATCH GROUPING:
+            \\After generating manifests for all ready issues, group them into parallel batches.
+            \\Issues in the same batch can be worked on simultaneously by multiple workers.
+            \\
+            \\Rules for batch grouping:
+            \\1. Issues with OVERLAPPING PRIMARY_FILES must be in DIFFERENT batches (file conflict)
+            \\2. If issue A depends on issue B (A is blocked by B), they must be in DIFFERENT batches
+            \\   - B's batch must come BEFORE A's batch (respect dependency ordering)
+            \\3. Maximize parallelism: put as many non-conflicting issues in each batch as possible
+            \\4. Earlier batches should contain foundation/blocking work
+            \\
+            \\Output batch groupings as PARALLEL_BATCH blocks:
+            \\
+            \\```batch
+            \\PARALLEL_BATCH: 1
+            \\ISSUES:
+            \\- issue-abc
+            \\- issue-xyz
+            \\REASON: No file conflicts, independent changes
+            \\```
+            \\
+            \\```batch
+            \\PARALLEL_BATCH: 2
+            \\ISSUES:
+            \\- issue-def
+            \\REASON: Depends on issue-abc from batch 1
+            \\```
+            \\
         ;
 
         // Two different prompts: with design docs (monowiki) or without
@@ -616,7 +644,8 @@ pub const AgentLoop = struct {
                 \\OUTPUT:
                 \\1. Output MANIFEST blocks for all ready issues
                 \\2. Store each manifest as a bd comment
-                \\3. Summarize gaps identified, issues created, and recommended critical path
+                \\3. Output PARALLEL_BATCH blocks grouping non-conflicting issues
+                \\4. Summarize gaps identified, issues created, and recommended critical path
                 \\End with: PLANNING_COMPLETE
             , .{ self.config.project_name, mwc.vault, manifest_section });
         } else {
@@ -662,7 +691,8 @@ pub const AgentLoop = struct {
                 \\OUTPUT:
                 \\1. Output MANIFEST blocks for all ready issues
                 \\2. Store each manifest as a bd comment
-                \\3. Summarize any changes made and recommend the critical path
+                \\3. Output PARALLEL_BATCH blocks grouping non-conflicting issues
+                \\4. Summarize any changes made and recommend the critical path
                 \\End with: PLANNING_COMPLETE
             , .{ self.config.project_name, manifest_section });
         }
@@ -705,6 +735,12 @@ pub const AgentLoop = struct {
                 const loaded = try self.loadManifestsFromComments();
                 if (loaded > 0) {
                     self.logInfo("Loaded {d} manifest(s) from beads comments", .{loaded});
+                }
+
+                // Generate parallel batches from manifests
+                const batches = try self.generateBatchesFromManifests();
+                if (batches > 0) {
+                    self.logInfo("Generated {d} parallel batch(es)", .{batches});
                 }
 
                 return true;
@@ -870,6 +906,116 @@ pub const AgentLoop = struct {
             .read_files = read_files.toOwnedSlice(self.allocator) catch return null,
             .forbidden_files = forbidden_files.toOwnedSlice(self.allocator) catch return null,
         };
+    }
+
+    /// Generate parallel batches from loaded manifests
+    /// Groups non-conflicting issues into batches that can run in parallel
+    /// Returns the number of batches created
+    ///
+    /// NOTE: This only considers "ready" issues (from `bd ready`) which are
+    /// by definition unblocked - they have no pending dependencies. Therefore,
+    /// we don't need to check dependencies between ready issues since `bd ready`
+    /// already enforces dependency ordering by only returning unblocked issues.
+    fn generateBatchesFromManifests(self: *AgentLoop) !u32 {
+        var state = &(self.state orelse return 0);
+
+        // Clear any existing pending batches
+        state.clearPendingBatches();
+
+        // Get list of ready issues with manifests
+        // NOTE: `bd ready` returns only unblocked issues, so dependency ordering
+        // is already enforced - we don't need to check dependencies between them.
+        var ready_result = try process.shell(self.allocator, "bd ready --json 2>/dev/null | jq -r '.[].id'");
+        defer ready_result.deinit();
+
+        if (!ready_result.success() or ready_result.stdout.len == 0) {
+            return 0;
+        }
+
+        // Collect ready issues that have manifests
+        var ready_issues = std.ArrayListUnmanaged([]const u8){};
+        defer {
+            for (ready_issues.items) |id| self.allocator.free(id);
+            ready_issues.deinit(self.allocator);
+        }
+
+        var lines = std.mem.tokenizeScalar(u8, ready_result.stdout, '\n');
+        while (lines.next()) |issue_id| {
+            const trimmed_id = std.mem.trim(u8, issue_id, " \t\r");
+            if (trimmed_id.len == 0) continue;
+
+            // Only include issues that have manifests
+            if (state.getManifest(trimmed_id) != null) {
+                try ready_issues.append(self.allocator, try self.allocator.dupe(u8, trimmed_id));
+            }
+        }
+
+        if (ready_issues.items.len == 0) {
+            return 0;
+        }
+
+        // Greedy batch assignment algorithm:
+        // For each unassigned issue, try to add it to the current batch
+        // If it conflicts with any issue in current batch, start a new batch
+        var assigned = try self.allocator.alloc(bool, ready_issues.items.len);
+        defer self.allocator.free(assigned);
+        @memset(assigned, false);
+
+        var batches_created: u32 = 0;
+
+        while (true) {
+            // Start a new batch with unassigned issues
+            var batch_issues = std.ArrayListUnmanaged([]const u8){};
+            errdefer {
+                for (batch_issues.items) |id| self.allocator.free(id);
+                batch_issues.deinit(self.allocator);
+            }
+
+            for (ready_issues.items, 0..) |issue_id, i| {
+                if (assigned[i]) continue;
+
+                // Check if this issue conflicts with any issue already in the batch
+                var conflicts = false;
+                for (batch_issues.items) |batch_issue_id| {
+                    if (state.issuesConflict(issue_id, batch_issue_id)) {
+                        conflicts = true;
+                        break;
+                    }
+                }
+
+                if (!conflicts) {
+                    // Add to current batch
+                    try batch_issues.append(self.allocator, try self.allocator.dupe(u8, issue_id));
+                    assigned[i] = true;
+                }
+            }
+
+            // If no issues were added, we're done
+            if (batch_issues.items.len == 0) {
+                batch_issues.deinit(self.allocator);
+                break;
+            }
+
+            // Create the batch
+            const batch_size = batch_issues.items.len;
+            const batch_id = try state.addBatch(try batch_issues.toOwnedSlice(self.allocator));
+            batches_created += 1;
+
+            // Log batch contents
+            self.logInfo("  Batch {d}: {d} issue(s)", .{ batch_id, batch_size });
+
+            // Check if all issues are assigned
+            var all_assigned = true;
+            for (assigned) |a| {
+                if (!a) {
+                    all_assigned = false;
+                    break;
+                }
+            }
+            if (all_assigned) break;
+        }
+
+        return batches_created;
     }
 
     /// Request the planner to break down a failed issue into sub-issues

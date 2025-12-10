@@ -150,6 +150,7 @@ pub const OrchestratorState = struct {
 
     // Execution state
     current_batch: ?Batch = null,
+    pending_batches: std.ArrayListUnmanaged(Batch) = .{},
     next_batch_id: u32 = 1,
     workers: [MAX_WORKERS]WorkerState = undefined,
     num_workers: u32 = 3, // Default to 3 parallel workers
@@ -167,6 +168,7 @@ pub const OrchestratorState = struct {
             .allocator = allocator,
             .issues = std.StringHashMap(IssueState).init(allocator),
             .locks = std.StringHashMap(LockEntry).init(allocator),
+            .pending_batches = .{},
         };
 
         // Initialize workers
@@ -197,10 +199,16 @@ pub const OrchestratorState = struct {
         }
         self.locks.deinit();
 
-        // Free batch
+        // Free current batch
         if (self.current_batch) |*batch| {
             batch.deinit(self.allocator);
         }
+
+        // Free pending batches
+        for (self.pending_batches.items) |*batch| {
+            batch.deinit(self.allocator);
+        }
+        self.pending_batches.deinit(self.allocator);
 
         // Free workers
         for (&self.workers) |*w| {
@@ -699,6 +707,84 @@ pub const OrchestratorState = struct {
         return null;
     }
 
+    // === Batch Management ===
+
+    /// Add a batch of issues to the pending queue
+    /// Takes ownership of issue_ids array (caller should not free)
+    pub fn addBatch(self: *OrchestratorState, issue_ids: []const []const u8) !u32 {
+        const batch_id = self.next_batch_id;
+        self.next_batch_id += 1;
+
+        const batch = Batch{
+            .id = batch_id,
+            .issue_ids = issue_ids,
+            .status = .pending,
+        };
+
+        try self.pending_batches.append(self.allocator, batch);
+        logInfo("Added batch {d} with {d} issues", .{ batch_id, issue_ids.len });
+
+        return batch_id;
+    }
+
+    /// Get the next pending batch (does not remove it)
+    pub fn getNextPendingBatch(self: *OrchestratorState) ?*Batch {
+        for (self.pending_batches.items) |*batch| {
+            if (batch.status == .pending) {
+                return batch;
+            }
+        }
+        return null;
+    }
+
+    /// Get a batch by ID
+    pub fn getBatch(self: *OrchestratorState, batch_id: u32) ?*Batch {
+        for (self.pending_batches.items) |*batch| {
+            if (batch.id == batch_id) {
+                return batch;
+            }
+        }
+        return null;
+    }
+
+    /// Clear all pending batches (used when planner regenerates batches)
+    pub fn clearPendingBatches(self: *OrchestratorState) void {
+        for (self.pending_batches.items) |*batch| {
+            batch.deinit(self.allocator);
+        }
+        self.pending_batches.clearRetainingCapacity();
+        logInfo("Cleared pending batches", .{});
+    }
+
+    /// Get count of pending batches
+    pub fn getPendingBatchCount(self: *OrchestratorState) usize {
+        var count: usize = 0;
+        for (self.pending_batches.items) |batch| {
+            if (batch.status == .pending) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    /// Check if two issues have conflicting primary_files
+    pub fn issuesConflict(self: *OrchestratorState, issue_a: []const u8, issue_b: []const u8) bool {
+        const manifest_a = self.getManifest(issue_a) orelse return false;
+        const manifest_b = self.getManifest(issue_b) orelse return false;
+
+        // Check if any primary_files overlap
+        for (manifest_a.primary_files) |file_a| {
+            const base_a = extractBaseFile(file_a);
+            for (manifest_b.primary_files) |file_b| {
+                const base_b = extractBaseFile(file_b);
+                if (std.mem.eql(u8, base_a, base_b)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     // === Crash Recovery ===
 
     /// Recover from a crash - reset any in-progress work
@@ -940,4 +1026,95 @@ test "set and get manifest" {
     try std.testing.expect(retrieved != null);
     try std.testing.expect(retrieved.?.primary_files.len == 1);
     try std.testing.expect(std.mem.eql(u8, retrieved.?.primary_files[0], "src/loop.zig"));
+}
+
+test "add and get batch" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Create a batch with owned strings
+    var issue_ids = try std.testing.allocator.alloc([]const u8, 2);
+    issue_ids[0] = try std.testing.allocator.dupe(u8, "issue-1");
+    issue_ids[1] = try std.testing.allocator.dupe(u8, "issue-2");
+
+    const batch_id = try state.addBatch(issue_ids);
+
+    try std.testing.expectEqual(@as(u32, 1), batch_id);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_batches.items.len);
+
+    const batch = state.getBatch(batch_id);
+    try std.testing.expect(batch != null);
+    try std.testing.expectEqual(@as(usize, 2), batch.?.issue_ids.len);
+    try std.testing.expect(std.mem.eql(u8, batch.?.issue_ids[0], "issue-1"));
+    try std.testing.expect(std.mem.eql(u8, batch.?.issue_ids[1], "issue-2"));
+}
+
+test "issues conflict detection" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Create manifest for issue-a: modifies src/foo.zig
+    var primary_a = try std.testing.allocator.alloc([]const u8, 1);
+    primary_a[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
+    try state.setManifest("issue-a", Manifest{ .primary_files = primary_a });
+
+    // Create manifest for issue-b: modifies src/foo.zig (conflict!)
+    var primary_b = try std.testing.allocator.alloc([]const u8, 1);
+    primary_b[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
+    try state.setManifest("issue-b", Manifest{ .primary_files = primary_b });
+
+    // Create manifest for issue-c: modifies src/bar.zig (no conflict)
+    var primary_c = try std.testing.allocator.alloc([]const u8, 1);
+    primary_c[0] = try std.testing.allocator.dupe(u8, "src/bar.zig");
+    try state.setManifest("issue-c", Manifest{ .primary_files = primary_c });
+
+    // issue-a and issue-b conflict (both modify src/foo.zig)
+    try std.testing.expect(state.issuesConflict("issue-a", "issue-b"));
+
+    // issue-a and issue-c do not conflict
+    try std.testing.expect(!state.issuesConflict("issue-a", "issue-c"));
+
+    // issue-b and issue-c do not conflict
+    try std.testing.expect(!state.issuesConflict("issue-b", "issue-c"));
+}
+
+test "clear pending batches" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    // Add two batches
+    var ids1 = try std.testing.allocator.alloc([]const u8, 1);
+    ids1[0] = try std.testing.allocator.dupe(u8, "issue-1");
+    _ = try state.addBatch(ids1);
+
+    var ids2 = try std.testing.allocator.alloc([]const u8, 1);
+    ids2[0] = try std.testing.allocator.dupe(u8, "issue-2");
+    _ = try state.addBatch(ids2);
+
+    try std.testing.expectEqual(@as(usize, 2), state.pending_batches.items.len);
+
+    state.clearPendingBatches();
+
+    try std.testing.expectEqual(@as(usize, 0), state.pending_batches.items.len);
+}
+
+test "get pending batch count" {
+    var state = OrchestratorState.init(std.testing.allocator);
+    defer state.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), state.getPendingBatchCount());
+
+    var ids1 = try std.testing.allocator.alloc([]const u8, 1);
+    ids1[0] = try std.testing.allocator.dupe(u8, "issue-1");
+    _ = try state.addBatch(ids1);
+
+    try std.testing.expectEqual(@as(usize, 1), state.getPendingBatchCount());
+
+    // Mark the batch as running
+    if (state.getNextPendingBatch()) |batch| {
+        batch.status = .running;
+    }
+
+    // Now pending count should be 0
+    try std.testing.expectEqual(@as(usize, 0), state.getPendingBatchCount());
 }
