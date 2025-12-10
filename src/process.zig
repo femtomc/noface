@@ -27,10 +27,7 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !CommandResul
 
     try child.spawn();
 
-    // Collect stdout and stderr
-    const result = try child.wait();
-
-    // Read all output
+    // Read all output BEFORE waiting (pipes close after wait)
     var stdout_list: std.ArrayList(u8) = .empty;
     defer stdout_list.deinit(allocator);
 
@@ -54,6 +51,9 @@ pub fn run(allocator: std.mem.Allocator, argv: []const []const u8) !CommandResul
             try stderr_list.appendSlice(allocator, buf[0..n]);
         }
     }
+
+    // Now wait for process to exit
+    const result = try child.wait();
 
     return .{
         .stdout = try stdout_list.toOwnedSlice(allocator),

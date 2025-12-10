@@ -66,6 +66,31 @@ pub fn main() !void {
                 std.debug.print("Error: invalid number for --quality-interval\n", .{});
                 return error.InvalidArgument;
             };
+        } else if (std.mem.eql(u8, arg, "--stream-json")) {
+            config.output_format = .stream_json;
+        } else if (std.mem.eql(u8, arg, "--raw")) {
+            config.output_format = .raw;
+        } else if (std.mem.eql(u8, arg, "--log-dir")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: --log-dir requires a path\n", .{});
+                return error.InvalidArgument;
+            }
+            config.log_dir = args[i];
+        } else if (std.mem.eql(u8, arg, "--progress-file")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: --progress-file requires a path\n", .{});
+                return error.InvalidArgument;
+            }
+            config.progress_file = args[i];
+        } else if (std.mem.eql(u8, arg, "--monowiki-vault")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: --monowiki-vault requires a path\n", .{});
+                return error.InvalidArgument;
+            }
+            config.monowiki_vault = args[i];
         } else if (std.mem.eql(u8, arg, "--config") or std.mem.eql(u8, arg, "-c")) {
             i += 1;
             if (i >= args.len) {
@@ -104,6 +129,15 @@ fn printUsage() void {
         \\  --no-quality            Disable quality review passes
         \\  --scrum-interval N      Run scrum every N iterations (default: 5)
         \\  --quality-interval N    Run quality review every N iterations (default: 10)
+        \\
+        \\Output options:
+        \\  --stream-json           Output raw JSON streaming (for programmatic use)
+        \\  --raw                   Plain text output without markdown rendering
+        \\  --log-dir PATH          Directory to store JSON session logs (default: /tmp)
+        \\  --progress-file PATH    Path to progress markdown file to update
+        \\
+        \\Integrations:
+        \\  --monowiki-vault PATH   Path to monowiki vault for design documents
         \\
         \\Configuration:
         \\  noface looks for .noface.toml in the current directory.

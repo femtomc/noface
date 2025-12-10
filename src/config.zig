@@ -4,6 +4,13 @@
 
 const std = @import("std");
 
+/// Output format for agent sessions
+pub const OutputFormat = enum {
+    text, // Human-readable text with markdown rendering
+    stream_json, // Raw JSON streaming for programmatic use
+    raw, // Plain text without markdown rendering
+};
+
 /// Agent loop configuration
 pub const Config = struct {
     /// Project name (used in prompts)
@@ -56,6 +63,18 @@ pub const Config = struct {
 
     /// Custom quality prompt template (null = use default)
     quality_prompt_template: ?[]const u8 = null,
+
+    /// Output format
+    output_format: OutputFormat = .text,
+
+    /// Directory to store JSON session logs
+    log_dir: []const u8 = "/tmp",
+
+    /// Path to progress markdown file (null = don't update)
+    progress_file: ?[]const u8 = null,
+
+    /// Monowiki vault path for design documents (null = disabled)
+    monowiki_vault: ?[]const u8 = null,
 
     pub const IssueTracker = enum {
         beads,

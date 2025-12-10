@@ -91,6 +91,15 @@ Options:
   --no-quality            Disable quality review passes
   --scrum-interval N      Run scrum every N iterations (default: 5)
   --quality-interval N    Run quality review every N iterations (default: 10)
+
+Output options:
+  --stream-json           Output raw JSON streaming (for programmatic use)
+  --raw                   Plain text output without markdown rendering
+  --log-dir PATH          Directory to store JSON session logs (default: /tmp)
+  --progress-file PATH    Path to progress markdown file to update
+
+Integrations:
+  --monowiki-vault PATH   Path to monowiki vault for design documents
 ```
 
 ## How It Works
@@ -117,7 +126,30 @@ Options:
 - Analyzes codebase for technical debt
 - Finds code duplication
 - Identifies dead code
-- Creates issues for findings
+- Creates issues for findings (with file:line references)
+
+## Features
+
+### Signal Handling
+noface handles SIGINT (Ctrl+C) and SIGTERM gracefully, printing cleanup messages and reporting the status of any in-progress issue.
+
+### JSON Session Logs
+Every agent session is logged to a JSON file (`/tmp/noface-session-<issue_id>.json`), useful for debugging and auditing.
+
+### Native Markdown Rendering
+Text output is rendered with ANSI styling for headers, code blocks, and lists. No external dependencies like `glow` required.
+
+### Monowiki Integration
+If you use [monowiki](https://github.com/femtomc/monowiki) for design documents, noface can provide agents with commands to search and read design docs:
+
+```bash
+noface --monowiki-vault ./docs/vault
+```
+
+Agents will be instructed to use:
+- `monowiki search "<query>" --json` - Search for design docs
+- `monowiki note <slug> --format json` - Read a specific document
+- `monowiki graph neighbors --slug <slug> --json` - Find related docs
 
 ## Building from Source
 

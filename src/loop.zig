@@ -7,8 +7,11 @@ const std = @import("std");
 const config_mod = @import("config.zig");
 const process = @import("process.zig");
 const streaming = @import("streaming.zig");
+const signals = @import("signals.zig");
+const markdown = @import("markdown.zig");
 
 const Config = config_mod.Config;
+const OutputFormat = config_mod.OutputFormat;
 
 /// Colors for terminal output
 const Color = struct {
@@ -28,9 +31,12 @@ pub const AgentLoop = struct {
     last_scrum_iteration: u32 = 0,
     last_quality_iteration: u32 = 0,
     current_issue: ?[]const u8 = null,
-    interrupted: bool = false,
+    session_log_path: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: Config) AgentLoop {
+        // Install signal handlers
+        signals.install();
+
         return .{
             .allocator = allocator,
             .config = cfg,
@@ -38,8 +44,19 @@ pub const AgentLoop = struct {
     }
 
     pub fn deinit(self: *AgentLoop) void {
-        _ = self;
+        // Reset signal handlers
+        signals.reset();
+
         // Clean up any allocated resources
+        if (self.session_log_path) |path| {
+            self.allocator.free(path);
+        }
+    }
+
+    /// Check if we've been interrupted
+    fn isInterrupted(self: *AgentLoop) bool {
+        _ = self;
+        return signals.isInterrupted();
     }
 
     /// Main entry point - run the agent loop
@@ -65,7 +82,7 @@ pub const AgentLoop = struct {
 
         // Main loop
         self.iteration = 1;
-        while (!self.interrupted) {
+        while (!self.isInterrupted()) {
             // Run scrum pass if due
             if (self.config.enable_scrum) {
                 if (self.last_scrum_iteration == 0 or
@@ -176,30 +193,82 @@ pub const AgentLoop = struct {
 
         self.logInfo("Working on issue: {s}", .{issue_id});
         self.current_issue = issue_id;
+        signals.setCurrentIssue(issue_id);
 
         // Show issue details
-        var show_result = try process.shell(self.allocator, try std.fmt.allocPrint(self.allocator, "bd show {s}", .{issue_id}));
+        const show_cmd = try std.fmt.allocPrint(self.allocator, "bd show {s}", .{issue_id});
+        defer self.allocator.free(show_cmd);
+        var show_result = try process.shell(self.allocator, show_cmd);
         defer show_result.deinit();
         std.debug.print("{s}\n", .{show_result.stdout});
 
         if (self.config.dry_run) {
             self.logInfo("[DRY RUN] Would run {s} on issue {s}", .{ self.config.impl_agent, issue_id });
+            self.current_issue = null;
+            signals.setCurrentIssue(null);
             return true;
         }
 
-        // Build implementation prompt
+        // Build implementation prompt (includes monowiki context if available)
         const prompt = try self.buildImplementationPrompt(issue_id);
         defer self.allocator.free(prompt);
 
+        // Generate log file path
+        const json_log_path = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}/noface-session-{s}.json",
+            .{ self.config.log_dir, issue_id },
+        );
+        defer self.allocator.free(json_log_path);
+
         // Run Claude with streaming
         self.logInfo("Starting {s} session (streaming)...", .{self.config.impl_agent});
-        try self.runAgentStreaming(self.config.impl_agent, prompt);
+        const exit_code = try self.runAgentStreaming(self.config.impl_agent, prompt, json_log_path);
+
+        // Check if we were interrupted
+        if (self.isInterrupted()) {
+            self.logWarn("Session was interrupted", .{});
+            self.current_issue = null;
+            signals.setCurrentIssue(null);
+            return false;
+        }
+
+        if (exit_code != 0) {
+            self.logError("Agent session failed (exit code: {d})", .{exit_code});
+            self.current_issue = null;
+            signals.setCurrentIssue(null);
+            return false;
+        }
+
+        // Verify issue was closed
+        try self.verifyIssueClosed(issue_id);
 
         // Sync to GitHub
         try self.syncGitHub();
 
         self.current_issue = null;
+        signals.setCurrentIssue(null);
         return true;
+    }
+
+    /// Verify that an issue was properly closed
+    fn verifyIssueClosed(self: *AgentLoop, issue_id: []const u8) !void {
+        const cmd = try std.fmt.allocPrint(
+            self.allocator,
+            "bd show {s} --json 2>/dev/null | jq -r '.[0].status // \"unknown\"'",
+            .{issue_id},
+        );
+        defer self.allocator.free(cmd);
+
+        var result = try process.shell(self.allocator, cmd);
+        defer result.deinit();
+
+        const status = std.mem.trim(u8, result.stdout, " \t\n\r");
+        if (std.mem.eql(u8, status, "closed")) {
+            self.logSuccess("Issue {s} completed and closed", .{issue_id});
+        } else {
+            self.logWarn("Issue {s} status: {s} (expected: closed)", .{ issue_id, status });
+        }
     }
 
     /// Run a scrum/grooming pass
@@ -251,17 +320,26 @@ pub const AgentLoop = struct {
             \\1. Code duplication - Look for repeated code patterns that should be refactored
             \\2. Technical debt - Identify TODO/FIXME comments, workarounds, or shortcuts
             \\3. Dead code - Find unused functions, imports, or variables
-            \\4. Complex functions - Flag functions that are too long or have high complexity
-            \\5. Missing error handling - Identify places where errors are ignored
-            \\6. Inconsistent patterns - Find deviations from established conventions
-            \\7. Performance concerns - Spot obvious inefficiencies
+            \\4. Complex functions - Flag functions that are too long or have high cyclomatic complexity
+            \\5. Missing error handling - Identify places where errors are ignored or not handled properly
+            \\6. Inconsistent patterns - Find deviations from established codebase conventions
+            \\7. Performance concerns - Spot obvious inefficiencies (N+1 patterns, unnecessary allocations)
             \\
             \\RULES:
             \\- Focus on src/ directory
             \\- READ-ONLY: Do not modify any code
             \\- For each significant finding, create a beads issue:
-            \\  bd create "<Title>" -t tech-debt -p 1 --note "<Description>"
+            \\  bd create "<Title>" -t tech-debt -p 1 --note "<Description of the issue and location>"
+            \\- Use priority 1 (high) for issues that impact maintainability
+            \\- Use priority 2 for minor issues
+            \\- Be specific about file paths and line numbers (e.g., src/foo.zig:42)
+            \\- Group related issues together (don't create duplicate issues)
+            \\- Check existing issues first (bd list) to avoid duplicates
             \\- Limit to 5 most important findings per pass
+            \\
+            \\OUTPUT:
+            \\- List each finding with file:line reference
+            \\- Show the bd create command used for each issue
             \\- End with: QUALITY_REVIEW_COMPLETE
         ;
 
@@ -295,8 +373,8 @@ pub const AgentLoop = struct {
         return result.exit_code;
     }
 
-    /// Run an agent with streaming output
-    fn runAgentStreaming(self: *AgentLoop, agent: []const u8, prompt: []const u8) !void {
+    /// Run an agent with streaming output and JSON logging
+    fn runAgentStreaming(self: *AgentLoop, agent: []const u8, prompt: []const u8, json_log_path: []const u8) !u8 {
         // Build command
         const cmd = try std.fmt.allocPrint(
             self.allocator,
@@ -305,27 +383,128 @@ pub const AgentLoop = struct {
         );
         defer self.allocator.free(cmd);
 
+        // Open log file for JSON output
+        const log_file = std.fs.cwd().createFile(json_log_path, .{}) catch |err| {
+            self.logWarn("Failed to create log file {s}: {}", .{ json_log_path, err });
+            return try self.runAgentStreamingWithoutLog(cmd);
+        };
+        defer log_file.close();
+
+        var proc = try process.StreamingProcess.spawn(self.allocator, &.{ "/bin/sh", "-c", cmd });
+
+        // Collect full response for final markdown rendering
+        var full_response: std.ArrayList(u8) = .empty;
+        defer full_response.deinit(self.allocator);
+
+        var line_buf: [64 * 1024]u8 = undefined;
+        while (try proc.readLine(&line_buf)) |line| {
+            // Check for interrupt
+            if (self.isInterrupted()) {
+                proc.kill();
+                break;
+            }
+
+            // Write raw JSON line to log file
+            _ = log_file.write(line) catch {};
+            _ = log_file.write("\n") catch {};
+
+            // Parse and display based on output format
+            const event = streaming.parseStreamLine(self.allocator, line) catch continue;
+
+            switch (self.config.output_format) {
+                .stream_json => {
+                    // Output raw JSON
+                    const stdout = std.fs.File.stdout();
+                    _ = stdout.write(line) catch {};
+                    _ = stdout.write("\n") catch {};
+                },
+                .text => {
+                    // Stream text deltas and collect for final render
+                    if (event.text) |text| {
+                        try full_response.appendSlice(self.allocator, text);
+                        const stdout = std.fs.File.stdout();
+                        _ = stdout.write(text) catch {};
+                    }
+                    if (event.tool_name) |name| {
+                        std.debug.print("\n{s}[TOOL]{s} {s}\n", .{ Color.cyan, Color.reset, name });
+                    }
+                },
+                .raw => {
+                    // Plain text without styling
+                    streaming.printTextDelta(event);
+                },
+            }
+        }
+
+        const exit_code = try proc.wait();
+        std.debug.print("\n", .{});
+
+        // Render final markdown summary if in text mode and we have content
+        if (self.config.output_format == .text and full_response.items.len > 0) {
+            self.logInfo("=== Final Result ===", .{});
+            markdown.print(self.allocator, full_response.items);
+            std.debug.print("\n", .{});
+        }
+
+        self.logInfo("Session log saved to: {s}", .{json_log_path});
+
+        return exit_code;
+    }
+
+    /// Fallback streaming without log file
+    fn runAgentStreamingWithoutLog(self: *AgentLoop, cmd: []const u8) !u8 {
         var proc = try process.StreamingProcess.spawn(self.allocator, &.{ "/bin/sh", "-c", cmd });
 
         var line_buf: [64 * 1024]u8 = undefined;
         while (try proc.readLine(&line_buf)) |line| {
+            if (self.isInterrupted()) {
+                proc.kill();
+                break;
+            }
             const event = streaming.parseStreamLine(self.allocator, line) catch continue;
             streaming.printTextDelta(event);
         }
 
         const exit_code = try proc.wait();
         std.debug.print("\n", .{});
-
-        if (exit_code != 0) {
-            self.logWarn("Agent exited with code {d}", .{exit_code});
-        }
+        return exit_code;
     }
 
     /// Build the implementation prompt for an issue
     fn buildImplementationPrompt(self: *AgentLoop, issue_id: []const u8) ![]const u8 {
+        // Build optional monowiki section
+        const monowiki_section = if (self.config.monowiki_vault) |vault|
+            try std.fmt.allocPrint(self.allocator,
+                \\
+                \\DESIGN DOCUMENTS:
+                \\Design documents are available via monowiki. Use these commands to find relevant context:
+                \\- monowiki search "<query>" --json      # Search for design docs
+                \\- monowiki note <slug> --format json    # Read a specific document
+                \\- monowiki graph neighbors --slug <slug> --json  # Find related docs
+                \\Vault location: {s}
+                \\
+            , .{vault})
+        else
+            try self.allocator.dupe(u8, "");
+        defer self.allocator.free(monowiki_section);
+
+        // Build optional progress file section
+        const progress_section = if (self.config.progress_file) |path|
+            try std.fmt.allocPrint(self.allocator,
+                \\10. Update {s} with:
+                \\    - Date
+                \\    - Issue worked on
+                \\    - What was accomplished
+                \\    - Any discoveries or blockers
+                \\
+            , .{path})
+        else
+            try self.allocator.dupe(u8, "");
+        defer self.allocator.free(progress_section);
+
         return std.fmt.allocPrint(self.allocator,
             \\You are working on issue {s} in the {s} project.
-            \\
+            \\{s}
             \\STEPS:
             \\1. Run: bd show {s}
             \\2. Run: bd update {s} --status in_progress
@@ -336,17 +515,19 @@ pub const AgentLoop = struct {
             \\7. After approval: touch .codex-approved
             \\8. Commit with message referencing the issue
             \\9. Run: bd close {s} --reason "Completed: <summary>"
-            \\
+            \\{s}
             \\IMPORTANT: Do NOT commit until review approves. Keep iterating.
             \\When complete, your final message should be: ISSUE_COMPLETE
         , .{
             issue_id,
             self.config.project_name,
+            monowiki_section,
             issue_id,
             issue_id,
             self.config.test_command,
             self.config.review_agent,
             issue_id,
+            progress_section,
         });
     }
 

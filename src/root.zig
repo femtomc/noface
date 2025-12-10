@@ -9,8 +9,11 @@ pub const config = @import("config.zig");
 pub const streaming = @import("streaming.zig");
 pub const process = @import("process.zig");
 pub const loop = @import("loop.zig");
+pub const signals = @import("signals.zig");
+pub const markdown = @import("markdown.zig");
 
 pub const Config = config.Config;
+pub const OutputFormat = config.OutputFormat;
 pub const AgentLoop = loop.AgentLoop;
 
 test {
