@@ -11,6 +11,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Link SQLite for transcript storage
+    lib_mod.link_libc = true;
+    lib_mod.linkSystemLibrary("sqlite3", .{});
+
     // Main CLI executable
     const exe = b.addExecutable(.{
         .name = "noface",

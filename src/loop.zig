@@ -13,6 +13,7 @@ const monowiki_mod = @import("monowiki.zig");
 const github = @import("github.zig");
 const state_mod = @import("state.zig");
 const worker_pool_mod = @import("worker_pool.zig");
+const transcript_mod = @import("transcript.zig");
 
 const Config = config_mod.Config;
 const OutputFormat = config_mod.OutputFormat;
@@ -416,14 +417,6 @@ pub const AgentLoop = struct {
         const prompt = try self.buildImplementationPrompt(issue_id);
         defer self.allocator.free(prompt);
 
-        // Generate log file path
-        const json_log_path = try std.fmt.allocPrint(
-            self.allocator,
-            "{s}/noface-session-{s}.json",
-            .{ self.config.log_dir, issue_id },
-        );
-        defer self.allocator.free(json_log_path);
-
         // Capture baseline of changed files before agent runs
         // This allows us to distinguish pre-existing changes from agent-made changes
         const baseline = try self.captureChangedFilesBaseline();
@@ -457,7 +450,7 @@ pub const AgentLoop = struct {
                 self.allocator.free(effective_prompt);
             };
 
-            last_exit_code = try self.runAgentStreaming(self.config.impl_agent, effective_prompt, json_log_path);
+            last_exit_code = try self.runAgentStreaming(self.config.impl_agent, effective_prompt, issue_id);
 
             // Check if we were interrupted
             if (self.isInterrupted()) {
@@ -550,9 +543,11 @@ pub const AgentLoop = struct {
 
             if (breakdown_success) {
                 self.logSuccess("Issue broken down into sub-issues, continuing loop", .{});
+                self.writeProgressEntry(issue_id, .blocked, "Broken down into sub-issues");
                 return true; // Continue with the new sub-issues
             } else {
                 self.logWarn("Could not break down issue, stopping", .{});
+                self.writeProgressEntry(issue_id, .failed, "Agent failed, could not break down");
                 return false;
             }
         }
@@ -562,6 +557,8 @@ pub const AgentLoop = struct {
 
         // Sync to GitHub
         try self.syncGitHub();
+
+        self.writeProgressEntry(issue_id, .completed, "Issue closed successfully");
 
         self.current_issue = null;
         signals.setCurrentIssue(null);
@@ -1648,8 +1645,8 @@ pub const AgentLoop = struct {
         return std.fmt.allocPrint(self.allocator, "{s}{s}", .{ violation_details.items, base_prompt });
     }
 
-    /// Run an agent with streaming output and JSON logging
-    fn runAgentStreaming(self: *AgentLoop, agent: []const u8, prompt: []const u8, json_log_path: []const u8) !u8 {
+    /// Run an agent with streaming output and SQLite transcript logging
+    fn runAgentStreaming(self: *AgentLoop, agent: []const u8, prompt: []const u8, issue_id: []const u8) !u8 {
         // Build argv to avoid shell quoting pitfalls
         const argv = [_][]const u8{
             agent,
@@ -1662,12 +1659,19 @@ pub const AgentLoop = struct {
             prompt,
         };
 
-        // Open log file for JSON output
-        const log_file = std.fs.cwd().createFile(json_log_path, .{}) catch |err| {
-            self.logWarn("Failed to create log file {s}: {}", .{ json_log_path, err });
+        // Open transcript database
+        var transcript_db = transcript_mod.TranscriptDb.open(self.allocator) catch |err| {
+            self.logWarn("Failed to open transcript DB: {}, continuing without logging", .{err});
             return try self.runAgentStreamingWithoutLog(&argv);
         };
-        defer log_file.close();
+        defer transcript_db.close();
+
+        // Start a new session
+        const session_id = transcript_db.startSession(issue_id, null, false) catch |err| {
+            self.logWarn("Failed to start transcript session: {}", .{err});
+            return try self.runAgentStreamingWithoutLog(&argv);
+        };
+        defer self.allocator.free(session_id);
 
         var proc = try process.StreamingProcess.spawn(self.allocator, &argv);
         defer proc.deinit();
@@ -1678,16 +1682,20 @@ pub const AgentLoop = struct {
 
         const timeout_seconds = self.config.agent_timeout_seconds;
         var line_buf: [64 * 1024]u8 = undefined;
+        var event_seq: u32 = 0;
 
         // Log timeout setting
         if (timeout_seconds > 0) {
             self.logInfo("Agent timeout: {d} seconds", .{timeout_seconds});
         }
 
+        var exit_code: u8 = 0;
+
         while (true) {
             // Check for interrupt first
             if (self.isInterrupted()) {
                 proc.kill();
+                exit_code = 130; // SIGINT
                 break;
             }
 
@@ -1702,19 +1710,29 @@ pub const AgentLoop = struct {
                     // Reap the process to avoid zombie
                     _ = proc.wait() catch {};
                     std.debug.print("\n", .{});
-                    return EXIT_CODE_TIMEOUT;
+                    exit_code = EXIT_CODE_TIMEOUT;
+                    break;
                 },
                 .eof => {
                     // Process closed stdout, we're done
                     break;
                 },
                 .line => |line| {
-                    // Write raw JSON line to log file
-                    _ = log_file.write(line) catch {};
-                    _ = log_file.write("\n") catch {};
-
-                    // Parse and display based on output format
+                    // Parse event for logging and display
                     var event = streaming.parseStreamLine(self.allocator, line) catch continue;
+                    defer streaming.deinitEvent(self.allocator, &event);
+
+                    // Log to SQLite (convert enum to string)
+                    const event_type_str = @tagName(event.event_type);
+                    transcript_db.logEvent(
+                        session_id,
+                        event_seq,
+                        event_type_str,
+                        event.tool_name,
+                        event.text,
+                        line,
+                    ) catch {};
+                    event_seq += 1;
 
                     switch (self.config.output_format) {
                         .stream_json => {
@@ -1743,14 +1761,18 @@ pub const AgentLoop = struct {
                             streaming.printTextDelta(event);
                         },
                     }
-
-                    streaming.deinitEvent(self.allocator, &event);
                 },
             }
         }
 
-        const exit_code = try proc.wait();
+        // Get exit code from process if it wasn't set by early exit
+        if (exit_code == 0) {
+            exit_code = try proc.wait();
+        }
         std.debug.print("\n", .{});
+
+        // Complete the session in the transcript DB
+        transcript_db.completeSession(session_id, exit_code) catch {};
 
         // Render final markdown summary if in text mode and we have content
         if (self.config.output_format == .text and full_response.items.len > 0) {
@@ -1759,7 +1781,7 @@ pub const AgentLoop = struct {
             std.debug.print("\n", .{});
         }
 
-        self.logInfo("Session log saved to: {s}", .{json_log_path});
+        self.logInfo("Transcript saved to .noface/transcripts.db (session: {s})", .{session_id});
 
         return exit_code;
     }
@@ -2051,6 +2073,109 @@ pub const AgentLoop = struct {
         std.Thread.sleep(ms * std.time.ns_per_ms);
     }
 
+    /// Progress entry status for the progress file
+    pub const ProgressStatus = enum {
+        completed,
+        blocked,
+        failed,
+
+        pub fn toString(self: ProgressStatus) []const u8 {
+            return switch (self) {
+                .completed => "completed",
+                .blocked => "blocked",
+                .failed => "failed",
+            };
+        }
+    };
+
+    /// Write a progress entry to the configured progress file
+    /// Creates the file if missing; on write failure, logs a warning and continues
+    fn writeProgressEntry(
+        self: *AgentLoop,
+        issue_id: []const u8,
+        status: ProgressStatus,
+        summary: []const u8,
+    ) void {
+        const progress_path = self.config.progress_file orelse return;
+
+        if (self.config.dry_run) {
+            self.logInfo("[DRY RUN] Would write progress: {s} - {s} - {s}", .{
+                issue_id,
+                status.toString(),
+                summary,
+            });
+            return;
+        }
+
+        // Get current timestamp
+        const timestamp = std.time.timestamp();
+        const epoch_seconds: std.posix.time_t = @intCast(timestamp);
+        const epoch_day = std.time.epoch.EpochSeconds{ .secs = @intCast(epoch_seconds) };
+        const year_day = epoch_day.getEpochDay().calculateYearDay();
+        const month_day = year_day.calculateMonthDay();
+        const day_seconds = epoch_day.getDaySeconds();
+        const hours = day_seconds.getHoursIntoDay();
+        const minutes = day_seconds.getMinutesIntoHour();
+        const seconds = day_seconds.getSecondsIntoMinute();
+
+        // Format the entry
+        const entry = std.fmt.allocPrint(
+            self.allocator,
+            "| {d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2} | {s} | {s} | {s} |\n",
+            .{
+                year_day.year,
+                month_day.month.numeric(),
+                month_day.day_index + 1,
+                hours,
+                minutes,
+                seconds,
+                issue_id,
+                status.toString(),
+                summary,
+            },
+        ) catch |err| {
+            self.logWarn("Failed to format progress entry: {}", .{err});
+            return;
+        };
+        defer self.allocator.free(entry);
+
+        // Open or create the file in append mode
+        const file = std.fs.cwd().openFile(progress_path, .{ .mode = .write_only }) catch |err| {
+            if (err == error.FileNotFound) {
+                // Create the file with header
+                const new_file = std.fs.cwd().createFile(progress_path, .{}) catch |create_err| {
+                    self.logWarn("Failed to create progress file '{s}': {}", .{ progress_path, create_err });
+                    return;
+                };
+                defer new_file.close();
+
+                const header = "# noface Progress Log\n\n| Timestamp | Issue | Status | Summary |\n|-----------|-------|--------|----------|\n";
+                new_file.writeAll(header) catch |write_err| {
+                    self.logWarn("Failed to write progress file header: {}", .{write_err});
+                    return;
+                };
+                new_file.writeAll(entry) catch |write_err| {
+                    self.logWarn("Failed to write progress entry: {}", .{write_err});
+                    return;
+                };
+                return;
+            }
+            self.logWarn("Failed to open progress file '{s}': {}", .{ progress_path, err });
+            return;
+        };
+        defer file.close();
+
+        // Seek to end and append
+        file.seekFromEnd(0) catch |err| {
+            self.logWarn("Failed to seek to end of progress file: {}", .{err});
+            return;
+        };
+        file.writeAll(entry) catch |err| {
+            self.logWarn("Failed to write progress entry: {}", .{err});
+            return;
+        };
+    }
+
     // Logging helpers
     fn logInfo(self: *AgentLoop, comptime fmt: []const u8, args: anytype) void {
         _ = self;
@@ -2179,4 +2304,121 @@ test "parse manifest line - empty returns null" {
 
     const manifest = loop.parseManifestLine("");
     try std.testing.expect(manifest == null);
+}
+
+test "progress status toString" {
+    try std.testing.expectEqualStrings("completed", AgentLoop.ProgressStatus.completed.toString());
+    try std.testing.expectEqualStrings("blocked", AgentLoop.ProgressStatus.blocked.toString());
+    try std.testing.expectEqualStrings("failed", AgentLoop.ProgressStatus.failed.toString());
+}
+
+test "writeProgressEntry creates file with header" {
+    const test_file = "/tmp/noface-test-progress.md";
+
+    // Clean up from any previous test run
+    std.fs.cwd().deleteFile(test_file) catch {};
+
+    var cfg = Config.default();
+    cfg.progress_file = test_file;
+
+    var loop = AgentLoop.init(std.testing.allocator, cfg);
+    defer loop.deinit();
+
+    // Write an entry
+    loop.writeProgressEntry("test-issue-1", .completed, "Test completed");
+
+    // Read the file and verify contents
+    const content = std.fs.cwd().readFileAlloc(std.testing.allocator, test_file, 1024 * 1024) catch |err| {
+        std.debug.print("Failed to read test file: {}\n", .{err});
+        return err;
+    };
+    defer std.testing.allocator.free(content);
+
+    // Verify header is present
+    try std.testing.expect(std.mem.indexOf(u8, content, "# noface Progress Log") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "| Timestamp | Issue | Status | Summary |") != null);
+
+    // Verify entry is present
+    try std.testing.expect(std.mem.indexOf(u8, content, "test-issue-1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "completed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "Test completed") != null);
+
+    // Clean up
+    std.fs.cwd().deleteFile(test_file) catch {};
+}
+
+test "writeProgressEntry appends to existing file" {
+    const test_file = "/tmp/noface-test-progress-append.md";
+
+    // Clean up from any previous test run
+    std.fs.cwd().deleteFile(test_file) catch {};
+
+    var cfg = Config.default();
+    cfg.progress_file = test_file;
+
+    var loop = AgentLoop.init(std.testing.allocator, cfg);
+    defer loop.deinit();
+
+    // Write first entry
+    loop.writeProgressEntry("issue-1", .completed, "First issue done");
+
+    // Write second entry
+    loop.writeProgressEntry("issue-2", .blocked, "Second issue blocked");
+
+    // Read the file and verify both entries
+    const content = std.fs.cwd().readFileAlloc(std.testing.allocator, test_file, 1024 * 1024) catch |err| {
+        std.debug.print("Failed to read test file: {}\n", .{err});
+        return err;
+    };
+    defer std.testing.allocator.free(content);
+
+    // Verify both entries are present
+    try std.testing.expect(std.mem.indexOf(u8, content, "issue-1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "issue-2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "completed") != null);
+    try std.testing.expect(std.mem.indexOf(u8, content, "blocked") != null);
+
+    // Header should appear only once
+    var header_count: usize = 0;
+    var search_start: usize = 0;
+    while (std.mem.indexOf(u8, content[search_start..], "# noface Progress Log")) |idx| {
+        header_count += 1;
+        search_start = search_start + idx + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), header_count);
+
+    // Clean up
+    std.fs.cwd().deleteFile(test_file) catch {};
+}
+
+test "writeProgressEntry dry run does not write" {
+    const test_file = "/tmp/noface-test-progress-dryrun.md";
+
+    // Clean up from any previous test run
+    std.fs.cwd().deleteFile(test_file) catch {};
+
+    var cfg = Config.default();
+    cfg.progress_file = test_file;
+    cfg.dry_run = true;
+
+    var loop = AgentLoop.init(std.testing.allocator, cfg);
+    defer loop.deinit();
+
+    // Write an entry (should not actually write due to dry_run)
+    loop.writeProgressEntry("dry-issue", .completed, "Should not write");
+
+    // File should not exist
+    const result = std.fs.cwd().access(test_file, .{});
+    try std.testing.expectError(error.FileNotFound, result);
+}
+
+test "writeProgressEntry no-op when progress_file is null" {
+    const cfg = Config.default();
+    // progress_file is null by default
+
+    var loop = AgentLoop.init(std.testing.allocator, cfg);
+    defer loop.deinit();
+
+    // This should be a no-op and not crash
+    loop.writeProgressEntry("any-issue", .completed, "Should do nothing");
 }

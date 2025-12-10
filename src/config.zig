@@ -4,6 +4,78 @@
 
 const std = @import("std");
 const monowiki = @import("monowiki.zig");
+const process = @import("process.zig");
+
+/// Validation warning for config issues
+pub const ValidationWarning = struct {
+    line: u32,
+    message: []const u8,
+    suggestion: ?[]const u8 = null,
+    is_critical: bool = false,
+};
+
+/// Result of config validation
+pub const ValidationResult = struct {
+    warnings: std.ArrayListUnmanaged(ValidationWarning),
+    allocator: std.mem.Allocator,
+    has_critical: bool = false,
+
+    pub fn init(allocator: std.mem.Allocator) ValidationResult {
+        return .{
+            .warnings = .{},
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *ValidationResult) void {
+        for (self.warnings.items) |w| {
+            self.allocator.free(w.message);
+            if (w.suggestion) |s| {
+                self.allocator.free(s);
+            }
+        }
+        self.warnings.deinit(self.allocator);
+    }
+
+    pub fn addWarning(self: *ValidationResult, line: u32, message: []const u8, suggestion: ?[]const u8) !void {
+        const msg_copy = try self.allocator.dupe(u8, message);
+        errdefer self.allocator.free(msg_copy);
+        const sug_copy = if (suggestion) |s| try self.allocator.dupe(u8, s) else null;
+        try self.warnings.append(self.allocator, .{
+            .line = line,
+            .message = msg_copy,
+            .suggestion = sug_copy,
+        });
+    }
+
+    pub fn addCritical(self: *ValidationResult, line: u32, message: []const u8, suggestion: ?[]const u8) !void {
+        const msg_copy = try self.allocator.dupe(u8, message);
+        errdefer self.allocator.free(msg_copy);
+        const sug_copy = if (suggestion) |s| try self.allocator.dupe(u8, s) else null;
+        try self.warnings.append(self.allocator, .{
+            .line = line,
+            .message = msg_copy,
+            .suggestion = sug_copy,
+            .is_critical = true,
+        });
+        self.has_critical = true;
+    }
+
+    /// Print all warnings to stderr
+    pub fn printWarnings(self: *const ValidationResult, path: []const u8) void {
+        if (self.warnings.items.len == 0) return;
+
+        std.debug.print("\n\x1b[1;33mConfig validation warnings:\x1b[0m\n", .{});
+        for (self.warnings.items) |w| {
+            const severity = if (w.is_critical) "\x1b[1;31mERROR\x1b[0m" else "\x1b[1;33mWARN\x1b[0m";
+            std.debug.print("  {s}: {s}:{d}: {s}\n", .{ severity, path, w.line, w.message });
+            if (w.suggestion) |s| {
+                std.debug.print("         \x1b[36msuggestion:\x1b[0m {s}\n", .{s});
+            }
+        }
+        std.debug.print("\n", .{});
+    }
+};
 
 /// Output format for agent sessions
 pub const OutputFormat = enum {

@@ -96,11 +96,14 @@ pub const WorkerState = struct {
     current_issue: ?[]const u8 = null,
     process_pid: ?i32 = null,
     started_at: ?i64 = null,
+    /// File path this worker is waiting on (only valid when status == .waiting)
+    blocked_on_file: ?[]const u8 = null,
 
-    pub const Status = enum { idle, starting, running, completed, failed, timeout };
+    pub const Status = enum { idle, starting, running, completed, failed, timeout, waiting };
 
     pub fn deinit(self: *WorkerState, allocator: std.mem.Allocator) void {
         if (self.current_issue) |issue| allocator.free(issue);
+        if (self.blocked_on_file) |file| allocator.free(file);
     }
 
     pub fn isAvailable(self: WorkerState) bool {
