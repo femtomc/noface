@@ -15,10 +15,10 @@
 set -e
 
 # Configurable via environment:
-#   NOFACE_VERSION       Override version tag (default: 0.1.1)
+#   NOFACE_VERSION       Override version tag (default: 0.1.7)
 #   INSTALL_DIR          Override install directory (default: ~/.local/bin)
 #   BUILD_FROM_SOURCE    Set to "true" to force source build
-VERSION="${NOFACE_VERSION:-0.1.1}"
+VERSION="${NOFACE_VERSION:-0.1.7}"
 INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
 BUILD_FROM_SOURCE="${BUILD_FROM_SOURCE:-false}"
 
@@ -220,7 +220,13 @@ install_from_release() {
     esac
 
     case "$ARCH" in
-        x86_64|amd64) arch_slug="amd64" ;;
+        x86_64|amd64)
+            if [[ "$os_slug" == "darwin" ]]; then
+                log_warn "No prebuilt binary for macOS x86_64. Building from source..."
+                return 1
+            fi
+            arch_slug="amd64"
+            ;;
         arm64|aarch64) arch_slug="arm64" ;;
         *)
             log_error "Unsupported architecture for prebuilt binaries: $ARCH"
@@ -318,14 +324,13 @@ check_jq || install_jq
 
 echo ""
 
-# Install noface (prefer release binary)
+# Install noface (prefer release binary, fallback to source)
 if [[ "$BUILD_FROM_SOURCE" == "true" ]]; then
     install_from_source
 else
     if ! install_from_release; then
-        log_error "Failed to install prebuilt binary."
-        echo "Set BUILD_FROM_SOURCE=true to build locally (requires zig)."
-        exit 1
+        log_info "Falling back to source build..."
+        install_from_source
     fi
 fi
 
