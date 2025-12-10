@@ -126,6 +126,21 @@ pub fn main() !void {
             if (config.monowiki_config) |*mwc| {
                 mwc.resolve_wikilinks = false;
             }
+        } else if (std.mem.eql(u8, arg, "--agent-timeout")) {
+            i += 1;
+            if (i >= args.len) {
+                std.debug.print("Error: --agent-timeout requires a value\n", .{});
+                return error.InvalidArgument;
+            }
+            const timeout = std.fmt.parseInt(u32, args[i], 10) catch {
+                std.debug.print("Error: invalid number for --agent-timeout\n", .{});
+                return error.InvalidArgument;
+            };
+            if (timeout == 0) {
+                std.debug.print("Error: --agent-timeout must be greater than 0\n", .{});
+                return error.InvalidArgument;
+            }
+            config.agent_timeout_seconds = timeout;
         } else if (std.mem.eql(u8, arg, "--monowiki-expand-neighbors")) {
             if (config.monowiki_config) |*mwc| {
                 mwc.expand_neighbors = true;
@@ -169,6 +184,7 @@ fn printUsage() void {
         \\  --no-quality            Disable quality review passes
         \\  --planner-interval N    Run planner every N iterations (default: 5)
         \\  --quality-interval N    Run quality review every N iterations (default: 10)
+        \\  --agent-timeout N       Kill agent if no output for N seconds (default: 300, must be >0)
         \\
         \\Output options:
         \\  --stream-json           Output raw JSON streaming (for programmatic use)
@@ -241,6 +257,7 @@ fn runInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
         \\[agents]
         \\implementer = "claude"
         \\reviewer = "codex"
+        \\timeout_seconds = 300        # Kill agent if no output for this many seconds (must be >0)
         \\
         \\[passes]
         \\planner_enabled = true

@@ -70,6 +70,10 @@ pub const Config = struct {
     /// Custom quality prompt template (null = use default)
     quality_prompt_template: ?[]const u8 = null,
 
+    /// Agent timeout in seconds (0 = no timeout)
+    /// If an agent produces no output for this duration, it is killed
+    agent_timeout_seconds: u32 = 300,
+
     /// Output format
     output_format: OutputFormat = .text,
 
@@ -162,6 +166,16 @@ pub const Config = struct {
                         try setOwnedString(allocator, &config.impl_agent, &config.impl_agent_owned, value);
                     } else if (std.mem.eql(u8, key, "reviewer")) {
                         try setOwnedString(allocator, &config.review_agent, &config.review_agent_owned, value);
+                    } else if (std.mem.eql(u8, key, "timeout_seconds")) {
+                        const timeout = std.fmt.parseInt(u32, value, 10) catch {
+                            std.debug.print("Warning: invalid timeout_seconds value '{s}', using default 300\n", .{value});
+                            continue;
+                        };
+                        if (timeout == 0) {
+                            std.debug.print("Warning: timeout_seconds cannot be 0, using default 300\n", .{});
+                            continue;
+                        }
+                        config.agent_timeout_seconds = timeout;
                     }
                 } else if (std.mem.eql(u8, current_section.?, "passes")) {
                     if (std.mem.eql(u8, key, "planner_enabled")) {
@@ -267,6 +281,7 @@ test "default config" {
     try std.testing.expectEqual(@as(u32, 5), config.planner_interval);
     try std.testing.expectEqual(@as(u32, 10), config.quality_interval);
     try std.testing.expect(config.enable_planner);
+    try std.testing.expectEqual(@as(u32, 300), config.agent_timeout_seconds);
 }
 
 test "parse toml" {
@@ -289,6 +304,38 @@ test "parse toml" {
     try std.testing.expectEqualStrings("zig build", config.build_command);
     try std.testing.expectEqual(@as(u32, 3), config.planner_interval);
     try std.testing.expect(!config.enable_quality);
+}
+
+test "parse agents timeout config" {
+    const toml =
+        \\[project]
+        \\name = "TestProject"
+        \\
+        \\[agents]
+        \\implementer = "claude"
+        \\reviewer = "codex"
+        \\timeout_seconds = 600
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expectEqual(@as(u32, 600), config.agent_timeout_seconds);
+}
+
+test "parse agents timeout zero rejected" {
+    const toml =
+        \\[agents]
+        \\timeout_seconds = 0
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    // Zero is rejected, should keep default
+    try std.testing.expectEqual(@as(u32, 300), config.agent_timeout_seconds);
 }
 
 test "parse monowiki config" {

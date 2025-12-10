@@ -10,10 +10,13 @@ const streaming = @import("streaming.zig");
 const signals = @import("signals.zig");
 const markdown = @import("markdown.zig");
 const monowiki_mod = @import("monowiki.zig");
+const github = @import("github.zig");
+const state_mod = @import("state.zig");
 
 const Config = config_mod.Config;
 const OutputFormat = config_mod.OutputFormat;
 const Monowiki = monowiki_mod.Monowiki;
+const OrchestratorState = state_mod.OrchestratorState;
 
 /// Colors for terminal output
 const Color = struct {
@@ -41,6 +44,7 @@ pub const AgentLoop = struct {
     last_quality_iteration: u32 = 0,
     current_issue: ?[]const u8 = null,
     session_log_path: ?[]const u8 = null,
+    state: ?OrchestratorState = null,
 
     pub fn init(allocator: std.mem.Allocator, cfg: Config) AgentLoop {
         // Install signal handlers
@@ -56,9 +60,41 @@ pub const AgentLoop = struct {
         // Reset signal handlers
         signals.reset();
 
+        // Save and clean up state
+        if (self.state) |*s| {
+            s.save() catch |err| {
+                self.logWarn("Failed to save state on exit: {}", .{err});
+            };
+            s.deinit();
+        }
+
         // Clean up any allocated resources
         if (self.session_log_path) |path| {
             self.allocator.free(path);
+        }
+    }
+
+    /// Initialize orchestrator state with crash recovery
+    fn initState(self: *AgentLoop) !void {
+        self.state = try OrchestratorState.load(self.allocator, self.config.project_name);
+
+        // Perform crash recovery
+        const recovered = try self.state.?.recoverFromCrash();
+        if (recovered > 0) {
+            self.logWarn("Recovered {d} items from previous crash", .{recovered});
+        }
+
+        // Restore iteration count from state
+        self.iteration = self.state.?.total_iterations;
+    }
+
+    /// Save state periodically
+    fn saveState(self: *AgentLoop) void {
+        if (self.state) |*s| {
+            s.total_iterations = self.iteration;
+            s.save() catch |err| {
+                self.logWarn("Failed to save state: {}", .{err});
+            };
         }
     }
 
@@ -89,8 +125,12 @@ pub const AgentLoop = struct {
         // Check prerequisites
         try self.checkPrerequisites();
 
+        // Initialize orchestrator state (with crash recovery)
+        try self.initState();
+        self.logInfo("State initialized ({d} previous iterations)", .{self.iteration});
+
         // Main loop
-        self.iteration = 1;
+        if (self.iteration == 0) self.iteration = 1;
         while (!self.isInterrupted()) {
             // Run planner pass if due
             if (self.config.enable_planner) {
@@ -133,11 +173,16 @@ pub const AgentLoop = struct {
 
             self.iteration += 1;
 
+            // Save state after each iteration
+            self.saveState();
+
             // Brief pause
             self.logInfo("Pausing 5 seconds before next iteration...", .{});
             std.Thread.sleep(5 * std.time.ns_per_s);
         }
 
+        // Final state save
+        self.saveState();
         self.logSuccess("Agent loop finished after {d} iteration(s)", .{self.iteration});
     }
 
@@ -146,12 +191,19 @@ pub const AgentLoop = struct {
         self.logInfo("Checking prerequisites...", .{});
 
         // Check for required commands
-        const required = [_][]const u8{ self.config.impl_agent, self.config.review_agent, "bd", "gh", "jq" };
+        const required = [_][]const u8{ self.config.impl_agent, self.config.review_agent, "bd", "jq" };
 
         for (required) |cmd| {
             if (!process.commandExists(self.allocator, cmd)) {
                 self.logError("{s} not found in PATH", .{cmd});
                 return error.MissingPrerequisite;
+            }
+        }
+
+        // Check gh CLI only if GitHub sync is enabled
+        if (self.config.sync_to_github) {
+            if (!process.commandExists(self.allocator, "gh")) {
+                self.logWarn("gh CLI not found - GitHub sync will be disabled", .{});
             }
         }
 
@@ -176,35 +228,112 @@ pub const AgentLoop = struct {
         self.logSuccess("All prerequisites met", .{});
     }
 
+    /// Result of getting next issue
+    const NextIssueResult = struct {
+        issue_id: ?[]const u8,
+        reason: enum { found, no_ready, all_blocked, empty_backlog },
+    };
+
     /// Get the next issue to work on
     fn getNextIssue(self: *AgentLoop) !?[]const u8 {
+        const result = try self.getNextIssueWithReason();
+        return result.issue_id;
+    }
+
+    /// Get the next issue with reason for empty result
+    fn getNextIssueWithReason(self: *AgentLoop) !NextIssueResult {
         if (self.config.specific_issue) |issue| {
-            return try self.allocator.dupe(u8, issue);
+            return .{
+                .issue_id = try self.allocator.dupe(u8, issue),
+                .reason = .found,
+            };
         }
 
-        // Get highest priority ready issue from beads
-        var result = try process.shell(self.allocator, "bd ready --json 2>/dev/null | jq -r '.[0].id // empty'");
-        defer result.deinit();
+        // First, check for in_progress issues (might be stalled from previous run)
+        var in_progress_result = try process.shell(
+            self.allocator,
+            "bd list --json 2>/dev/null | jq -r '[.[] | select(.status == \"in_progress\")] | sort_by(.priority) | .[0].id // empty'",
+        );
+        defer in_progress_result.deinit();
 
-        if (result.success() and result.stdout.len > 0) {
-            const issue_id = std.mem.trim(u8, result.stdout, " \t\n\r");
+        if (in_progress_result.success() and in_progress_result.stdout.len > 0) {
+            const issue_id = std.mem.trim(u8, in_progress_result.stdout, " \t\n\r");
             if (issue_id.len > 0) {
-                return try self.allocator.dupe(u8, issue_id);
+                self.logInfo("Resuming in_progress issue: {s}", .{issue_id});
+                return .{
+                    .issue_id = try self.allocator.dupe(u8, issue_id),
+                    .reason = .found,
+                };
             }
         }
 
-        return null;
+        // Then check for ready issues (unblocked)
+        var ready_result = try process.shell(self.allocator, "bd ready --json 2>/dev/null | jq -r '.[0].id // empty'");
+        defer ready_result.deinit();
+
+        if (ready_result.success() and ready_result.stdout.len > 0) {
+            const issue_id = std.mem.trim(u8, ready_result.stdout, " \t\n\r");
+            if (issue_id.len > 0) {
+                return .{
+                    .issue_id = try self.allocator.dupe(u8, issue_id),
+                    .reason = .found,
+                };
+            }
+        }
+
+        // No ready issues - check if there are any open issues at all
+        var open_result = try process.shell(
+            self.allocator,
+            "bd list --json 2>/dev/null | jq '[.[] | select(.status == \"open\")] | length'",
+        );
+        defer open_result.deinit();
+
+        if (open_result.success()) {
+            const count_str = std.mem.trim(u8, open_result.stdout, " \t\n\r");
+            const open_count = std.fmt.parseInt(u32, count_str, 10) catch 0;
+
+            if (open_count > 0) {
+                // There are open issues but none are ready (all blocked)
+                return .{ .issue_id = null, .reason = .all_blocked };
+            }
+        }
+
+        return .{ .issue_id = null, .reason = .empty_backlog };
     }
 
     /// Run one iteration of the agent loop
     fn runIteration(self: *AgentLoop) !bool {
         self.logInfo("=== Iteration {d} ===", .{self.iteration});
 
-        // Get next issue
-        const issue_id = try self.getNextIssue() orelse {
-            self.logWarn("No ready issues found. Exiting.", .{});
-            return false;
-        };
+        // Get next issue with reason
+        const next = try self.getNextIssueWithReason();
+
+        if (next.issue_id == null) {
+            switch (next.reason) {
+                .all_blocked => {
+                    self.logWarn("All open issues are blocked by dependencies", .{});
+                    self.logInfo("Showing blocked issues:", .{});
+                    var blocked_result = try process.shell(self.allocator, "bd blocked 2>/dev/null");
+                    defer blocked_result.deinit();
+                    if (blocked_result.stdout.len > 0) {
+                        std.debug.print("{s}\n", .{blocked_result.stdout});
+                    }
+                    self.logInfo("Waiting 30 seconds before checking again...", .{});
+                    std.Thread.sleep(30 * std.time.ns_per_s);
+                    return true; // Continue loop, don't exit
+                },
+                .empty_backlog => {
+                    self.logSuccess("All issues completed! Backlog is empty.", .{});
+                    return false; // Exit loop - we're done!
+                },
+                else => {
+                    self.logWarn("No ready issues found. Exiting.", .{});
+                    return false;
+                },
+            }
+        }
+
+        const issue_id = next.issue_id.?;
         defer self.allocator.free(issue_id);
 
         self.logInfo("Working on issue: {s}", .{issue_id});
@@ -279,9 +408,21 @@ pub const AgentLoop = struct {
 
         if (last_exit_code != 0) {
             self.logError("Agent session failed after {d} attempt(s) (exit code: {d})", .{ attempt + 1, last_exit_code });
+
+            // Ask planner to break down the issue into smaller pieces
+            self.logInfo("Asking planner to break down issue into sub-issues...", .{});
+            const breakdown_success = self.requestIssueBreakdown(issue_id) catch false;
+
             self.current_issue = null;
             signals.setCurrentIssue(null);
-            return false;
+
+            if (breakdown_success) {
+                self.logSuccess("Issue broken down into sub-issues, continuing loop", .{});
+                return true; // Continue with the new sub-issues
+            } else {
+                self.logWarn("Could not break down issue, stopping", .{});
+                return false;
+            }
         }
 
         // Verify issue was closed
@@ -317,8 +458,10 @@ pub const AgentLoop = struct {
 
     /// Build planner pass prompt with optional monowiki integration
     fn buildPlannerPrompt(self: *AgentLoop) ![]const u8 {
-        const monowiki_section = if (self.config.monowiki_config) |mwc|
-            try std.fmt.allocPrint(self.allocator,
+        // Two different prompts: with design docs (monowiki) or without
+        if (self.config.monowiki_config) |mwc| {
+            return std.fmt.allocPrint(self.allocator,
+                \\You are the strategic planner for {s}.
                 \\
                 \\DESIGN DOCUMENTS:
                 \\The design documents define what we're building. They are your primary source of truth.
@@ -328,81 +471,87 @@ pub const AgentLoop = struct {
                 \\- monowiki search "<query>" --json    # Find relevant design docs
                 \\- monowiki note <slug> --format json  # Read a specific document
                 \\- monowiki graph neighbors --slug <slug> --json  # Find related docs
-                \\- monowiki verify --json              # Check for broken links/issues
                 \\
-                \\STRATEGIC PLANNING:
-                \\1. Survey the design documents to understand the target architecture
-                \\2. Map existing issues to design goals - what's covered, what's missing?
-                \\3. Create issues for unimplemented design elements
-                \\4. Prioritize issues that unblock the critical path to the design vision
-                \\5. Sequence work so foundational pieces come before dependent features
+                \\OBJECTIVE:
+                \\Chart an implementation path through the issue backlog that progresses toward
+                \\the architecture and features specified in the design documents.
                 \\
-                \\When creating issues from design docs:
-                \\- Reference the design doc slug in the issue note
-                \\- Break large design elements into implementable chunks
-                \\- Capture acceptance criteria from the design spec
+                \\ASSESS CURRENT STATE:
+                \\1. Run `bd list` to see all issues
+                \\2. Run `bd ready` to see the implementation queue
+                \\3. Survey design documents to understand target architecture
                 \\
-                \\Do NOT edit design documents (user-curated).
+                \\PLANNING TASKS:
                 \\
-            , .{mwc.vault})
-        else
-            try self.allocator.dupe(u8, "");
-        defer self.allocator.free(monowiki_section);
-
-        return std.fmt.allocPrint(self.allocator,
-            \\You are the strategic planner for {s}.
-            \\
-            \\OBJECTIVE:
-            \\Chart an implementation path through the issue backlog that progresses toward
-            \\the architecture and features specified in the design documents. Your job is to
-            \\ensure that autonomous development work is strategically sequenced.
-            \\
-            \\ASSESS CURRENT STATE:
-            \\1. Run `bd list` to see all issues
-            \\2. Run `bd ready` to see the implementation queue
-            \\{s}
-            \\PLANNING TASKS:
-            \\
-            \\Gap Analysis:
-            \\- Compare design documents against existing issues
-            \\- Identify design elements with no corresponding issues
-            \\- Create issues to fill gaps (reference the design doc)
-            \\
-            \\Priority Assignment:
-            \\- Priority 0: Blocking issues, security vulnerabilities, broken builds
-            \\- Priority 1: Foundation work that unblocks other features, critical path items
-            \\- Priority 2: Features specified in design docs, improvements
-            \\- Priority 3: Nice-to-haves, exploration, future work
-            \\
-            \\Sequencing:
-            \\- Ensure dependencies flow correctly (foundations before features)
-            \\- Group related issues that should be done together
-            \\- Identify parallelizable work streams
-            \\
-            \\Issue Quality:
-            \\- Each issue should have a clear, actionable title
-            \\- Description should explain: what, why, and acceptance criteria
-            \\- Add context notes linking to relevant design docs
-            \\- Split issues that are too large (>1 day of work estimate)
-            \\
-            \\Staleness Review:
-            \\- Issues untouched for 30+ days: assess if still aligned with design
-            \\- Close issues that contradict or are superseded by design docs
-            \\
-            \\CONSTRAINTS:
-            \\- READ-ONLY for code and design documents
-            \\- Only modify beads issues (create, update, close)
-            \\- Do not begin implementation work
-            \\
-            \\OUTPUT:
-            \\Summarize:
-            \\- Design coverage: which design docs have corresponding issues
-            \\- Gaps identified and issues created
-            \\- Priority/sequencing changes made
-            \\- Recommended next issues for implementation (the critical path)
-            \\
-            \\End with: PLANNING_COMPLETE
-        , .{ self.config.project_name, monowiki_section });
+                \\Gap Analysis:
+                \\- Compare design documents against existing issues
+                \\- Identify design elements with no corresponding issues
+                \\- Create issues to fill gaps (reference the design doc slug)
+                \\
+                \\Priority Assignment:
+                \\- P0: Blocking issues, security vulnerabilities, broken builds
+                \\- P1: Foundation work that unblocks other features
+                \\- P2: Features specified in design docs
+                \\- P3: Nice-to-haves, future work
+                \\
+                \\Sequencing:
+                \\- Ensure dependencies flow correctly (foundations before features)
+                \\- Use `bd dep add <issue> <blocker>` to express dependencies
+                \\
+                \\CONSTRAINTS:
+                \\- READ-ONLY for code and design documents
+                \\- Only modify beads issues (create, update, close, add deps)
+                \\- Do not begin implementation work
+                \\- Do NOT search for design docs outside the monowiki vault
+                \\
+                \\OUTPUT:
+                \\Summarize gaps identified, issues created, and recommended critical path.
+                \\End with: PLANNING_COMPLETE
+            , .{ self.config.project_name, mwc.vault });
+        } else {
+            // No design docs - simpler backlog management prompt
+            return std.fmt.allocPrint(self.allocator,
+                \\You are the strategic planner for {s}.
+                \\
+                \\NOTE: No design documents are configured for this project.
+                \\Focus on organizing and prioritizing the existing backlog.
+                \\
+                \\OBJECTIVE:
+                \\Manage the issue backlog to ensure work is well-organized and sequenced.
+                \\
+                \\ASSESS CURRENT STATE:
+                \\1. Run `bd list` to see all issues
+                \\2. Run `bd ready` to see the implementation queue
+                \\3. Run `bd blocked` to see what's waiting on dependencies
+                \\
+                \\PLANNING TASKS:
+                \\
+                \\Priority Review:
+                \\- P0: Blocking issues, security vulnerabilities, broken builds
+                \\- P1: Foundation work that unblocks other features
+                \\- P2: Standard features and improvements
+                \\- P3: Nice-to-haves, future work
+                \\
+                \\Sequencing:
+                \\- Ensure dependencies flow correctly (foundations before features)
+                \\- Use `bd dep add <issue> <blocker>` to express dependencies
+                \\- Split issues that are too large into smaller pieces
+                \\
+                \\Issue Quality:
+                \\- Each issue should have a clear, actionable title
+                \\- Description should explain what, why, and acceptance criteria
+                \\
+                \\CONSTRAINTS:
+                \\- READ-ONLY for code files
+                \\- Only modify beads issues (create, update, close, add deps)
+                \\- Do not begin implementation work
+                \\- Do NOT search for design docs - there are none configured
+                \\
+                \\OUTPUT:
+                \\Summarize any changes made and recommend the critical path.
+                \\End with: PLANNING_COMPLETE
+            , .{self.config.project_name});
+        }
     }
 
     /// Run a planner pass (strategic planning from design docs)
@@ -449,6 +598,72 @@ pub const AgentLoop = struct {
 
         self.logWarn("Planner pass failed after {d} attempt(s) (exit code: {d})", .{ attempt + 1, last_exit_code });
         return false;
+    }
+
+    /// Request the planner to break down a failed issue into sub-issues
+    fn requestIssueBreakdown(self: *AgentLoop, issue_id: []const u8) !bool {
+        if (self.config.dry_run) {
+            self.logInfo("[DRY RUN] Would request breakdown of {s}", .{issue_id});
+            return true;
+        }
+
+        const prompt = try self.buildBreakdownPrompt(issue_id);
+        defer self.allocator.free(prompt);
+
+        const exit_code = try self.runCodexExec(prompt);
+
+        if (exit_code == 0) {
+            self.logSuccess("Breakdown completed for {s}", .{issue_id});
+            return true;
+        }
+
+        self.logWarn("Breakdown failed for {s} (exit code: {d})", .{ issue_id, exit_code });
+        return false;
+    }
+
+    /// Build prompt for breaking down a failed issue
+    fn buildBreakdownPrompt(self: *AgentLoop, issue_id: []const u8) ![]const u8 {
+        // Get issue details
+        const show_cmd = try std.fmt.allocPrint(self.allocator, "bd show {s} --json 2>/dev/null", .{issue_id});
+        defer self.allocator.free(show_cmd);
+
+        var show_result = try process.shell(self.allocator, show_cmd);
+        defer show_result.deinit();
+
+        const issue_json = if (show_result.success()) show_result.stdout else "{}";
+
+        return std.fmt.allocPrint(self.allocator,
+            \\You are the strategic planner for {s}.
+            \\
+            \\CONTEXT:
+            \\The implementation agent failed to complete the following issue after multiple attempts.
+            \\Your task is to break it down into smaller, more manageable sub-issues.
+            \\
+            \\FAILED ISSUE:
+            \\ID: {s}
+            \\Details: {s}
+            \\
+            \\BREAKDOWN INSTRUCTIONS:
+            \\1. Analyze why this issue might be too complex for a single implementation pass
+            \\2. Identify logical sub-tasks that can be completed independently
+            \\3. Create 2-5 new issues using `bd create` that together accomplish the original goal
+            \\4. Set appropriate dependencies between the new issues using `bd dep add`
+            \\5. Update the original issue to depend on the new sub-issues (making it a tracking issue)
+            \\
+            \\COMMANDS:
+            \\- bd create "title" -t task -p <priority> --description "..." --acceptance "..."
+            \\- bd dep add <issue-id> <depends-on-id>   # first issue depends on second
+            \\- bd update <issue-id> --status open      # reset status if needed
+            \\- bd show <issue-id>                      # view issue details
+            \\
+            \\GUIDELINES:
+            \\- Each sub-issue should be completable in a single agent session
+            \\- Lower priority sub-issues should come first (foundations before features)
+            \\- Include clear acceptance criteria for each sub-issue
+            \\- The original issue ({s}) should remain open and depend on all sub-issues
+            \\
+            \\End with: BREAKDOWN_COMPLETE
+        , .{ self.config.project_name, issue_id, issue_json, issue_id });
     }
 
     /// Build quality pass prompt with optional monowiki integration
@@ -615,6 +830,9 @@ pub const AgentLoop = struct {
         };
     }
 
+    /// Special exit code indicating agent timeout
+    pub const EXIT_CODE_TIMEOUT: u8 = 124; // Same as GNU timeout
+
     /// Run an agent with streaming output and JSON logging
     fn runAgentStreaming(self: *AgentLoop, agent: []const u8, prompt: []const u8, json_log_path: []const u8) !u8 {
         // Build argv to avoid shell quoting pitfalls
@@ -637,55 +855,83 @@ pub const AgentLoop = struct {
         defer log_file.close();
 
         var proc = try process.StreamingProcess.spawn(self.allocator, &argv);
+        defer proc.deinit();
 
         // Collect full response for final markdown rendering
         var full_response = std.ArrayListUnmanaged(u8){};
         defer full_response.deinit(self.allocator);
 
+        const timeout_seconds = self.config.agent_timeout_seconds;
         var line_buf: [64 * 1024]u8 = undefined;
-        while (try proc.readLine(&line_buf)) |line| {
-            // Check for interrupt
+
+        // Log timeout setting
+        if (timeout_seconds > 0) {
+            self.logInfo("Agent timeout: {d} seconds", .{timeout_seconds});
+        }
+
+        while (true) {
+            // Check for interrupt first
             if (self.isInterrupted()) {
                 proc.kill();
                 break;
             }
 
-            // Write raw JSON line to log file
-            _ = log_file.write(line) catch {};
-            _ = log_file.write("\n") catch {};
+            // Read with timeout
+            const read_result = try proc.readLineWithTimeout(&line_buf, timeout_seconds);
 
-            // Parse and display based on output format
-            var event = streaming.parseStreamLine(self.allocator, line) catch continue;
+            switch (read_result) {
+                .timeout => {
+                    // No output for timeout_seconds - agent is hung
+                    self.logError("Agent timeout: no output for {d} seconds", .{timeout_seconds});
+                    proc.kill();
+                    // Reap the process to avoid zombie
+                    _ = proc.wait() catch {};
+                    std.debug.print("\n", .{});
+                    return EXIT_CODE_TIMEOUT;
+                },
+                .eof => {
+                    // Process closed stdout, we're done
+                    break;
+                },
+                .line => |line| {
+                    // Write raw JSON line to log file
+                    _ = log_file.write(line) catch {};
+                    _ = log_file.write("\n") catch {};
 
-            switch (self.config.output_format) {
-                .stream_json => {
-                    // Output raw JSON
-                    const stdout = std.fs.File.stdout();
-                    _ = stdout.write(line) catch {};
-                    _ = stdout.write("\n") catch {};
-                },
-                .text => {
-                    // Stream text deltas and collect for final render
-                    if (event.text) |text| {
-                        try full_response.appendSlice(self.allocator, text);
-                        const stdout = std.fs.File.stdout();
-                        _ = stdout.write(text) catch {};
+                    // Parse and display based on output format
+                    var event = streaming.parseStreamLine(self.allocator, line) catch continue;
+
+                    switch (self.config.output_format) {
+                        .stream_json => {
+                            // Output raw JSON
+                            const stdout = std.fs.File.stdout();
+                            _ = stdout.write(line) catch {};
+                            _ = stdout.write("\n") catch {};
+                        },
+                        .text => {
+                            // Stream text deltas and collect for final render
+                            if (event.text) |text| {
+                                try full_response.appendSlice(self.allocator, text);
+                                const stdout = std.fs.File.stdout();
+                                _ = stdout.write(text) catch {};
+                            }
+                            if (event.tool_name) |name| {
+                                if (event.tool_input_summary) |summary| {
+                                    std.debug.print("\n{s}[TOOL]{s} {s}: {s}\n", .{ Color.cyan, Color.reset, name, summary });
+                                } else {
+                                    std.debug.print("\n{s}[TOOL]{s} {s}\n", .{ Color.cyan, Color.reset, name });
+                                }
+                            }
+                        },
+                        .raw => {
+                            // Plain text without styling
+                            streaming.printTextDelta(event);
+                        },
                     }
-                    if (event.tool_name) |name| {
-                        if (event.tool_input_summary) |summary| {
-                            std.debug.print("\n{s}[TOOL]{s} {s}: {s}\n", .{ Color.cyan, Color.reset, name, summary });
-                        } else {
-                            std.debug.print("\n{s}[TOOL]{s} {s}\n", .{ Color.cyan, Color.reset, name });
-                        }
-                    }
-                },
-                .raw => {
-                    // Plain text without styling
-                    streaming.printTextDelta(event);
+
+                    streaming.deinitEvent(self.allocator, &event);
                 },
             }
-
-            streaming.deinitEvent(self.allocator, &event);
         }
 
         const exit_code = try proc.wait();
@@ -706,16 +952,35 @@ pub const AgentLoop = struct {
     /// Fallback streaming without log file
     fn runAgentStreamingWithoutLog(self: *AgentLoop, argv: []const []const u8) !u8 {
         var proc = try process.StreamingProcess.spawn(self.allocator, argv);
+        defer proc.deinit();
 
+        const timeout_seconds = self.config.agent_timeout_seconds;
         var line_buf: [64 * 1024]u8 = undefined;
-        while (try proc.readLine(&line_buf)) |line| {
+
+        while (true) {
             if (self.isInterrupted()) {
                 proc.kill();
                 break;
             }
-            var event = streaming.parseStreamLine(self.allocator, line) catch continue;
-            streaming.printTextDelta(event);
-            streaming.deinitEvent(self.allocator, &event);
+
+            const read_result = try proc.readLineWithTimeout(&line_buf, timeout_seconds);
+
+            switch (read_result) {
+                .timeout => {
+                    self.logError("Agent timeout: no output for {d} seconds", .{timeout_seconds});
+                    proc.kill();
+                    // Reap the process to avoid zombie
+                    _ = proc.wait() catch {};
+                    std.debug.print("\n", .{});
+                    return EXIT_CODE_TIMEOUT;
+                },
+                .eof => break,
+                .line => |line| {
+                    var event = streaming.parseStreamLine(self.allocator, line) catch continue;
+                    streaming.printTextDelta(event);
+                    streaming.deinitEvent(self.allocator, &event);
+                },
+            }
         }
 
         const exit_code = try proc.wait();
@@ -928,20 +1193,30 @@ pub const AgentLoop = struct {
 
         self.logInfo("Syncing issues to GitHub...", .{});
 
-        // Look for sync script
-        var result = try process.shell(self.allocator, "[ -x ./scripts/sync-github-issues.sh ] && ./scripts/sync-github-issues.sh || echo 'No sync script found'");
-        defer result.deinit();
+        const sync_result = github.syncToGitHub(self.allocator, self.config.dry_run) catch |err| {
+            self.logWarn("GitHub sync failed (non-fatal): {}", .{err});
+            return;
+        };
 
-        if (result.success()) {
-            self.logSuccess("GitHub sync completed", .{});
+        if (sync_result.errors > 0 and sync_result.created == 0 and sync_result.closed == 0) {
+            // Only errors, likely a prerequisite failure (gh not installed, not authenticated, etc.)
+            self.logWarn("GitHub sync skipped (gh CLI not available or not in a GitHub repo)", .{});
         } else {
-            self.logWarn("GitHub sync failed (non-fatal)", .{});
+            self.logSuccess("GitHub sync: {d} created, {d} closed, {d} skipped", .{
+                sync_result.created,
+                sync_result.closed,
+                sync_result.skipped,
+            });
         }
     }
 
     // Retry helpers
     fn shouldRetry(exit_code: u8) bool {
-        // Non-zero exit codes may indicate transient failures
+        // Timeout (124) should NOT be retried - if agent hung once, it will likely hang again
+        // Instead, let the issue breakdown flow handle it
+        if (exit_code == EXIT_CODE_TIMEOUT) return false;
+
+        // Other non-zero exit codes may indicate transient failures
         // Claude/Codex CLI tools return non-zero on API errors (rate limits, 5xx, network issues)
         return exit_code != 0;
     }
@@ -1014,4 +1289,14 @@ test "should retry on non-zero exit" {
     try std.testing.expect(AgentLoop.shouldRetry(1));
     try std.testing.expect(AgentLoop.shouldRetry(255));
     try std.testing.expect(!AgentLoop.shouldRetry(0));
+}
+
+test "should not retry on timeout" {
+    // Timeout (exit code 124) should NOT be retried
+    try std.testing.expect(!AgentLoop.shouldRetry(AgentLoop.EXIT_CODE_TIMEOUT));
+}
+
+test "timeout exit code is 124" {
+    // Verify timeout exit code matches GNU timeout convention
+    try std.testing.expectEqual(@as(u8, 124), AgentLoop.EXIT_CODE_TIMEOUT);
 }

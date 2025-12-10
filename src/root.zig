@@ -12,12 +12,21 @@ pub const loop = @import("loop.zig");
 pub const signals = @import("signals.zig");
 pub const markdown = @import("markdown.zig");
 pub const monowiki = @import("monowiki.zig");
+pub const github = @import("github.zig");
+pub const state = @import("state.zig");
+pub const bm25 = @import("bm25.zig");
+pub const lsp = @import("lsp.zig");
 
 pub const Config = config.Config;
 pub const OutputFormat = config.OutputFormat;
 pub const AgentLoop = loop.AgentLoop;
 pub const MonowikiConfig = monowiki.MonowikiConfig;
 pub const Monowiki = monowiki.Monowiki;
+pub const GitHubSync = github.GitHubSync;
+pub const SyncResult = github.SyncResult;
+pub const OrchestratorState = state.OrchestratorState;
+pub const Manifest = state.Manifest;
+pub const WorkerState = state.WorkerState;
 
 test {
     std.testing.refAllDecls(@This());
