@@ -9,6 +9,7 @@ defmodule Noface.Util.Transcript do
   use Ecto.Schema
   import Ecto.Query
   require Logger
+  alias Phoenix.PubSub
 
   # Repo module
   defmodule Repo do
@@ -139,6 +140,7 @@ defmodule Noface.Util.Transcript do
     case %Session{} |> Session.changeset(attrs) |> Repo.insert() do
       {:ok, session} ->
         Logger.debug("[TRANSCRIPT] Started session #{session.id} for #{issue_id}")
+        broadcast_session_started(issue_id)
         {:ok, session.id}
 
       {:error, changeset} ->
@@ -161,7 +163,9 @@ defmodule Noface.Util.Transcript do
     }
 
     case %Event{} |> Event.changeset(attrs) |> Repo.insert() do
-      {:ok, _event} -> :ok
+      {:ok, event} ->
+        broadcast_session_event(session_id, event)
+        :ok
       {:error, changeset} -> {:error, changeset}
     end
   end
@@ -182,6 +186,7 @@ defmodule Noface.Util.Transcript do
         |> case do
           {:ok, _} ->
             Logger.debug("[TRANSCRIPT] Ended session #{session_id} with exit code #{exit_code}")
+            broadcast_session_event(session_id, %Event{event_type: "text", content: "[session ended]"})
             :ok
 
           {:error, changeset} ->
@@ -286,5 +291,33 @@ defmodule Noface.Util.Transcript do
 
     Logger.info("[TRANSCRIPT] Pruned #{deleted} sessions older than #{days} days")
     {:ok, deleted}
+  end
+
+  # Broadcast helpers to push session updates to LiveView dashboard
+  defp broadcast_session_started(issue_id) do
+    PubSub.broadcast(Noface.PubSub, "session", {:session_started, issue_id})
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp broadcast_session_event(session_id, %Event{} = event) do
+    case Repo.get(Session, session_id) do
+      nil ->
+        :ok
+
+      %Session{issue_id: issue_id} ->
+        payload = %{
+          event_type: event.event_type,
+          tool_name: event.tool_name,
+          content: event.content,
+          raw_json: event.raw_json
+        }
+
+        PubSub.broadcast(Noface.PubSub, "session", {:session_event, issue_id, payload})
+        :ok
+    end
+  rescue
+    _ -> :ok
   end
 end

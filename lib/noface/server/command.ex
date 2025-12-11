@@ -64,6 +64,18 @@ defmodule Noface.Server.Command do
     GenServer.call(__MODULE__, {:file_issue, title, opts})
   end
 
+  @doc "Add a user comment to an issue."
+  @spec comment_issue(String.t(), String.t(), String.t()) :: {:ok, map()} | {:error, term()}
+  def comment_issue(issue_id, author, body) do
+    GenServer.call(__MODULE__, {:comment_issue, issue_id, author, body})
+  end
+
+  @doc "Update issue content fields."
+  @spec update_issue(String.t(), map()) :: {:ok, map()} | {:error, term()}
+  def update_issue(issue_id, attrs) do
+    GenServer.call(__MODULE__, {:update_issue, issue_id, attrs})
+  end
+
   @doc "Inspect an issue's current state."
   @spec inspect_issue(String.t()) :: {:ok, map()} | {:error, :not_found}
   def inspect_issue(issue_id) do
@@ -140,6 +152,18 @@ defmodule Noface.Server.Command do
   def handle_call({:file_issue, title, opts}, _from, state) do
     result = create_issue_via_beads(title, opts)
     state = record_command(state, :file_issue, {title, result})
+    {:reply, result, state}
+  end
+
+  def handle_call({:comment_issue, issue_id, author, body}, _from, state) do
+    result = State.add_comment(issue_id, author, body)
+    state = record_command(state, :comment_issue, issue_id)
+    {:reply, result, state}
+  end
+
+  def handle_call({:update_issue, issue_id, attrs}, _from, state) do
+    result = State.update_issue_content(issue_id, attrs)
+    state = record_command(state, :update_issue, issue_id)
     {:reply, result, state}
   end
 

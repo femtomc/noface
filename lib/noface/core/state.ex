@@ -65,7 +65,8 @@ defmodule Noface.Core.State do
               assigned_worker: nil,
               attempt_count: 0,
               last_attempt: nil,
-              status: :pending
+              status: :pending,
+              comments: []
   end
 
   defmodule WorkerState do
@@ -91,6 +92,8 @@ defmodule Noface.Core.State do
 
     def complete?(%__MODULE__{status: status}), do: status == :completed
   end
+
+  alias Phoenix.PubSub
 
   # GenServer API
 
@@ -149,6 +152,16 @@ defmodule Noface.Core.State do
   @doc "Mark an issue as completed"
   def mark_issue_completed(issue_id) do
     update_issue(issue_id, :completed)
+  end
+
+  @doc "Add a user comment to an issue"
+  def add_comment(issue_id, author, body) do
+    GenServer.call(__MODULE__, {:add_comment, issue_id, author, body})
+  end
+
+  @doc "Update issue content fields (title/description/priority/acceptance)"
+  def update_issue_content(issue_id, attrs) do
+    GenServer.call(__MODULE__, {:update_issue_content, issue_id, attrs})
   end
 
   @doc "Update batch status"
@@ -336,6 +349,7 @@ defmodule Noface.Core.State do
       end)
 
     CubDB.put(state.db, :workers, workers)
+    broadcast_state(state.db)
     {:reply, :ok, state}
   end
 
@@ -354,6 +368,7 @@ defmodule Noface.Core.State do
       end)
 
     CubDB.put(state.db, :workers, workers)
+    broadcast_state(state.db)
     {:reply, :ok, state}
   end
 
@@ -367,7 +382,38 @@ defmodule Noface.Core.State do
     issue_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
     CubDB.put(state.db, :issue_ids, MapSet.put(issue_ids, issue_id))
 
+    broadcast_state(state.db)
     {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:add_comment, issue_id, author, body}, _from, state) do
+    issue = CubDB.get(state.db, {:issue, issue_id}) || %IssueState{id: issue_id}
+
+    comment = %{
+      author: author || "user",
+      body: body,
+      inserted_at: DateTime.utc_now()
+    }
+
+    comments = (issue.comments || []) ++ [comment]
+    content = Map.put(issue.content || %{}, :comments, comments)
+    updated = %{issue | comments: comments, content: content}
+
+    CubDB.put(state.db, {:issue, issue_id}, updated)
+    broadcast_state(state.db)
+    {:reply, {:ok, updated}, state}
+  end
+
+  @impl true
+  def handle_call({:update_issue_content, issue_id, attrs}, _from, state) do
+    issue = CubDB.get(state.db, {:issue, issue_id}) || %IssueState{id: issue_id}
+    content = Map.merge(issue.content || %{}, normalize_issue_attrs(attrs))
+
+    updated = %{issue | content: content}
+    CubDB.put(state.db, {:issue, issue_id}, updated)
+    broadcast_state(state.db)
+    {:reply, {:ok, updated}, state}
   end
 
   @impl true
@@ -385,6 +431,7 @@ defmodule Noface.Core.State do
       CubDB.put(state.db, {:batch, batch_id}, updated)
     end
 
+    broadcast_state(state.db)
     {:reply, :ok, state}
   end
 
@@ -414,6 +461,7 @@ defmodule Noface.Core.State do
         CubDB.put(state.db, :failed_attempts, count + 1)
     end
 
+    broadcast_state(state.db)
     {:reply, :ok, state}
   end
 
@@ -422,6 +470,7 @@ defmodule Noface.Core.State do
     issue = CubDB.get(state.db, {:issue, issue_id}) || %IssueState{id: issue_id}
     updated = %{issue | manifest: manifest}
     CubDB.put(state.db, {:issue, issue_id}, updated)
+    broadcast_state(state.db)
     {:reply, :ok, state}
   end
 
@@ -445,6 +494,7 @@ defmodule Noface.Core.State do
     CubDB.put(state.db, :pending_batch_ids, pending ++ [batch_id])
 
     Logger.info("[STATE] Added batch #{batch_id} with #{length(issue_ids)} issues")
+    broadcast_state(state.db)
     {:reply, {:ok, batch_id}, state}
   end
 
@@ -465,6 +515,7 @@ defmodule Noface.Core.State do
   def handle_call(:clear_pending_batches, _from, state) do
     CubDB.put(state.db, :pending_batch_ids, [])
     Logger.info("[STATE] Cleared pending batches")
+    broadcast_state(state.db)
     {:reply, :ok, state}
   end
 
@@ -516,6 +567,7 @@ defmodule Noface.Core.State do
       end)
 
     CubDB.put(state.db, :workers, workers)
+    broadcast_state(state.db)
     {:reply, {:ok, recovered}, state}
   end
 
@@ -523,6 +575,7 @@ defmodule Noface.Core.State do
   def handle_call(:increment_iteration, _from, state) do
     count = CubDB.get(state.db, :total_iterations) || 0
     CubDB.put(state.db, :total_iterations, count + 1)
+    broadcast_state(state.db)
     {:reply, :ok, state}
   end
 
@@ -560,6 +613,7 @@ defmodule Noface.Core.State do
       end)
 
       Logger.info("[STATE] Created batch #{batch_id} with #{length(pending_ids)} issues")
+      broadcast_state(state.db)
       {:reply, {:ok, batch_id}, state}
     end
   end
@@ -597,6 +651,7 @@ defmodule Noface.Core.State do
           end)
 
         Logger.info("[STATE] Loaded #{new_count} new issues from beads")
+        broadcast_state(state.db)
         {:reply, {:ok, new_count}, state}
 
       {:error, reason} ->
@@ -671,10 +726,52 @@ defmodule Noface.Core.State do
     }
   end
 
+  defp broadcast_state(db) do
+    snapshot = get_state_map(db)
+    PubSub.broadcast(Noface.PubSub, "state", {:state, snapshot})
+    :ok
+  rescue
+    _ -> :ok
+  end
+
   defp extract_base_file(file_spec) do
     case String.split(file_spec, ":", parts: 2) do
       [base, _] -> base
       _ -> file_spec
     end
   end
+
+  defp normalize_issue_attrs(attrs) do
+    %{}
+    |> maybe_put(:title, attrs, ["title"])
+    |> maybe_put(:description, attrs, ["description"])
+    |> maybe_put(:acceptance_criteria, attrs, ["acceptance_criteria", "acceptance"])
+    |> maybe_put(:priority, attrs, ["priority"], &normalize_priority/1)
+    |> maybe_put(:issue_type, attrs, ["issue_type"])
+  end
+
+  defp maybe_put(acc, key, attrs, candidates, transform \\ fn v -> v end) do
+    value =
+      Enum.find_value(candidates, fn c ->
+        Map.get(attrs, c) || Map.get(attrs, String.to_atom(c))
+      end)
+
+    cond do
+      is_nil(value) -> acc
+      value == "" -> acc
+      true -> Map.put(acc, key, transform.(value))
+    end
+  end
+
+  defp normalize_priority(nil), do: nil
+  defp normalize_priority(p) when is_integer(p), do: p
+
+  defp normalize_priority(p) when is_binary(p) do
+    case Integer.parse(p) do
+      {int, _} -> int
+      :error -> nil
+    end
+  end
+
+  defp normalize_priority(_), do: nil
 end

@@ -5,13 +5,12 @@ defmodule NofaceWeb.IssuesLive do
   use Phoenix.LiveView
 
   alias Noface.Core.State
-
-  @refresh_interval 5_000
+  alias Phoenix.PubSub
 
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket) do
-      :timer.send_interval(@refresh_interval, self(), :refresh)
+      PubSub.subscribe(Noface.PubSub, "state")
     end
 
     {:ok, assign_issues(socket)}
@@ -28,8 +27,12 @@ defmodule NofaceWeb.IssuesLive do
   end
 
   @impl true
-  def handle_info(:refresh, socket) do
-    {:noreply, assign_issues(socket)}
+  def handle_info({:state, snapshot}, socket) do
+    issues =
+      snapshot[:issues]
+      |> Map.values()
+
+    {:noreply, assign(socket, issues: issues)}
   end
 
   defp assign_issues(socket) do

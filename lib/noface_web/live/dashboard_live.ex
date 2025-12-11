@@ -8,13 +8,16 @@ defmodule NofaceWeb.DashboardLive do
   alias Noface.Server.Command
   alias Noface.Core.State
   alias Noface.Util.Transcript
-
-  @refresh_interval 2_000
+  alias Phoenix.PubSub
 
   @impl true
-  def mount(_params, _session, socket) do
-    if connected?(socket) do
-      :timer.send_interval(@refresh_interval, self(), :refresh)
+  def mount(_params, session, socket) do
+    test_state = Map.get(session, "test_state") || Map.get(session, :test_state)
+
+    if connected?(socket) and is_nil(test_state) do
+      PubSub.subscribe(Noface.PubSub, "state")
+      PubSub.subscribe(Noface.PubSub, "loop")
+      PubSub.subscribe(Noface.PubSub, "session")
     end
 
     socket =
@@ -24,16 +27,12 @@ defmodule NofaceWeb.DashboardLive do
         expanded: nil,
         page_title: "Dashboard",
         left_tab: "issues",
-        selected_session: nil
+        selected_session: nil,
+        test_state: test_state
       )
       |> assign_data()
 
     {:ok, socket}
-  end
-
-  @impl true
-  def handle_info(:refresh, socket) do
-    {:noreply, assign_data(socket)}
   end
 
   @impl true
@@ -52,6 +51,39 @@ defmodule NofaceWeb.DashboardLive do
 
   def handle_event("select_session", %{"id" => id}, socket) do
     {:noreply, assign(socket, selected_session: id)}
+  end
+
+  def handle_event("add_comment", %{"id" => id, "comment" => %{"body" => body} = params}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+    body = String.trim(body || "")
+    author = String.trim(params["author"] || "user")
+
+    updated_state =
+      if body == "" do
+        test_state
+      else
+        add_comment_to_test_state(test_state, id, author, body)
+      end
+
+    {:noreply, socket |> assign(test_state: updated_state) |> assign_data()}
+  end
+  def handle_event("add_comment", %{"id" => id, "comment" => %{"body" => body} = params}, socket) do
+    body = String.trim(body || "")
+    author = String.trim(params["author"] || "user")
+
+    if body != "" do
+      Command.comment_issue(id, author, body)
+    end
+
+    {:noreply, assign_data(socket)}
+  end
+
+  def handle_event("update_issue", %{"id" => id, "issue" => attrs}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+    updated_state = update_test_issue_content(test_state, id, attrs)
+    {:noreply, socket |> assign(test_state: updated_state) |> assign_data()}
+  end
+  def handle_event("update_issue", %{"id" => id, "issue" => attrs}, socket) do
+    Command.update_issue(id, attrs)
+    {:noreply, assign_data(socket)}
   end
 
   def handle_event("pause", _params, socket) do
@@ -73,11 +105,86 @@ defmodule NofaceWeb.DashboardLive do
     {:noreply, assign_data(socket)}
   end
 
+  @impl true
+  def handle_info({:state, _snapshot}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+    {:noreply, socket}
+  end
+  def handle_info({:state, snapshot}, socket) do
+    issues =
+      snapshot[:issues]
+      |> Map.values()
+      |> Enum.map(&present_issue/1)
+      |> sort_issues()
+
+    counts = %{
+      total_issues: map_size(snapshot[:issues] || %{}),
+      pending: Enum.count(issues, &(&1.status == :pending)),
+      in_progress: Enum.count(issues, &(&1.status in [:assigned, :running])),
+      completed: Enum.count(issues, &(&1.status == :completed)),
+      failed: Enum.count(issues, &(&1.status == :failed))
+    }
+
+    stats = %{
+      total: counts.total_issues,
+      open: counts.pending,
+      in_progress: counts.in_progress,
+      closed: counts.completed + counts.failed
+    }
+
+    workers = snapshot[:workers] || []
+    num_workers = snapshot[:num_workers] || length(workers)
+    status = merge_status(socket.assigns.status || %{}, counts, workers, num_workers)
+
+    {:noreply,
+     assign(socket,
+       issues: issues,
+       stats: stats,
+       workers: Enum.take(workers, num_workers),
+      status: status
+     )}
+  end
+
+  def handle_info({:loop, _loop_payload}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+    {:noreply, socket}
+  end
+  def handle_info({:loop, loop_payload}, socket) do
+    status = (socket.assigns.status || %{}) |> Map.put(:loop, loop_payload)
+    {:noreply, assign(socket, status: status)}
+  end
+
+  def handle_info({:session_started, _issue_id}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+    {:noreply, socket}
+  end
+  def handle_info({:session_started, issue_id}, socket) do
+    sessions = Map.put_new(socket.assigns.sessions || %{}, issue_id, [])
+    {:noreply, assign(socket, sessions: sessions, selected_session: pick_session(socket.assigns.selected_session, socket.assigns.issues, sessions))}
+  end
+
+  def handle_info({:session_event, _issue_id, _event}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+    {:noreply, socket}
+  end
+  def handle_info({:session_event, issue_id, event}, socket) do
+    mapped = present_event(event)
+    sessions = Map.update(socket.assigns.sessions || %{}, issue_id, [mapped], &(&1 ++ [mapped]))
+    selected = pick_session(socket.assigns.selected_session, socket.assigns.issues, sessions)
+
+    {:noreply, assign(socket, sessions: sessions, selected_session: selected)}
+  end
+
   defp assign_data(socket) do
-    status = Command.status()
-    issues = get_issues()
+    {status, issues, sessions} =
+      case socket.assigns[:test_state] do
+        %{status: s, issues: i} = test ->
+          {s, Enum.map(i, &present_issue/1), Map.get(test, :sessions, %{})}
+
+        _ ->
+          status = Command.status()
+          issues = get_issues()
+          sessions = load_sessions()
+          {status, issues, sessions}
+      end
+
     state_counts = status[:state] || %{}
-    sessions = load_sessions()
     selected_session = pick_session(socket.assigns.selected_session, issues, sessions)
 
     stats = %{
@@ -97,15 +204,45 @@ defmodule NofaceWeb.DashboardLive do
     )
   end
 
+  defp add_comment_to_test_state(%{issues: issues} = test_state, id, author, body) do
+    updated =
+      Enum.map(issues, fn
+        %{id: ^id} = issue ->
+          comment = %{author: author, body: body, inserted_at: DateTime.utc_now()}
+          comments = (Map.get(issue, :comments) || []) ++ [comment]
+          content = Map.put(issue.content || %{}, :comments, comments)
+          %{issue | comments: comments, content: content}
+
+        other ->
+          other
+      end)
+
+    %{test_state | issues: updated}
+  end
+
+  defp add_comment_to_test_state(test_state, _id, _author, _body), do: test_state
+
+  defp update_test_issue_content(%{issues: issues} = test_state, id, attrs) do
+    updated =
+      Enum.map(issues, fn
+        %{id: ^id} = issue ->
+          content = Map.merge(issue.content || %{}, attrs)
+          %{issue | content: content}
+
+        other ->
+          other
+      end)
+
+    %{test_state | issues: updated}
+  end
+
+  defp update_test_issue_content(test_state, _id, _attrs), do: test_state
+
   defp get_issues do
     try do
       State.list_issues()
       |> Enum.map(&present_issue/1)
-      |> Enum.sort_by(fn issue ->
-        # In progress first, then by priority
-        status_order = if issue.status in [:assigned, :running], do: 0, else: 1
-        {status_order, issue.priority || 2, issue.id}
-      end)
+      |> sort_issues()
     rescue
       _ -> []
     end
@@ -402,6 +539,61 @@ defmodule NofaceWeb.DashboardLive do
       }
       .loop-info div { margin-bottom: 0.25ch; }
       .loop-info strong { color: var(--text); }
+      .comment-box {
+        margin-top: 0.5ch;
+        border-top: 1px solid var(--border);
+        padding-top: 0.5ch;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5ch;
+      }
+      .comment-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5ch;
+      }
+      .comment {
+        border: 1px solid var(--border);
+        padding: 0.5ch;
+        font-size: 0.85rem;
+      }
+      .comment-meta {
+        color: var(--text-muted);
+        font-size: 0.75rem;
+        margin-bottom: 0.25ch;
+      }
+      .issue-edit-form {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(20ch, 1fr));
+        gap: 0.5ch;
+        margin-top: 0.5ch;
+        border-top: 1px solid var(--border);
+        padding-top: 0.5ch;
+      }
+      .issue-edit-form textarea {
+        min-height: 6ch;
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 0.5ch;
+        font: inherit;
+      }
+      .issue-edit-form input, .issue-edit-form select {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--border);
+        padding: 0.25ch 0.5ch;
+        font: inherit;
+      }
+      .issue-edit-form button {
+        grid-column: 1 / -1;
+        justify-self: start;
+        padding: 0.5ch 1ch;
+        border: 1px solid var(--accent);
+        color: var(--accent);
+        background: transparent;
+        cursor: pointer;
+      }
     </style>
 
     <div class="app-container">
@@ -503,17 +695,61 @@ defmodule NofaceWeb.DashboardLive do
                             <div style="white-space: pre-wrap;"><%= issue.acceptance_criteria %></div>
                           </div>
                         <% end %>
-                        <%= if issue.dependencies && issue.dependencies != [] do %>
-                          <div style="border-top: 1px solid var(--border); padding-top: 0.5ch; margin-top: 0.5ch;">
-                            <strong>Blocks:</strong>
-                            <div style="white-space: pre-wrap;"><%= Enum.map(issue.dependencies, & &1.depends_on_id) |> Enum.join(", ") %></div>
-                          </div>
-                        <% end %>
+                    <%= if issue.dependencies && issue.dependencies != [] do %>
+                      <div style="border-top: 1px solid var(--border); padding-top: 0.5ch; margin-top: 0.5ch;">
+                        <strong>Blocks:</strong>
+                        <div style="white-space: pre-wrap;"><%= Enum.map(issue.dependencies, & &1.depends_on_id) |> Enum.join(", ") %></div>
                       </div>
                     <% end %>
+                    <div class="comment-box">
+                      <%= if issue.comments && issue.comments != [] do %>
+                        <div class="comment-list">
+                          <%= for comment <- issue.comments do %>
+                            <div class="comment">
+                              <div class="comment-meta">
+                                <%= comment.author || "user" %> · <%= format_datetime(comment.inserted_at) %>
+                              </div>
+                              <div><%= comment.body %></div>
+                            </div>
+                          <% end %>
+                        </div>
+                      <% end %>
+                      <form phx-submit="add_comment" phx-value-id={issue.id} style="display: flex; gap: 0.5ch; flex-direction: column;">
+                        <textarea name="comment[body]" placeholder="Add comment" style="width: 100%; background: transparent; color: var(--text); border: 1px solid var(--border); padding: 0.5ch; min-height: 4ch;"></textarea>
+                        <div style="display: flex; gap: 0.5ch; align-items: center;">
+                          <input type="text" name="comment[author]" placeholder="Author" value="user" style="flex: 1; background: transparent; color: var(--text); border: 1px solid var(--border); padding: 0.25ch 0.5ch;">
+                          <button class="ctrl-btn" type="submit">Comment</button>
+                        </div>
+                      </form>
+                    </div>
+                    <form class="issue-edit-form" phx-submit="update_issue" phx-value-id={issue.id}>
+                      <div style="display: flex; flex-direction: column; gap: 0.25ch;">
+                        <label>Title</label>
+                        <input type="text" name="issue[title]" value={issue.title} />
+                      </div>
+                      <div style="display: flex; flex-direction: column; gap: 0.25ch;">
+                        <label>Priority</label>
+                        <select name="issue[priority]" value={issue.priority || 2}>
+                          <%= for p <- 0..3 do %>
+                            <option value={p} selected={issue.priority == p}>P<%= p %></option>
+                          <% end %>
+                        </select>
+                      </div>
+                      <div style="display: flex; flex-direction: column; gap: 0.25ch;">
+                        <label>Description</label>
+                        <textarea name="issue[description]"><%= issue.description %></textarea>
+                      </div>
+                      <div style="display: flex; flex-direction: column; gap: 0.25ch;">
+                        <label>Acceptance</label>
+                        <textarea name="issue[acceptance_criteria]"><%= issue.acceptance_criteria %></textarea>
+                      </div>
+                      <button type="submit">Save Issue</button>
+                    </form>
                   </div>
                 <% end %>
               </div>
+            <% end %>
+          </div>
             <% end %>
           </div>
         <% else %>
@@ -647,6 +883,13 @@ defmodule NofaceWeb.DashboardLive do
   defp format_uptime(seconds) when seconds < 3600, do: "#{div(seconds, 60)}m"
   defp format_uptime(seconds), do: "#{div(seconds, 3600)}h #{div(rem(seconds, 3600), 60)}m"
 
+  defp sort_issues(issues) do
+    Enum.sort_by(issues, fn issue ->
+      status_order = if issue.status in [:assigned, :running], do: 0, else: 1
+      {status_order, issue.priority || 2, issue.id}
+    end)
+  end
+
   defp present_issue(%{id: id} = issue) do
     content = issue.content || %{}
 
@@ -666,6 +909,7 @@ defmodule NofaceWeb.DashboardLive do
       issue_type: fetch_field(content, "issue_type"),
       status: status,
       dependencies: fetch_field(content, "dependencies") || [],
+      comments: normalize_comments(Map.get(issue, :comments, []) || fetch_field(content, "comments") || []),
       attempt_count: issue.attempt_count,
       assigned_worker: issue.assigned_worker,
       manifest: issue.manifest,
@@ -717,6 +961,22 @@ defmodule NofaceWeb.DashboardLive do
 
   defp normalize_status(status) when is_atom(status), do: status
   defp normalize_status(_), do: :pending
+
+  defp format_datetime(nil), do: "now"
+  defp format_datetime(%DateTime{} = dt), do: DateTime.to_string(dt)
+  defp format_datetime(%NaiveDateTime{} = dt), do: NaiveDateTime.to_string(dt)
+  defp format_datetime(ts) when is_binary(ts), do: ts
+  defp format_datetime(_), do: "time"
+
+  defp normalize_comments(list) when is_list(list) do
+    Enum.map(list, fn
+      %{"author" => a, "body" => b, "inserted_at" => ts} -> %{author: a, body: b, inserted_at: ts}
+      %{author: a, body: b, inserted_at: ts} -> %{author: a, body: b, inserted_at: ts}
+      other -> %{author: "user", body: inspect(other), inserted_at: nil}
+    end)
+  end
+
+  defp normalize_comments(_), do: []
 
   defp load_sessions do
     try do
@@ -901,16 +1161,22 @@ defmodule NofaceWeb.DashboardLive do
       end)
       |> Enum.sort_by(&(&1.priority || 2))
 
-    roots
-    |> Enum.with_index()
-    |> Enum.flat_map(fn {issue, idx} ->
-      render_tree(issue.id, issue_map, blocks, MapSet.new(), "", idx == length(roots) - 1)
-    end)
+    {lines, _visited} =
+      roots
+      |> Enum.with_index()
+      |> Enum.reduce({[], MapSet.new()}, fn {issue, idx}, {acc_lines, visited} ->
+        {tree_lines, visited} =
+          render_tree(issue.id, issue_map, blocks, visited, "", idx == length(roots) - 1)
+
+        {acc_lines ++ tree_lines, visited}
+      end)
+
+    lines
   end
 
   defp render_tree(issue_id, issue_map, blocks, visited, prefix, is_last) do
     if MapSet.member?(visited, issue_id) do
-      []
+      {[], visited}
     else
       visited = MapSet.put(visited, issue_id)
       issue = Map.get(issue_map, issue_id)
@@ -921,15 +1187,17 @@ defmodule NofaceWeb.DashboardLive do
 
       children = Map.get(blocks, issue_id, []) |> Enum.reverse()
       child_prefix = prefix <> if is_last, do: "   ", else: "│  "
+      len = length(children)
 
-      child_lines =
+      {child_lines, visited} =
         children
         |> Enum.with_index()
-        |> Enum.flat_map(fn {child_id, idx} ->
-          render_tree(child_id, issue_map, blocks, visited, child_prefix, idx == length(children) - 1)
+        |> Enum.reduce({[], visited}, fn {child_id, idx}, {acc, v} ->
+          {lines, v} = render_tree(child_id, issue_map, blocks, v, child_prefix, idx == len - 1)
+          {acc ++ lines, v}
         end)
 
-      [line | child_lines]
+      {[line | child_lines], visited}
     end
   end
 
@@ -942,5 +1210,17 @@ defmodule NofaceWeb.DashboardLive do
       :pending -> {"○", "var(--text-dim)"}
       _ -> {"○", "var(--text-dim)"}
     end
+  end
+
+  defp merge_status(status, counts, workers, num_workers) do
+    status
+    |> Map.put(:state, %{
+      total_issues: counts.total_issues,
+      pending: counts.pending,
+      in_progress: counts.in_progress,
+      completed: counts.completed,
+      failed: counts.failed
+    })
+    |> Map.put(:workers, %{workers: workers, num_workers: num_workers})
   end
 end

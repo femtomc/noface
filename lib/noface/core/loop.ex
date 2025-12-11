@@ -172,6 +172,7 @@ defmodule Noface.Core.Loop do
     case initialize_loop(config) do
       :ok ->
         new_state = %{state | config: config, status: :running}
+        broadcast_loop_status(new_state)
         {:reply, :ok, new_state}
 
       {:error, reason} ->
@@ -186,6 +187,7 @@ defmodule Noface.Core.Loop do
     case initialize_loop(config) do
       :ok ->
         new_state = %{state | config: config, status: :running}
+        broadcast_loop_status(new_state)
         result = run_blocking_loop(new_state)
         {:reply, result, %{new_state | status: :idle}}
 
@@ -196,12 +198,16 @@ defmodule Noface.Core.Loop do
 
   def handle_call(:stop, _from, state) do
     Logger.info("[LOOP] Stopping loop")
-    {:reply, :ok, %{state | status: :idle, config: nil}}
+    new_state = %{state | status: :idle, config: nil}
+    broadcast_loop_status(new_state)
+    {:reply, :ok, new_state}
   end
 
   def handle_call(:pause, _from, %{status: :running} = state) do
     Logger.info("[LOOP] Pausing loop")
-    {:reply, :ok, %{state | status: :paused}}
+    new_state = %{state | status: :paused}
+    broadcast_loop_status(new_state)
+    {:reply, :ok, new_state}
   end
 
   def handle_call(:pause, _from, %{status: :paused} = state) do
@@ -214,7 +220,9 @@ defmodule Noface.Core.Loop do
 
   def handle_call(:resume, _from, %{status: :paused} = state) do
     Logger.info("[LOOP] Resuming loop")
-    {:reply, :ok, %{state | status: :running}}
+    new_state = %{state | status: :running}
+    broadcast_loop_status(new_state)
+    {:reply, :ok, new_state}
   end
 
   def handle_call(:resume, _from, state) do
@@ -225,7 +233,9 @@ defmodule Noface.Core.Loop do
     Logger.info("[LOOP] Interrupting current work")
     # Kill any active workers
     WorkerPool.interrupt_all()
-    {:reply, :ok, %{state | status: :running, current_work: nil}}
+    new_state = %{state | status: :running, current_work: nil}
+    broadcast_loop_status(new_state)
+    {:reply, :ok, new_state}
   end
 
   def handle_call(:running?, _from, state) do
@@ -266,6 +276,7 @@ defmodule Noface.Core.Loop do
       status: new_state.status
     }
 
+    broadcast_loop_status(new_state)
     {:reply, {:ok, summary}, new_state}
   end
 
@@ -291,18 +302,22 @@ defmodule Noface.Core.Loop do
     # Run one iteration of the loop
     new_state = run_iteration(state)
     schedule_tick()
+    broadcast_loop_status(new_state)
     {:noreply, new_state}
   end
 
   def handle_info(:tick, state) do
     # Not running or no config - just schedule next tick
     schedule_tick()
+    broadcast_loop_status(state)
     {:noreply, state}
   end
 
   def handle_info({:signal, _signum}, state) do
     Logger.info("[LOOP] Received interrupt signal")
-    {:noreply, %{state | status: :paused}}
+    new_state = %{state | status: :paused}
+    broadcast_loop_status(new_state)
+    {:noreply, new_state}
   end
 
   # Private: Initialize the loop
@@ -539,5 +554,19 @@ defmodule Noface.Core.Loop do
     if state.current_issue do
       Logger.info("[LOOP] Issue #{state.current_issue} was NOT completed")
     end
+  end
+
+  defp broadcast_loop_status(%LoopState{} = state) do
+    payload = %{
+      running: state.status == :running,
+      paused: state.status == :paused,
+      iteration: state.iteration_count,
+      current_work: state.current_work
+    }
+
+    Phoenix.PubSub.broadcast(Noface.PubSub, "loop", {:loop, payload})
+    :ok
+  rescue
+    _ -> :ok
   end
 end

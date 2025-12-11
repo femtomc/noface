@@ -24,6 +24,7 @@ defmodule NofaceWeb.Router do
     live "/", DashboardLive, :index
     live "/issues", IssuesLive, :index
     live "/issues/:id", IssuesLive, :show
+    live "/vault", VaultLive, :index
 
     # Avoid favicon 404
     get "/favicon.ico", FaviconController, :show

@@ -128,6 +128,7 @@
       <nav>
         <a href="/" class={if @conn.request_path == "/", do: "active"}>Dashboard</a>
         <a href="/issues" class={if String.starts_with?(@conn.request_path, "/issues"), do: "active"}>Issues</a>
+        <a href="/vault" class={if String.starts_with?(@conn.request_path, "/vault"), do: "active"}>Vault</a>
       </nav>
     </header>
     <%= @inner_content %>

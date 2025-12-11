@@ -6,6 +6,7 @@ defmodule NofaceElixir.MixProject do
       app: :noface_elixir,
       version: "0.1.0",
       elixir: "~> 1.19",
+      elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       escript: escript(),
@@ -23,6 +24,9 @@ defmodule NofaceElixir.MixProject do
   defp escript do
     [main_module: Noface.CLI]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   defp deps do
     [
@@ -52,7 +56,12 @@ defmodule NofaceElixir.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},
       # File system watcher for hot reload
-      {:file_system, "~> 1.0"}
+      {:file_system, "~> 1.0"},
+      # Asset bundler for LiveView
+      {:esbuild, "~> 0.8", runtime: Mix.env() == :dev},
+      # LiveView testing + HTML parser
+      {:floki, ">= 0.36.0", only: :test},
+      {:lazy_html, ">= 0.1.0", only: :test}
     ]
   end
 end
