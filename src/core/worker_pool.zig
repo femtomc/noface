@@ -7,14 +7,12 @@ const std = @import("std");
 const state_mod = @import("state.zig");
 const config_mod = @import("config.zig");
 const prompts = @import("prompts.zig");
-const merge_agent = @import("merge_agent.zig");
 const process = @import("../util/process.zig");
 const signals = @import("../util/signals.zig");
 const transcript_mod = @import("../util/transcript.zig");
 const jj = @import("../vcs/jj.zig");
 
 const OrchestratorState = state_mod.OrchestratorState;
-const IssueCompletionHandler = state_mod.IssueCompletionHandler;
 const WorkerState = state_mod.WorkerState;
 const Batch = state_mod.Batch;
 const Config = config_mod.Config;
@@ -26,8 +24,16 @@ pub const WorkerResult = struct {
     success: bool,
     exit_code: u8,
     duration_seconds: i64,
-    /// Baseline files that existed before worker started (for manifest compliance)
-    baseline: []const []const u8 = &.{},
+};
+
+/// Phase of worker execution
+pub const WorkerPhase = enum {
+    /// Worker is implementing the issue
+    implementing,
+    /// Reviewer is checking the implementation
+    reviewing,
+    /// Merge agent is squashing changes to main
+    merging,
 };
 
 /// WorkerPool manages parallel worker processes for executing issues
@@ -46,15 +52,20 @@ pub const WorkerPool = struct {
     /// Transcript database for logging worker sessions
     transcript_db: ?transcript_mod.TranscriptDb = null,
 
-    /// Completion handler for manifest verification and progress logging
-    completion_handler: ?IssueCompletionHandler = null,
-
-    /// Baseline files per worker (captured before worker starts)
-    /// These are the files that were already modified before the worker began.
-    worker_baselines: [state_mod.MAX_WORKERS][]const []const u8 = [_][]const []const u8{&.{}} ** state_mod.MAX_WORKERS,
-
     /// Workspace paths per worker (null if not using workspaces or worker not running)
     worker_workspaces: [state_mod.MAX_WORKERS]?[]const u8 = [_]?[]const u8{null} ** state_mod.MAX_WORKERS,
+
+    /// Current phase per worker
+    worker_phases: [state_mod.MAX_WORKERS]WorkerPhase = [_]WorkerPhase{.implementing} ** state_mod.MAX_WORKERS,
+
+    /// Review feedback per worker (for re-running worker after changes requested)
+    worker_feedback: [state_mod.MAX_WORKERS]?[]const u8 = [_]?[]const u8{null} ** state_mod.MAX_WORKERS,
+
+    /// Review iteration count per worker (to prevent infinite loops)
+    worker_review_iterations: [state_mod.MAX_WORKERS]u32 = [_]u32{0} ** state_mod.MAX_WORKERS,
+
+    /// Maximum review iterations before giving up
+    const MAX_REVIEW_ITERATIONS: u32 = 5;
 
     pub fn init(allocator: std.mem.Allocator, cfg: Config, orchestrator_state: *OrchestratorState) WorkerPool {
         // Try to open transcript database (non-fatal if it fails)
@@ -75,7 +86,6 @@ pub const WorkerPool = struct {
             .config = cfg,
             .state = orchestrator_state,
             .transcript_db = transcript_db,
-            .completion_handler = IssueCompletionHandler.init(allocator, orchestrator_state),
         };
     }
 
@@ -97,14 +107,15 @@ pub const WorkerPool = struct {
         // Free pending results
         for (self.pending_results.items) |result| {
             self.allocator.free(result.issue_id);
-            self.freeBaseline(result.baseline);
         }
         self.pending_results.deinit(self.allocator);
 
-        // Free worker baselines
-        for (&self.worker_baselines) |*baseline| {
-            self.freeBaseline(baseline.*);
-            baseline.* = &.{};
+        // Free worker feedback
+        for (&self.worker_feedback) |*feedback| {
+            if (feedback.*) |f| {
+                self.allocator.free(f);
+                feedback.* = null;
+            }
         }
 
         // Cleanup worker workspaces
@@ -169,10 +180,7 @@ pub const WorkerPool = struct {
             // 4. Process any pending results
             while (self.pending_results.items.len > 0) {
                 const result = self.pending_results.orderedRemove(0);
-                defer {
-                    self.allocator.free(result.issue_id);
-                    self.freeBaseline(result.baseline);
-                }
+                defer self.allocator.free(result.issue_id);
 
                 // Find the issue index in the batch
                 for (batch.issue_ids, 0..) |issue_id, i| {
@@ -180,46 +188,13 @@ pub const WorkerPool = struct {
                         completed[i] = true;
                         issues_remaining -= 1;
 
-                        // === Manifest compliance verification ===
-                        // Verify the worker didn't touch forbidden/unauthorized files.
-                        // We filter the global changed files to exclude:
-                        // 1. Files in the baseline (existed before this worker started)
-                        // 2. Files in OTHER issues' manifests (modified by concurrent workers)
-                        var is_compliant = true;
-                        if (self.completion_handler) |*handler| {
-                            // Get current changed files, filtering out those owned by other issues
-                            var all_changed = self.buildChangedFilesListExcludingOtherManifests(result.issue_id) catch null;
-                            defer if (all_changed) |*list| {
-                                for (list.*) |f| self.allocator.free(f);
-                                if (list.len > 0) self.allocator.free(list.*);
-                            };
-
-                            if (all_changed) |list| {
-                                is_compliant = handler.handleCompletion(
-                                    result.issue_id,
-                                    result.success,
-                                    result.baseline,
-                                    list,
-                                ) catch true; // On error, assume compliant to not block
-                            }
-                        }
-
-                        // Determine final success: agent success AND manifest compliance
-                        const final_success = result.success and is_compliant;
-
-                        if (final_success) {
+                        if (result.success) {
                             successful += 1;
                             logSuccess("Worker {d} completed issue {s} in {d}s", .{
                                 result.worker_id,
                                 result.issue_id,
                                 result.duration_seconds,
                             });
-                        } else if (!is_compliant) {
-                            logError("Worker {d} issue {s} failed manifest compliance check", .{
-                                result.worker_id,
-                                result.issue_id,
-                            });
-                            // TODO: rollback violating files using git
                         } else {
                             logError("Worker {d} failed issue {s} (exit code {d})", .{
                                 result.worker_id,
@@ -228,12 +203,12 @@ pub const WorkerPool = struct {
                             });
                         }
 
-                        // Update issue state based on final result
-                        const status: state_mod.IssueStatus = if (final_success) .completed else .failed;
+                        // Update issue state
+                        const status: state_mod.IssueStatus = if (result.success) .completed else .failed;
                         _ = self.state.updateIssue(result.issue_id, status) catch {};
 
                         // Mark worker as idle
-                        self.state.workers[result.worker_id].status = if (final_success) .completed else .failed;
+                        self.state.workers[result.worker_id].status = if (result.success) .completed else .failed;
                         if (self.state.workers[result.worker_id].current_issue) |issue| {
                             self.allocator.free(issue);
                             self.state.workers[result.worker_id].current_issue = null;
@@ -297,128 +272,6 @@ pub const WorkerPool = struct {
         return null;
     }
 
-    /// Capture baseline of changed files before a worker starts.
-    /// Returns list of file paths that were already modified or untracked.
-    /// Caller must free with freeBaseline.
-    fn captureBaseline(self: *WorkerPool) ![]const []const u8 {
-        var repo = jj.JjRepo.init(self.allocator);
-        var changed = try repo.getAllChangedFiles();
-        // Don't defer deinit - we need to copy strings first before freeing
-
-        // Build list with duplicated strings so we own them
-        var baseline = std.ArrayListUnmanaged([]const u8){};
-        errdefer {
-            for (baseline.items) |f| self.allocator.free(f);
-            baseline.deinit(self.allocator);
-        }
-
-        // Helper to check if already in list
-        const isInList = struct {
-            fn check(list: []const []const u8, file: []const u8) bool {
-                for (list) |b| {
-                    if (std.mem.eql(u8, b, file)) return true;
-                }
-                return false;
-            }
-        }.check;
-
-        // Copy all unique files (jj uses modified/added/deleted)
-        for (changed.modified) |f| {
-            try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
-        }
-        for (changed.added) |f| {
-            if (!isInList(baseline.items, f)) {
-                try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
-            }
-        }
-        for (changed.deleted) |f| {
-            if (!isInList(baseline.items, f)) {
-                try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
-            }
-        }
-
-        // Now safe to free the original changed files
-        changed.deinit();
-
-        return baseline.toOwnedSlice(self.allocator);
-    }
-
-    /// Free a baseline file list
-    fn freeBaseline(self: *WorkerPool, baseline: []const []const u8) void {
-        for (baseline) |f| self.allocator.free(f);
-        if (baseline.len > 0) self.allocator.free(baseline);
-    }
-
-    /// Build a list of all currently changed files, excluding files owned by other issues.
-    /// This prevents false manifest violations from concurrent worker modifications.
-    /// We exclude files that are in ANY other issue's manifest (not just currently locked).
-    /// Caller must free each string and the list.
-    fn buildChangedFilesListExcludingOtherManifests(self: *WorkerPool, this_issue_id: []const u8) ![]const []const u8 {
-        var repo = jj.JjRepo.init(self.allocator);
-        var changed = try repo.getAllChangedFiles();
-        // Don't defer deinit - we need to copy strings first
-
-        var result = std.ArrayListUnmanaged([]const u8){};
-        errdefer {
-            for (result.items) |f| self.allocator.free(f);
-            result.deinit(self.allocator);
-        }
-
-        // Helper to check if already in list
-        const isInList = struct {
-            fn check(list: []const []const u8, file: []const u8) bool {
-                for (list) |b| {
-                    if (std.mem.eql(u8, b, file)) return true;
-                }
-                return false;
-            }
-        }.check;
-
-        // Helper to check if file is in another issue's manifest
-        // This is more robust than checking locks, which can be released
-        const isInOtherManifest = struct {
-            fn check(state: *state_mod.OrchestratorState, file: []const u8, our_issue: []const u8) bool {
-                // Check all issues to see if any OTHER issue owns this file
-                var it = state.issues.iterator();
-                while (it.next()) |entry| {
-                    const issue_id = entry.key_ptr.*;
-                    // Skip our own issue
-                    if (std.mem.eql(u8, issue_id, our_issue)) continue;
-
-                    const issue_state = entry.value_ptr.*;
-                    if (issue_state.manifest) |manifest| {
-                        if (manifest.allowsWrite(file)) {
-                            return true;
-                        }
-                    }
-                }
-                return false;
-            }
-        }.check;
-
-        // Copy all unique files, excluding those owned by other issues (jj uses modified/added/deleted)
-        for (changed.modified) |f| {
-            if (!isInOtherManifest(self.state, f, this_issue_id)) {
-                try result.append(self.allocator, try self.allocator.dupe(u8, f));
-            }
-        }
-        for (changed.added) |f| {
-            if (!isInList(result.items, f) and !isInOtherManifest(self.state, f, this_issue_id)) {
-                try result.append(self.allocator, try self.allocator.dupe(u8, f));
-            }
-        }
-        for (changed.deleted) |f| {
-            if (!isInList(result.items, f) and !isInOtherManifest(self.state, f, this_issue_id)) {
-                try result.append(self.allocator, try self.allocator.dupe(u8, f));
-            }
-        }
-
-        // Now safe to free the original changed files
-        changed.deinit();
-
-        return result.toOwnedSlice(self.allocator);
-    }
-
     /// Start a worker process for an issue
     /// If `resuming` is true, the worker was previously blocked and is being restarted
     fn startWorker(self: *WorkerPool, worker_id: u32, issue_id: []const u8) !void {
@@ -427,14 +280,6 @@ pub const WorkerPool = struct {
 
     /// Start a worker process, optionally as a resume from a blocked state
     fn startWorkerWithResume(self: *WorkerPool, worker_id: u32, issue_id: []const u8, resuming: bool) !void {
-        // Capture baseline of changed files BEFORE worker starts
-        // This allows us to verify manifest compliance on completion
-        if (!resuming) {
-            // Free any existing baseline for this worker
-            self.freeBaseline(self.worker_baselines[worker_id]);
-            self.worker_baselines[worker_id] = try self.captureBaseline();
-        }
-
         // Create workspace for this worker (if not resuming with existing workspace)
         var workspace_path: ?[]const u8 = null;
         if (!resuming or self.worker_workspaces[worker_id] == null) {
@@ -460,7 +305,7 @@ pub const WorkerPool = struct {
         // Build the worker command
         // Each worker runs: noface --worker --issue <issue_id>
         // For now, we use claude directly with the implementation prompt
-        const prompt = try self.buildWorkerPrompt(issue_id, resuming);
+        const prompt = try self.buildWorkerPrompt(issue_id, resuming, null);
         defer self.allocator.free(prompt);
 
         const argv = [_][]const u8{
@@ -499,7 +344,7 @@ pub const WorkerPool = struct {
     }
 
     /// Build the implementation prompt for a worker
-    fn buildWorkerPrompt(self: *WorkerPool, issue_id: []const u8, resuming: bool) ![]const u8 {
+    fn buildWorkerPrompt(self: *WorkerPool, issue_id: []const u8, resuming: bool, review_feedback: ?[]const u8) ![]const u8 {
         // Get manifest for this issue to include in prompt
         const manifest = self.state.getManifest(issue_id);
 
@@ -533,8 +378,8 @@ pub const WorkerPool = struct {
             self.config.project_name,
             owned_files,
             self.config.test_command,
-            self.config.review_agent,
             resuming,
+            review_feedback,
         );
     }
 
@@ -550,108 +395,283 @@ pub const WorkerPool = struct {
     }
 
     /// Check all running workers and collect results from completed ones
+    /// Handles phase transitions: implementing -> reviewing -> merging
     fn collectCompletedWorkers(self: *WorkerPool) !void {
         for (0..self.state.num_workers) |i| {
             const worker_id: u32 = @intCast(i);
             if (self.worker_processes[worker_id]) |*worker| {
                 // Check if process has completed (non-blocking)
                 if (worker.tryWait()) |exit_code| {
-                    const started_at = self.state.workers[worker_id].started_at orelse std.time.timestamp();
-                    const duration = std.time.timestamp() - started_at;
-
-                    // Complete transcript session before cleanup
+                    // Complete transcript session
                     if (self.transcript_db) |*db| {
                         if (worker.transcript_session_id) |session_id| {
                             db.completeSession(session_id, exit_code) catch {};
                         }
                     }
 
-                    // Transfer baseline ownership to the result (don't free here)
-                    const baseline = self.worker_baselines[worker_id];
-                    self.worker_baselines[worker_id] = &.{}; // Clear without freeing
+                    // Copy issue_id before deinit (worker.issue_id will be freed)
+                    const issue_id = try self.allocator.dupe(u8, worker.issue_id);
+                    defer self.allocator.free(issue_id);
+                    const phase = self.worker_phases[worker_id];
+                    const output = worker.line_buffer.items;
 
-                    // If worker was using a workspace, merge changes back and cleanup
-                    var merge_success = true;
-                    if (self.worker_workspaces[worker_id]) |workspace_path| {
-                        var repo = jj.JjRepo.init(self.allocator);
+                    switch (phase) {
+                        .implementing => {
+                            // Worker finished implementing
+                            if (exit_code == 0 and containsMarker(output, "READY_FOR_REVIEW")) {
+                                logInfo("Worker {d} ready for review, spawning reviewer...", .{worker_id});
+                                worker.deinit();
+                                self.worker_processes[worker_id] = null;
 
-                        // Only merge if worker succeeded
-                        if (exit_code == 0) {
-                            // First commit changes in the workspace
-                            const commit_msg = try std.fmt.allocPrint(self.allocator, "Worker {d} changes for {s}", .{ worker_id, worker.issue_id });
-                            defer self.allocator.free(commit_msg);
-
-                            const committed = repo.commitInWorkspace(workspace_path, commit_msg) catch false;
-                            if (committed) {
-                                // Squash workspace changes into main working copy
-                                merge_success = repo.squashFromWorkspace(workspace_path) catch false;
-                                if (merge_success) {
-                                    logInfo("Worker {d} changes merged from workspace", .{worker_id});
-                                } else {
-                                    // Attempt merge agent resolution
-                                    logInfo("Worker {d} conflict detected, invoking merge agent...", .{worker_id});
-
-                                    const merge_config = merge_agent.MergeAgentConfig{
-                                        .agent = self.config.review_agent, // Use codex for merge resolution
-                                        .build_cmd = if (self.config.build_command.len > 0) self.config.build_command else null,
-                                        .test_cmd = if (self.config.test_command.len > 0) self.config.test_command else null,
-                                        .dry_run = self.config.dry_run,
-                                    };
-
-                                    var merge_result = merge_agent.resolveConflicts(
-                                        self.allocator,
-                                        merge_config,
-                                        worker.issue_id,
-                                    ) catch |err| {
-                                        logWarn("Merge agent error: {}", .{err});
-                                        continue; // Leave merge_success as false
-                                    };
-                                    defer merge_result.deinit();
-
-                                    if (merge_result.success) {
-                                        logInfo("Merge agent resolved {d} file(s)", .{merge_result.resolved_files.len});
-                                        merge_success = true;
-                                    } else {
-                                        logWarn("Worker {d} merge conflict unresolved, {d} file(s) remain", .{
-                                            worker_id,
-                                            merge_result.unresolved_files.len,
-                                        });
-                                        if (merge_result.error_message) |msg| {
-                                            logWarn("Merge error: {s}", .{msg});
-                                        }
-                                    }
-                                }
+                                // Spawn reviewer in same workspace
+                                self.spawnReviewer(worker_id, issue_id) catch |err| {
+                                    logError("Failed to spawn reviewer: {}", .{err});
+                                    try self.failWorker(worker_id, issue_id, 1);
+                                };
+                            } else if (containsMarker(output, "BLOCKED:")) {
+                                logWarn("Worker {d} blocked", .{worker_id});
+                                worker.deinit();
+                                self.worker_processes[worker_id] = null;
+                                try self.failWorker(worker_id, issue_id, exit_code);
+                            } else {
+                                logError("Worker {d} failed (exit: {d})", .{ worker_id, exit_code });
+                                worker.deinit();
+                                self.worker_processes[worker_id] = null;
+                                try self.failWorker(worker_id, issue_id, exit_code);
                             }
-                        }
+                        },
+                        .reviewing => {
+                            // Reviewer finished
+                            if (containsMarker(output, "APPROVED")) {
+                                logSuccess("Worker {d} review approved, spawning merge agent...", .{worker_id});
+                                worker.deinit();
+                                self.worker_processes[worker_id] = null;
 
-                        // Cleanup workspace (only if merge succeeded or worker failed)
-                        if (merge_success or exit_code != 0) {
-                            repo.removeWorkspace(workspace_path) catch |err| {
-                                logWarn("Failed to remove workspace {s}: {}", .{ workspace_path, err });
+                                // Spawn merge agent at root
+                                self.spawnMergeAgent(worker_id, issue_id) catch |err| {
+                                    logError("Failed to spawn merge agent: {}", .{err});
+                                    try self.failWorker(worker_id, issue_id, 1);
+                                };
+                            } else if (extractFeedback(output, "CHANGES_REQUESTED:")) |feedback| {
+                                self.worker_review_iterations[worker_id] += 1;
+                                if (self.worker_review_iterations[worker_id] >= MAX_REVIEW_ITERATIONS) {
+                                    logError("Worker {d} exceeded max review iterations", .{worker_id});
+                                    worker.deinit();
+                                    self.worker_processes[worker_id] = null;
+                                    try self.failWorker(worker_id, issue_id, 1);
+                                } else {
+                                    logInfo("Worker {d} changes requested (iteration {d}), re-running worker...", .{
+                                        worker_id,
+                                        self.worker_review_iterations[worker_id],
+                                    });
+                                    worker.deinit();
+                                    self.worker_processes[worker_id] = null;
+
+                                    // Store feedback and re-spawn worker
+                                    if (self.worker_feedback[worker_id]) |old| {
+                                        self.allocator.free(old);
+                                    }
+                                    self.worker_feedback[worker_id] = self.allocator.dupe(u8, feedback) catch null;
+
+                                    self.spawnWorkerWithFeedback(worker_id, issue_id) catch |err| {
+                                        logError("Failed to re-spawn worker: {}", .{err});
+                                        try self.failWorker(worker_id, issue_id, 1);
+                                    };
+                                }
+                            } else {
+                                logError("Reviewer {d} failed or gave unclear verdict", .{worker_id});
+                                worker.deinit();
+                                self.worker_processes[worker_id] = null;
+                                try self.failWorker(worker_id, issue_id, exit_code);
+                            }
+                        },
+                        .merging => {
+                            // Merge agent finished
+                            const started_at = self.state.workers[worker_id].started_at orelse std.time.timestamp();
+                            const duration = std.time.timestamp() - started_at;
+
+                            const success = exit_code == 0 and containsMarker(output, "MERGE_COMPLETE");
+                            if (success) {
+                                logSuccess("Worker {d} merge complete", .{worker_id});
+                            } else {
+                                logError("Worker {d} merge failed", .{worker_id});
+                            }
+
+                            worker.deinit();
+                            self.worker_processes[worker_id] = null;
+
+                            // Cleanup workspace
+                            if (self.worker_workspaces[worker_id]) |workspace_path| {
+                                var repo = jj.JjRepo.init(self.allocator);
+                                repo.removeWorkspace(workspace_path) catch {};
+                                self.allocator.free(workspace_path);
+                                self.worker_workspaces[worker_id] = null;
+                            }
+
+                            // Reset phase tracking
+                            self.worker_phases[worker_id] = .implementing;
+                            self.worker_review_iterations[worker_id] = 0;
+                            if (self.worker_feedback[worker_id]) |f| {
+                                self.allocator.free(f);
+                                self.worker_feedback[worker_id] = null;
+                            }
+
+                            // Create final result
+                            const result = WorkerResult{
+                                .worker_id = worker_id,
+                                .issue_id = try self.allocator.dupe(u8, issue_id),
+                                .success = success,
+                                .exit_code = exit_code,
+                                .duration_seconds = duration,
                             };
-                            self.allocator.free(workspace_path);
-                            self.worker_workspaces[worker_id] = null;
-                        }
+                            try self.pending_results.append(self.allocator, result);
+                        },
                     }
-
-                    // Create result with baseline for manifest compliance check
-                    const result = WorkerResult{
-                        .worker_id = worker_id,
-                        .issue_id = try self.allocator.dupe(u8, worker.issue_id),
-                        .success = exit_code == 0 and merge_success,
-                        .exit_code = exit_code,
-                        .duration_seconds = duration,
-                        .baseline = baseline,
-                    };
-
-                    try self.pending_results.append(self.allocator, result);
-
-                    // Clean up worker process
-                    worker.deinit();
-                    self.worker_processes[worker_id] = null;
                 }
             }
         }
+    }
+
+    /// Spawn reviewer agent in worker's workspace
+    fn spawnReviewer(self: *WorkerPool, worker_id: u32, issue_id: []const u8) !void {
+        const workspace_path = self.worker_workspaces[worker_id];
+
+        const prompt = try prompts.buildReviewerPrompt(
+            self.allocator,
+            issue_id,
+            self.config.project_name,
+            self.config.test_command,
+        );
+        defer self.allocator.free(prompt);
+
+        const argv = [_][]const u8{
+            self.config.review_agent,
+            "-p",
+            "--dangerously-skip-permissions",
+            "--verbose",
+            "--max-turns",
+            "50",
+            "--output-format",
+            "stream-json",
+            prompt,
+        };
+
+        var worker = try WorkerProcess.spawnInDir(self.allocator, &argv, worker_id, issue_id, workspace_path);
+
+        if (self.transcript_db) |*db| {
+            worker.transcript_db = db;
+            if (db.startSession(issue_id, worker_id, false)) |session_id| {
+                worker.transcript_session_id = session_id;
+            } else |_| {}
+        }
+
+        self.worker_processes[worker_id] = worker;
+        self.worker_phases[worker_id] = .reviewing;
+    }
+
+    /// Spawn merge agent at root (not in workspace)
+    fn spawnMergeAgent(self: *WorkerPool, worker_id: u32, issue_id: []const u8) !void {
+        const workspace_name = if (self.worker_workspaces[worker_id]) |ws|
+            std.fs.path.basename(ws)
+        else
+            "default";
+
+        const prompt = try prompts.buildMergePrompt(
+            self.allocator,
+            issue_id,
+            workspace_name,
+            self.config.project_name,
+        );
+        defer self.allocator.free(prompt);
+
+        const argv = [_][]const u8{
+            self.config.review_agent, // Use review agent (codex) for merge
+            "-p",
+            "--dangerously-skip-permissions",
+            "--verbose",
+            "--max-turns",
+            "30",
+            "--output-format",
+            "stream-json",
+            prompt,
+        };
+
+        // Spawn at root (null cwd)
+        var worker = try WorkerProcess.spawnInDir(self.allocator, &argv, worker_id, issue_id, null);
+
+        if (self.transcript_db) |*db| {
+            worker.transcript_db = db;
+            if (db.startSession(issue_id, worker_id, false)) |session_id| {
+                worker.transcript_session_id = session_id;
+            } else |_| {}
+        }
+
+        self.worker_processes[worker_id] = worker;
+        self.worker_phases[worker_id] = .merging;
+    }
+
+    /// Re-spawn worker with review feedback
+    fn spawnWorkerWithFeedback(self: *WorkerPool, worker_id: u32, issue_id: []const u8) !void {
+        const workspace_path = self.worker_workspaces[worker_id];
+        const feedback = self.worker_feedback[worker_id];
+
+        const prompt = try self.buildWorkerPrompt(issue_id, true, feedback);
+        defer self.allocator.free(prompt);
+
+        const argv = [_][]const u8{
+            self.config.impl_agent,
+            "-p",
+            "--dangerously-skip-permissions",
+            "--verbose",
+            "--max-turns",
+            "100",
+            "--output-format",
+            "stream-json",
+            prompt,
+        };
+
+        var worker = try WorkerProcess.spawnInDir(self.allocator, &argv, worker_id, issue_id, workspace_path);
+
+        if (self.transcript_db) |*db| {
+            worker.transcript_db = db;
+            if (db.startSession(issue_id, worker_id, true)) |session_id| {
+                worker.transcript_session_id = session_id;
+            } else |_| {}
+        }
+
+        self.worker_processes[worker_id] = worker;
+        self.worker_phases[worker_id] = .implementing;
+    }
+
+    /// Record a failed worker result
+    fn failWorker(self: *WorkerPool, worker_id: u32, issue_id: []const u8, exit_code: u8) !void {
+        const started_at = self.state.workers[worker_id].started_at orelse std.time.timestamp();
+        const duration = std.time.timestamp() - started_at;
+
+        // Cleanup workspace
+        if (self.worker_workspaces[worker_id]) |workspace_path| {
+            var repo = jj.JjRepo.init(self.allocator);
+            repo.removeWorkspace(workspace_path) catch {};
+            self.allocator.free(workspace_path);
+            self.worker_workspaces[worker_id] = null;
+        }
+
+        // Reset phase tracking
+        self.worker_phases[worker_id] = .implementing;
+        self.worker_review_iterations[worker_id] = 0;
+        if (self.worker_feedback[worker_id]) |f| {
+            self.allocator.free(f);
+            self.worker_feedback[worker_id] = null;
+        }
+
+        const result = WorkerResult{
+            .worker_id = worker_id,
+            .issue_id = try self.allocator.dupe(u8, issue_id),
+            .success = false,
+            .exit_code = exit_code,
+            .duration_seconds = duration,
+        };
+        try self.pending_results.append(self.allocator, result);
     }
 
     /// Detect idle workers (no output for timeout period)
@@ -1157,6 +1177,31 @@ fn formatToolStatus(action: []const u8, target: []const u8) []const u8 {
         return action;
     };
     return result;
+}
+
+// === Output Markers ===
+
+/// Check if output contains a specific marker (e.g., READY_FOR_REVIEW, APPROVED)
+fn containsMarker(output: []const u8, marker: []const u8) bool {
+    return std.mem.indexOf(u8, output, marker) != null;
+}
+
+/// Extract feedback text after a marker (e.g., "CHANGES_REQUESTED: fix the bug")
+/// Returns the text after the marker, or null if marker not found
+fn extractFeedback(output: []const u8, marker: []const u8) ?[]const u8 {
+    const marker_pos = std.mem.indexOf(u8, output, marker) orelse return null;
+    const start = marker_pos + marker.len;
+    if (start >= output.len) return null;
+
+    // Find end of feedback (next newline or end of output)
+    var end = start;
+    while (end < output.len and output[end] != '\n') {
+        end += 1;
+    }
+
+    const feedback = std.mem.trim(u8, output[start..end], " \t\r");
+    if (feedback.len == 0) return null;
+    return feedback;
 }
 
 // === Logging ===

@@ -540,18 +540,11 @@ pub const AgentLoop = struct {
         // Log truncated prompt in verbose mode
         self.logVerbosePrompt("Implementation prompt", prompt);
 
-        // Capture baseline of changed files before agent runs
-        // This allows us to distinguish pre-existing changes from agent-made changes
-        const baseline = try self.captureChangedFilesBaseline();
-        defer self.freeBaseline(baseline);
-
         // Run Claude with streaming and retry logic
         self.logInfo("Starting {s} session (streaming)...", .{self.config.impl_agent});
         const retry_config = RetryConfig{};
         var attempt: u8 = 0;
         var last_exit_code: u8 = 0;
-        var last_violation: ?ManifestComplianceResult = null;
-        defer if (last_violation) |*v| v.deinit(self.allocator);
 
         while (attempt < retry_config.max_attempts) : (attempt += 1) {
             if (attempt > 0) {
@@ -564,16 +557,7 @@ pub const AgentLoop = struct {
                 sleepMs(delay_ms);
             }
 
-            // Use stricter prompt if previous attempt had manifest violation
-            const effective_prompt = if (last_violation) |v| blk: {
-                const stricter = self.buildStricterPrompt(issue_id, v) catch prompt;
-                break :blk stricter;
-            } else prompt;
-            defer if (last_violation != null and effective_prompt.ptr != prompt.ptr) {
-                self.allocator.free(effective_prompt);
-            };
-
-            last_exit_code = try self.runAgentStreaming(self.config.impl_agent, effective_prompt, issue_id);
+            last_exit_code = try self.runAgentStreaming(self.config.impl_agent, prompt, issue_id);
 
             // Check if we were interrupted
             if (self.isInterrupted()) {
@@ -583,73 +567,13 @@ pub const AgentLoop = struct {
                 return false;
             }
 
-            // Check manifest compliance regardless of agent exit code
-            // (failed agents might still have modified forbidden files)
-            self.logInfo("Checking manifest compliance...", .{});
-            var compliance = try self.verifyManifestCompliance(issue_id, baseline);
-
-            // Log manifest instrumentation metrics (predicted vs actual files)
-            self.logManifestInstrumentation(compliance);
-
-            if (!compliance.compliant) {
-                // Manifest violation detected
-                self.logError("Manifest violation detected!", .{});
-
-                if (compliance.forbidden_files_touched.len > 0) {
-                    self.logError("Forbidden files touched: {d}", .{compliance.forbidden_files_touched.len});
-                    for (compliance.forbidden_files_touched) |f| {
-                        self.logError("  - {s}", .{f});
-                    }
-                }
-                if (compliance.unauthorized_files.len > 0) {
-                    self.logError("Unauthorized files modified: {d}", .{compliance.unauthorized_files.len});
-                    for (compliance.unauthorized_files) |f| {
-                        self.logError("  - {s}", .{f});
-                    }
-                }
-
-                // Record violation in state
-                if (self.state) |*s| {
-                    // Build violation notes
-                    var notes_buf: [1024]u8 = undefined;
-                    const notes = std.fmt.bufPrint(&notes_buf, "Manifest violation: {d} forbidden, {d} unauthorized files", .{
-                        compliance.forbidden_files_touched.len,
-                        compliance.unauthorized_files.len,
-                    }) catch "Manifest violation";
-
-                    s.recordAttempt(issue_id, .violation, notes) catch {};
-                }
-
-                // Rollback only the violating files (preserve pre-existing changes)
-                try self.rollbackViolatingFiles(compliance);
-
-                // Save violation for stricter prompt on retry
-                if (last_violation) |*v| v.deinit(self.allocator);
-                last_violation = compliance;
-
-                // Set exit code to indicate violation (for retry logic)
-                last_exit_code = EXIT_CODE_MANIFEST_VIOLATION;
-
-                // Check if we should retry
-                if (attempt + 1 < retry_config.max_attempts) {
-                    self.logWarn("Will retry with stricter prompt", .{});
-                    continue;
-                } else {
-                    self.logError("Max retries exceeded after manifest violations", .{});
-                    break;
-                }
-            } else {
-                // Compliant - clean up compliance result
-                compliance.deinit(self.allocator);
-
-                // If agent succeeded, we're done
-                if (last_exit_code == 0) {
-                    self.logSuccess("Manifest compliance verified", .{});
-                    break;
-                }
+            // If agent succeeded, we're done
+            if (last_exit_code == 0) {
+                self.logSuccess("Agent completed successfully", .{});
+                break;
             }
 
-            // Check if we should retry (agent failed but no manifest violation)
+            // Check if we should retry
             if (!shouldRetry(last_exit_code) or attempt + 1 >= retry_config.max_attempts) {
                 break;
             }
@@ -1224,238 +1148,6 @@ pub const AgentLoop = struct {
     /// Special exit code indicating agent timeout
     pub const EXIT_CODE_TIMEOUT: u8 = 124; // Same as GNU timeout
 
-    /// Special exit code indicating manifest violation
-    pub const EXIT_CODE_MANIFEST_VIOLATION: u8 = 125;
-
-    /// Result of manifest compliance check - use shared type from state module
-    /// This ensures batch (worker_pool) and sequential (loop) paths use identical verification
-    const ManifestComplianceResult = state_mod.ManifestComplianceResult;
-
-    /// Capture baseline of changed files before agent runs
-    /// Returns list of file paths that were already modified or untracked
-    /// Caller must free the returned list with freeBaseline
-    fn captureChangedFilesBaseline(self: *AgentLoop) ![]const []const u8 {
-        var repo = jj.JjRepo.init(self.allocator);
-        var changed = try repo.getAllChangedFiles();
-        // Don't defer deinit - we need to copy the strings first before freeing
-
-        // Build list with duplicated strings so we own them
-        var baseline = std.ArrayListUnmanaged([]const u8){};
-        errdefer {
-            for (baseline.items) |f| self.allocator.free(f);
-            baseline.deinit(self.allocator);
-        }
-
-        // Helper to check if already in list
-        const isInList = struct {
-            fn check(list: []const []const u8, file: []const u8) bool {
-                for (list) |b| {
-                    if (std.mem.eql(u8, b, file)) return true;
-                }
-                return false;
-            }
-        }.check;
-
-        // Copy all unique files
-        // jj uses modified/added/deleted instead of git's modified/staged/untracked
-        for (changed.modified) |f| {
-            try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
-        }
-        for (changed.added) |f| {
-            if (!isInList(baseline.items, f)) {
-                try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
-            }
-        }
-        for (changed.deleted) |f| {
-            if (!isInList(baseline.items, f)) {
-                try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
-            }
-        }
-
-        // Now safe to free the original changed files
-        changed.deinit();
-
-        return baseline.toOwnedSlice(self.allocator);
-    }
-
-    /// Free baseline file list
-    fn freeBaseline(self: *AgentLoop, baseline: []const []const u8) void {
-        for (baseline) |f| self.allocator.free(f);
-        if (baseline.len > 0) self.allocator.free(baseline);
-    }
-
-    /// Verify that agent changes comply with the issue's manifest
-    /// baseline contains files that were already modified before agent ran
-    /// Returns compliance result with details of any violations and instrumentation data
-    fn verifyManifestCompliance(self: *AgentLoop, issue_id: []const u8, baseline: []const []const u8) !ManifestComplianceResult {
-        // Get manifest for this issue
-        const manifest = if (self.state) |*s| s.getManifest(issue_id) else null;
-
-        // No manifest means no restrictions (legacy behavior)
-        if (manifest == null) {
-            return .{ .compliant = true };
-        }
-        const m = manifest.?;
-
-        // Get all changed files using jj module
-        var repo = jj.JjRepo.init(self.allocator);
-        var changed = try repo.getAllChangedFiles();
-        defer changed.deinit();
-
-        // Parse changed files
-        var unauthorized = std.ArrayListUnmanaged([]const u8){};
-        errdefer {
-            for (unauthorized.items) |f| self.allocator.free(f);
-            unauthorized.deinit(self.allocator);
-        }
-
-        var forbidden_touched = std.ArrayListUnmanaged([]const u8){};
-        errdefer {
-            for (forbidden_touched.items) |f| self.allocator.free(f);
-            forbidden_touched.deinit(self.allocator);
-        }
-
-        // Track all files actually touched by the agent (for instrumentation)
-        var all_touched = std.ArrayListUnmanaged([]const u8){};
-        errdefer {
-            for (all_touched.items) |f| self.allocator.free(f);
-            all_touched.deinit(self.allocator);
-        }
-
-        // Helper to check if file was in baseline (pre-existing change)
-        const isInBaseline = struct {
-            fn check(bl: []const []const u8, file: []const u8) bool {
-                for (bl) |b| {
-                    if (std.mem.eql(u8, b, file)) return true;
-                }
-                return false;
-            }
-        }.check;
-
-        // Helper to check if file is already in a list
-        const isInList = struct {
-            fn check(list: []const []const u8, file: []const u8) bool {
-                for (list) |f| {
-                    if (std.mem.eql(u8, f, file)) return true;
-                }
-                return false;
-            }
-        }.check;
-
-        // Helper to process a file and check compliance
-        const processFile = struct {
-            fn process(
-                allocator: std.mem.Allocator,
-                file: []const u8,
-                bl: []const []const u8,
-                man: @TypeOf(m),
-                touched: *std.ArrayListUnmanaged([]const u8),
-                unauth: *std.ArrayListUnmanaged([]const u8),
-                forbidden: *std.ArrayListUnmanaged([]const u8),
-            ) !void {
-                // Skip files that were already modified before agent ran
-                if (isInBaseline(bl, file)) return;
-
-                // Track all touched files for instrumentation
-                if (!isInList(touched.items, file)) {
-                    try touched.append(allocator, try allocator.dupe(u8, file));
-                }
-
-                // Check if file is forbidden
-                if (man.isForbidden(file)) {
-                    if (!isInList(forbidden.items, file)) {
-                        try forbidden.append(allocator, try allocator.dupe(u8, file));
-                    }
-                } else if (!man.allowsWrite(file)) {
-                    if (!isInList(unauth.items, file)) {
-                        try unauth.append(allocator, try allocator.dupe(u8, file));
-                    }
-                }
-            }
-        }.process;
-
-        // Check modified files
-        for (changed.modified) |file| {
-            try processFile(self.allocator, file, baseline, m, &all_touched, &unauthorized, &forbidden_touched);
-        }
-
-        // Check added files (jj equivalent of staged)
-        for (changed.added) |file| {
-            try processFile(self.allocator, file, baseline, m, &all_touched, &unauthorized, &forbidden_touched);
-        }
-
-        // Check deleted files
-        for (changed.deleted) |file| {
-            try processFile(self.allocator, file, baseline, m, &all_touched, &unauthorized, &forbidden_touched);
-        }
-
-        const has_violations = unauthorized.items.len > 0 or forbidden_touched.items.len > 0;
-
-        // Build instrumentation data: copy manifest's primary_files as predictions
-        var predicted_files = std.ArrayListUnmanaged([]const u8){};
-        errdefer {
-            for (predicted_files.items) |f| self.allocator.free(f);
-            predicted_files.deinit(self.allocator);
-        }
-        for (m.primary_files) |pf| {
-            try predicted_files.append(self.allocator, try self.allocator.dupe(u8, pf));
-        }
-
-        return .{
-            .compliant = !has_violations,
-            .unauthorized_files = try unauthorized.toOwnedSlice(self.allocator),
-            .forbidden_files_touched = try forbidden_touched.toOwnedSlice(self.allocator),
-            .instrumentation = .{
-                .manifest_files_predicted = try predicted_files.toOwnedSlice(self.allocator),
-                .files_actually_touched = try all_touched.toOwnedSlice(self.allocator),
-            },
-        };
-    }
-
-    /// Rollback only the files that the agent touched (not pre-existing changes)
-    /// compliance_result contains the violating files to rollback
-    fn rollbackViolatingFiles(self: *AgentLoop, compliance_result: ManifestComplianceResult) !void {
-        self.logWarn("Rolling back violating files...", .{});
-
-        var files_to_rollback = std.ArrayListUnmanaged([]const u8){};
-        defer files_to_rollback.deinit(self.allocator);
-
-        // Collect all files that need to be rolled back
-        for (compliance_result.unauthorized_files) |f| {
-            try files_to_rollback.append(self.allocator, f);
-        }
-        for (compliance_result.forbidden_files_touched) |f| {
-            try files_to_rollback.append(self.allocator, f);
-        }
-
-        if (files_to_rollback.items.len == 0) {
-            self.logInfo("No files to rollback", .{});
-            return;
-        }
-
-        // Rollback each file individually using jj module
-        var repo = jj.JjRepo.init(self.allocator);
-        for (files_to_rollback.items) |file| {
-            try repo.rollbackFile(file);
-            self.logInfo("  Rolled back: {s}", .{file});
-        }
-
-        self.logInfo("Rollback complete ({d} file(s))", .{files_to_rollback.items.len});
-    }
-
-    /// Build a stricter prompt after manifest violation
-    fn buildStricterPrompt(self: *AgentLoop, issue_id: []const u8, violation_result: ManifestComplianceResult) ![]const u8 {
-        const base_prompt = try self.buildImplementationPrompt(issue_id);
-        defer self.allocator.free(base_prompt);
-
-        return prompts.buildStricterPrompt(
-            self.allocator,
-            base_prompt,
-            violation_result.forbidden_files_touched,
-            violation_result.unauthorized_files,
-        );
-    }
-
     /// Run an agent with streaming output and SQLite transcript logging
     fn runAgentStreaming(self: *AgentLoop, agent: []const u8, prompt: []const u8, issue_id: []const u8) !u8 {
         // Build argv to avoid shell quoting pitfalls
@@ -1858,10 +1550,6 @@ pub const AgentLoop = struct {
         // Instead, let the issue breakdown flow handle it
         if (exit_code == EXIT_CODE_TIMEOUT) return false;
 
-        // Manifest violation (125) is handled specially in the main loop with stricter prompts
-        // Don't retry via the generic retry mechanism
-        if (exit_code == EXIT_CODE_MANIFEST_VIOLATION) return false;
-
         // Other non-zero exit codes may indicate transient failures
         // Claude/Codex CLI tools return non-zero on API errors (rate limits, 5xx, network issues)
         return exit_code != 0;
@@ -2032,71 +1720,6 @@ pub const AgentLoop = struct {
             }
         }
     }
-
-    /// Log manifest instrumentation metrics (predicted vs actual files)
-    fn logManifestInstrumentation(self: *AgentLoop, compliance: ManifestComplianceResult) void {
-        const inst = compliance.instrumentation orelse return;
-
-        const predicted_count = inst.manifest_files_predicted.len;
-        const touched_count = inst.files_actually_touched.len;
-        const false_pos = inst.countFalsePositives();
-        const false_neg = inst.countFalseNegatives();
-
-        // Log summary metrics
-        self.logInfo("Manifest instrumentation: predicted={d}, touched={d}, false_positives={d}, false_negatives={d}", .{
-            predicted_count,
-            touched_count,
-            false_pos,
-            false_neg,
-        });
-
-        // Log accuracy if we have predictions
-        if (inst.computeAccuracy()) |accuracy| {
-            self.logInfo("Manifest accuracy: {d:.1}%", .{accuracy});
-        }
-
-        // In verbose mode, log the actual file lists
-        if (self.config.verbose) {
-            if (predicted_count > 0) {
-                self.logVerbose("Manifest predicted files:", .{});
-                for (inst.manifest_files_predicted) |f| {
-                    std.debug.print("    - {s}\n", .{f});
-                }
-            }
-            if (touched_count > 0) {
-                self.logVerbose("Files actually touched:", .{});
-                for (inst.files_actually_touched) |f| {
-                    std.debug.print("    - {s}\n", .{f});
-                }
-            }
-
-            // Log false positives (predicted but not touched)
-            if (false_pos > 0) {
-                self.logVerbose("False positives (predicted but not touched):", .{});
-                const fp_files = inst.getFalsePositives(self.allocator) catch return;
-                defer {
-                    for (fp_files) |f| self.allocator.free(f);
-                    if (fp_files.len > 0) self.allocator.free(fp_files);
-                }
-                for (fp_files) |f| {
-                    std.debug.print("    - {s}\n", .{f});
-                }
-            }
-
-            // Log false negatives (touched but not predicted)
-            if (false_neg > 0) {
-                self.logVerbose("False negatives (touched but not predicted):", .{});
-                const fn_files = inst.getFalseNegatives(self.allocator) catch return;
-                defer {
-                    for (fn_files) |f| self.allocator.free(f);
-                    if (fn_files.len > 0) self.allocator.free(fn_files);
-                }
-                for (fn_files) |f| {
-                    std.debug.print("    - {s}\n", .{f});
-                }
-            }
-        }
-    }
 };
 
 test "agent loop init" {
@@ -2151,19 +1774,9 @@ test "should not retry on timeout" {
     try std.testing.expect(!AgentLoop.shouldRetry(AgentLoop.EXIT_CODE_TIMEOUT));
 }
 
-test "should not retry on manifest violation" {
-    // Manifest violation (exit code 125) should NOT be retried via generic retry
-    // (it's handled specially with stricter prompts)
-    try std.testing.expect(!AgentLoop.shouldRetry(AgentLoop.EXIT_CODE_MANIFEST_VIOLATION));
-}
-
 test "timeout exit code is 124" {
     // Verify timeout exit code matches GNU timeout convention
     try std.testing.expectEqual(@as(u8, 124), AgentLoop.EXIT_CODE_TIMEOUT);
-}
-
-test "manifest violation exit code is 125" {
-    try std.testing.expectEqual(@as(u8, 125), AgentLoop.EXIT_CODE_MANIFEST_VIOLATION);
 }
 
 test "parse manifest line" {

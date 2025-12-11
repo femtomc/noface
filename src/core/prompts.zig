@@ -145,10 +145,22 @@ pub fn buildWorkerPrompt(
     project_name: []const u8,
     owned_files: []const u8,
     test_command: []const u8,
-    review_agent: []const u8,
     resuming: bool,
+    review_feedback: ?[]const u8,
 ) ![]const u8 {
     const resume_section = if (resuming) RESUME_CONTEXT else "";
+
+    // If we have review feedback, include it
+    var feedback_section: []const u8 = "";
+    var feedback_buf: [4096]u8 = undefined;
+    if (review_feedback) |feedback| {
+        feedback_section = std.fmt.bufPrint(&feedback_buf,
+            \\
+            \\REVIEWER FEEDBACK (address these issues):
+            \\{s}
+            \\
+        , .{feedback}) catch "";
+    }
 
     return std.fmt.allocPrint(allocator,
         \\You are a senior software engineer working autonomously on issue {s} in the {s} project.
@@ -158,7 +170,7 @@ pub fn buildWorkerPrompt(
         \\
         \\You are working in an ISOLATED jj workspace. Your changes won't conflict with other engineers.
         \\{s}
-        \\{s}
+        \\{s}{s}
         \\APPROACH:
         \\Before writing any code, take a moment to:
         \\1. Understand the issue fully - run `bd show {s}` and read carefully
@@ -173,20 +185,15 @@ pub fn buildWorkerPrompt(
         \\   - Add tests if the change is testable and tests don't exist
         \\4. Self-review your diff: `jj diff`
         \\   - Check for: debugging artifacts, commented code, style inconsistencies
-        \\5. Request review: `{s} review --uncommitted`
-        \\6. Address ALL feedback - re-run review until approved
-        \\7. Create marker: `touch .noface/codex-approved`
-        \\8. Commit with a clear message: `jj commit -m "<type>: <description>"`
-        \\   - Format: "<type>: <description>" (e.g., "fix: resolve null pointer in parser")
-        \\9. Close the issue: `bd close {s} --reason "Completed: <one-line summary>"`
         \\
         \\{s}
         \\CONSTRAINTS:
-        \\- Do NOT commit until review explicitly approves
+        \\- Do NOT commit - the merge agent will handle that
+        \\- Do NOT close the issue - the merge agent will handle that
         \\- Do NOT modify files outside your manifest (listed above)
         \\- Do NOT add dependencies without clear justification
         \\
-        \\When finished, output: ISSUE_COMPLETE
+        \\When implementation is complete and tests pass, output: READY_FOR_REVIEW
         \\If blocked for any reason, output: BLOCKED: <reason>
     , .{
         issue_id,
@@ -194,12 +201,113 @@ pub fn buildWorkerPrompt(
         owned_files,
         resume_section,
         JJ_KNOWLEDGE,
+        feedback_section,
         issue_id,
         issue_id,
         test_command,
-        review_agent,
-        issue_id,
         QUALITY_STANDARDS,
+    });
+}
+
+/// Build the reviewer prompt for workspace review
+pub fn buildReviewerPrompt(
+    allocator: std.mem.Allocator,
+    issue_id: []const u8,
+    project_name: []const u8,
+    test_command: []const u8,
+) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\You are a senior code reviewer examining changes for issue {s} in the {s} project.
+        \\
+        \\You are reviewing changes in a worker's isolated workspace.
+        \\
+        \\{s}
+        \\REVIEW PROCESS:
+        \\1. Understand the issue: `bd show {s}`
+        \\2. Review the changes: `jj diff`
+        \\3. Run tests: `{s}`
+        \\4. Check for:
+        \\   - Does the implementation correctly address the issue?
+        \\   - Are there any bugs, edge cases, or error handling issues?
+        \\   - Does the code follow existing patterns and style?
+        \\   - Are there any security concerns?
+        \\   - Is the code clear and maintainable?
+        \\
+        \\REVIEW STANDARDS:
+        \\- Focus on correctness and functionality, not style nitpicks
+        \\- Consider edge cases and error handling
+        \\- Check that tests exist and pass
+        \\- Verify no debugging artifacts or commented code remain
+        \\
+        \\OUTPUT:
+        \\If the changes are acceptable and tests pass:
+        \\  APPROVED
+        \\
+        \\If changes are needed, provide specific, actionable feedback:
+        \\  CHANGES_REQUESTED: <detailed feedback for the implementer>
+        \\
+        \\Be specific about what needs to change. The implementer will receive your feedback
+        \\and make corrections.
+    , .{
+        issue_id,
+        project_name,
+        JJ_KNOWLEDGE,
+        issue_id,
+        test_command,
+    });
+}
+
+/// Build the merge agent prompt for squashing workspace changes
+pub fn buildMergePrompt(
+    allocator: std.mem.Allocator,
+    issue_id: []const u8,
+    workspace_name: []const u8,
+    project_name: []const u8,
+) ![]const u8 {
+    return std.fmt.allocPrint(allocator,
+        \\You are responsible for merging approved changes for issue {s} in the {s} project.
+        \\
+        \\The changes have been reviewed and approved in workspace: {s}
+        \\You are running in the main working directory (root).
+        \\
+        \\{s}
+        \\MERGE PROCESS:
+        \\1. First, view the changes that will be merged:
+        \\   `jj log -r '{s}::@'` to see the workspace commits
+        \\   `jj diff -r '{s}'` to see the actual changes
+        \\
+        \\2. Squash the workspace changes into the current working copy:
+        \\   `jj squash --from '{s}' --into @`
+        \\
+        \\3. If there are conflicts:
+        \\   - Run `jj status` to see conflicted files
+        \\   - For each conflicted file, read it and resolve the conflict markers
+        \\   - Conflicts look like: <<<<<<< ======= >>>>>>>
+        \\   - Resolve by editing the file to combine both sides appropriately
+        \\
+        \\4. After resolving any conflicts, verify the build:
+        \\   `zig build test`
+        \\
+        \\5. Commit with a clear message:
+        \\   `jj commit -m "<type>: <description for {s}>"`
+        \\   Format: "<type>: <description>" (e.g., "fix: resolve null pointer in parser")
+        \\
+        \\6. Close the issue:
+        \\   `bd close {s} --reason "Completed: <one-line summary>"`
+        \\
+        \\OUTPUT:
+        \\When merge is complete and issue is closed: MERGE_COMPLETE
+        \\If merge fails and cannot be resolved: MERGE_FAILED: <reason>
+    , .{
+        issue_id,
+        project_name,
+        workspace_name,
+        JJ_KNOWLEDGE_EXTENDED,
+        workspace_name,
+        workspace_name,
+        workspace_name,
+        issue_id,
+        issue_id,
     });
 }
 
@@ -553,14 +661,14 @@ test "buildWorkerPrompt includes jj knowledge" {
         "test-project",
         "src/test.zig",
         "zig build test",
-        "codex",
         false,
+        null,
     );
     defer allocator.free(prompt);
 
     try std.testing.expect(std.mem.indexOf(u8, prompt, "jj status") != null);
     try std.testing.expect(std.mem.indexOf(u8, prompt, "jj diff") != null);
-    try std.testing.expect(std.mem.indexOf(u8, prompt, "jj commit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "READY_FOR_REVIEW") != null);
 }
 
 test "buildWorkerPrompt includes resume context when resuming" {
@@ -571,12 +679,29 @@ test "buildWorkerPrompt includes resume context when resuming" {
         "test-project",
         "src/test.zig",
         "zig build test",
-        "codex",
         true, // resuming
+        null,
     );
     defer allocator.free(prompt);
 
     try std.testing.expect(std.mem.indexOf(u8, prompt, "RESUMING PREVIOUS WORK") != null);
+}
+
+test "buildWorkerPrompt includes review feedback" {
+    const allocator = std.testing.allocator;
+    const prompt = try buildWorkerPrompt(
+        allocator,
+        "test-issue",
+        "test-project",
+        "src/test.zig",
+        "zig build test",
+        false,
+        "Please fix the null pointer error on line 42",
+    );
+    defer allocator.free(prompt);
+
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "REVIEWER FEEDBACK") != null);
+    try std.testing.expect(std.mem.indexOf(u8, prompt, "null pointer") != null);
 }
 
 test "buildImplementationPrompt includes jj knowledge" {

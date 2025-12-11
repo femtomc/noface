@@ -160,7 +160,7 @@ pub const Config = struct {
     agent_timeout_seconds: u32 = 900,  // 15 minutes - complex issues need time
 
     /// Number of parallel workers for batch execution (1-8)
-    num_workers: u32 = 3,
+    num_workers: u32 = 5,
 
     /// Output format
     output_format: OutputFormat = .text,
