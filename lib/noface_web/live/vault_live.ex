@@ -10,12 +10,15 @@ defmodule NofaceWeb.VaultLive do
   alias Noface.Core.Config
 
   @impl true
-  def mount(params, _session, socket) do
+  def mount(_params, _session, socket) do
     config = load_config()
 
     vault =
-      params["vault"] || Application.get_env(:noface_elixir, :monowiki_vault) ||
+      Application.get_env(:noface_elixir, :monowiki_vault) ||
         config.monowiki_vault
+
+    # Only use vault if it's a valid, existing directory
+    vault = if vault && File.dir?(vault), do: Path.expand(vault), else: nil
 
     {:ok,
      socket
@@ -30,15 +33,31 @@ defmodule NofaceWeb.VaultLive do
 
   @impl true
   def handle_event("select", %{"slug" => slug}, socket) do
-    {:noreply,
-     assign(socket, selected: slug, content: read_note(socket.assigns.vault, slug), status: nil)}
+    case validate_slug(slug) do
+      {:ok, safe_slug} ->
+        {:noreply,
+         assign(socket,
+           selected: safe_slug,
+           content: read_note(socket.assigns.vault, safe_slug),
+           status: nil
+         )}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, status: {:error, reason})}
+    end
   end
 
   def handle_event("save", %{"slug" => slug, "content" => content}, socket) do
-    case write_note(socket.assigns.vault, slug, content) do
-      :ok ->
-        {:noreply,
-         assign(socket, status: {:ok, "Saved #{slug}"}, notes: list_notes(socket.assigns.vault))}
+    with {:ok, safe_slug} <- validate_slug(slug),
+         :ok <- write_note(socket.assigns.vault, safe_slug, content) do
+      {:noreply,
+       assign(socket,
+         status: {:ok, "Saved #{safe_slug}"},
+         notes: list_notes(socket.assigns.vault)
+       )}
+    else
+      {:error, reason} when is_binary(reason) ->
+        {:noreply, assign(socket, status: {:error, reason})}
 
       {:error, reason} ->
         {:noreply, assign(socket, status: {:error, inspect(reason)})}
@@ -48,23 +67,23 @@ defmodule NofaceWeb.VaultLive do
   def handle_event("new", %{"slug" => slug}, socket) do
     slug = String.trim(slug || "")
 
-    cond do
-      slug == "" ->
-        {:noreply, assign(socket, status: {:error, "Slug required"})}
+    with {:ok, safe_slug} <- validate_slug(slug),
+         false <- note_exists?(socket.assigns.vault, safe_slug) do
+      :ok = write_note(socket.assigns.vault, safe_slug, "# #{safe_slug}\n")
 
-      note_exists?(socket.assigns.vault, slug) ->
-        {:noreply, assign(socket, status: {:error, "Already exists"})}
+      {:noreply,
+       assign(socket,
+         notes: list_notes(socket.assigns.vault),
+         selected: safe_slug,
+         content: read_note(socket.assigns.vault, safe_slug),
+         status: {:ok, "Created #{safe_slug}"}
+       )}
+    else
+      {:error, reason} ->
+        {:noreply, assign(socket, status: {:error, reason})}
 
       true ->
-        :ok = write_note(socket.assigns.vault, slug, "# #{slug}\n")
-
-        {:noreply,
-         assign(socket,
-           notes: list_notes(socket.assigns.vault),
-           selected: slug,
-           content: read_note(socket.assigns.vault, slug),
-           status: {:ok, "Created #{slug}"}
-         )}
+        {:noreply, assign(socket, status: {:error, "Already exists"})}
     end
   end
 
@@ -75,16 +94,21 @@ defmodule NofaceWeb.VaultLive do
       ) do
     issue_id = String.trim(issue_id || "")
     note_text = String.trim(note || "")
-    content = read_note(socket.assigns.vault, slug) || ""
 
-    addition = "\n\n## Issues\n- #{issue_id} #{note_text}\n"
+    with {:ok, safe_slug} <- validate_slug(slug) do
+      content = read_note(socket.assigns.vault, safe_slug) || ""
+      addition = "\n\n## Issues\n- #{issue_id} #{note_text}\n"
 
-    case write_note(socket.assigns.vault, slug, content <> addition) do
-      :ok ->
-        {:noreply, assign(socket, content: content <> addition, status: {:ok, "Linked issue"})}
+      case write_note(socket.assigns.vault, safe_slug, content <> addition) do
+        :ok ->
+          {:noreply, assign(socket, content: content <> addition, status: {:ok, "Linked issue"})}
 
+        {:error, reason} ->
+          {:noreply, assign(socket, status: {:error, inspect(reason)})}
+      end
+    else
       {:error, reason} ->
-        {:noreply, assign(socket, status: {:error, inspect(reason)})}
+        {:noreply, assign(socket, status: {:error, reason})}
     end
   end
 
@@ -157,6 +181,38 @@ defmodule NofaceWeb.VaultLive do
     end
   end
 
+  # Validates a slug is safe: not empty, no path traversal, no absolute paths
+  defp validate_slug(nil), do: {:error, "Slug required"}
+  defp validate_slug(""), do: {:error, "Slug required"}
+
+  defp validate_slug(slug) do
+    slug = String.trim(slug)
+
+    cond do
+      slug == "" ->
+        {:error, "Slug required"}
+
+      String.contains?(slug, "..") ->
+        {:error, "Invalid slug"}
+
+      String.starts_with?(slug, "/") ->
+        {:error, "Invalid slug"}
+
+      String.contains?(slug, "\0") ->
+        {:error, "Invalid slug"}
+
+      true ->
+        {:ok, slug}
+    end
+  end
+
+  # Validates the resolved path is within the vault directory
+  defp safe_path?(vault, path) do
+    expanded_vault = Path.expand(vault)
+    expanded_path = Path.expand(path)
+    String.starts_with?(expanded_path, expanded_vault <> "/")
+  end
+
   defp list_notes(nil), do: []
 
   defp list_notes(vault) do
@@ -178,9 +234,13 @@ defmodule NofaceWeb.VaultLive do
   defp read_note(vault, slug) do
     path = Path.join(vault, ensure_extension(slug))
 
-    case File.read(path) do
-      {:ok, content} -> content
-      _ -> nil
+    if safe_path?(vault, path) do
+      case File.read(path) do
+        {:ok, content} -> content
+        _ -> nil
+      end
+    else
+      nil
     end
   end
 
@@ -188,11 +248,20 @@ defmodule NofaceWeb.VaultLive do
 
   defp write_note(vault, slug, content) do
     path = Path.join(vault, ensure_extension(slug))
-    File.write(path, content)
+
+    if safe_path?(vault, path) do
+      File.write(path, content)
+    else
+      {:error, "Path escapes vault"}
+    end
   end
 
   defp note_exists?(nil, _slug), do: false
-  defp note_exists?(vault, slug), do: File.exists?(Path.join(vault, ensure_extension(slug)))
+
+  defp note_exists?(vault, slug) do
+    path = Path.join(vault, ensure_extension(slug))
+    safe_path?(vault, path) && File.exists?(path)
+  end
 
   defp ensure_extension(slug) do
     if String.ends_with?(slug, [".md", ".markdown"]) do

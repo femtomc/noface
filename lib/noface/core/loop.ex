@@ -344,15 +344,7 @@ defmodule Noface.Core.Loop do
             Logger.warning("[LOOP] Failed to load beads issues: #{inspect(reason)}")
         end
 
-        # Create initial batch from pending issues
-        case State.create_batch_from_pending(config.batch_size) do
-          {:ok, batch_id} when is_integer(batch_id) ->
-            Logger.info("[LOOP] Created initial batch #{batch_id}")
-
-          {:ok, nil} ->
-            Logger.debug("[LOOP] No pending issues to batch")
-        end
-
+        # Initialize worker pool (greedy scheduling dispatches issues each tick)
         WorkerPool.init_pool(config)
         :ok
 
@@ -368,6 +360,7 @@ defmodule Noface.Core.Loop do
   # Private functions
 
   # Single iteration of the loop (non-blocking, called from :tick)
+  # Uses greedy scheduling: while workers are available, dispatch the next ready issue
   defp run_iteration(%LoopState{config: config} = state) do
     iteration = state.iteration_count + 1
 
@@ -376,70 +369,48 @@ defmodule Noface.Core.Loop do
     # Check if planner pass needed
     state = maybe_run_planner(state, iteration)
 
-    # Get next batch to execute
-    case State.get_next_pending_batch() do
-      nil ->
-        # No batches - try to create one from pending issues
-        case State.create_batch_from_pending(config.batch_size) do
-          {:ok, batch_id} when is_integer(batch_id) ->
-            Logger.info("[LOOP] Created batch #{batch_id} from pending issues")
-            # Process the new batch in the same tick (no iteration increment)
-            process_batch(state, State.get_next_pending_batch(), iteration)
+    # Collect any completed work from previous iterations
+    completed = WorkerPool.collect_completed()
 
-          {:ok, nil} ->
-            # No pending issues - check if we should load from beads
-            case State.load_beads_issues() do
-              {:ok, count} when count > 0 ->
-                Logger.info("[LOOP] Loaded #{count} new issues from beads")
+    if length(completed) > 0 do
+      successes = Enum.count(completed, & &1.success)
 
-                # Try to batch the newly loaded issues
-                case State.create_batch_from_pending(config.batch_size) do
-                  {:ok, batch_id} when is_integer(batch_id) ->
-                    Logger.info("[LOOP] Created batch #{batch_id} from loaded issues")
-                    process_batch(state, State.get_next_pending_batch(), iteration)
-
-                  {:ok, nil} ->
-                    # No issues to batch
-                    finalize_iteration(state, iteration, nil)
-                end
-
-              _ ->
-                # No new issues - run planner if event-driven mode
-                if config.planner_mode == :event_driven and config.enable_planner do
-                  Logger.info("[LOOP] No ready batches, running planner (event-driven)")
-                  run_planner_pass(config)
-                end
-
-                finalize_iteration(state, iteration, nil)
-            end
-        end
-
-      batch ->
-        process_batch(state, batch, iteration)
+      Logger.info(
+        "[LOOP] Collected #{length(completed)} completed issues (#{successes} succeeded)"
+      )
     end
-  end
 
-  # Process a batch and finalize the iteration
-  defp process_batch(state, nil, iteration) do
-    # No batch to process (shouldn't happen, but handle gracefully)
-    finalize_iteration(state, iteration, nil)
-  end
+    # Try to load issues from beads if we haven't recently
+    case State.load_beads_issues() do
+      {:ok, count} when count > 0 ->
+        Logger.info("[LOOP] Loaded #{count} new issues from beads")
 
-  defp process_batch(%LoopState{config: config} = state, batch, iteration) do
+      _ ->
+        :ok
+    end
+
+    # Greedy scheduling: dispatch issues to available workers
+    dispatched = dispatch_ready_issues(config)
+
     # Track current work
-    state = %{state | current_work: %{type: :batch, batch: batch}}
+    in_flight = State.get_in_flight_issues()
 
-    # Execute the batch
-    case WorkerPool.execute_batch(batch) do
-      {:ok, successful} ->
-        Logger.info("[LOOP] Batch complete: #{successful} succeeded")
+    current_work =
+      if length(in_flight) > 0 do
+        %{type: :issues, issue_ids: in_flight, dispatched_this_tick: dispatched}
+      else
+        nil
+      end
 
-      {:error, reason} ->
-        Logger.error("[LOOP] Batch execution failed: #{inspect(reason)}")
+    state = %{state | current_work: current_work}
+
+    # If no work was dispatched and no work is in-flight, run event-driven planner
+    if dispatched == 0 and length(in_flight) == 0 do
+      if config.planner_mode == :event_driven and config.enable_planner do
+        Logger.info("[LOOP] No ready work, running planner (event-driven)")
+        run_planner_pass(config)
+      end
     end
-
-    # Save state after batch
-    State.save()
 
     # Maybe run quality pass
     state = maybe_run_quality(state, iteration)
@@ -447,8 +418,49 @@ defmodule Noface.Core.Loop do
     # Sync to external tracker if enabled
     maybe_sync_issues(config)
 
-    finalize_iteration(state, iteration, nil)
+    finalize_iteration(state, iteration, current_work)
   end
+
+  # Dispatch ready issues to available workers (greedy scheduling)
+  # Returns count of issues dispatched this tick
+  defp dispatch_ready_issues(_config) do
+    dispatch_ready_issues_loop(0)
+  end
+
+  defp dispatch_ready_issues_loop(dispatched) do
+    available = WorkerPool.available_worker_count()
+
+    if available > 0 do
+      case State.next_ready_issue() do
+        nil ->
+          # No ready issues
+          dispatched
+
+        issue ->
+          case WorkerPool.dispatch_issue(issue.id) do
+            {:ok, _ref} ->
+              Logger.info(
+                "[LOOP] Dispatched issue #{issue.id} (priority: P#{extract_priority(issue)})"
+              )
+
+              dispatch_ready_issues_loop(dispatched + 1)
+
+            {:error, reason} ->
+              Logger.warning("[LOOP] Failed to dispatch #{issue.id}: #{inspect(reason)}")
+              dispatched
+          end
+      end
+    else
+      dispatched
+    end
+  end
+
+  # Extract priority from issue for logging
+  defp extract_priority(%{content: content}) when is_map(content) do
+    Map.get(content, "priority") || Map.get(content, :priority) || "?"
+  end
+
+  defp extract_priority(_), do: "?"
 
   # Finalize the iteration - increment counter and return updated state
   defp finalize_iteration(state, iteration, current_work) do
@@ -620,11 +632,18 @@ defmodule Noface.Core.Loop do
   end
 
   defp broadcast_loop_status(%LoopState{} = state) do
+    # Get in-flight issues for status
+    in_flight = State.get_in_flight_issues()
+    available_workers = WorkerPool.available_worker_count()
+
     payload = %{
       running: state.status == :running,
       paused: state.status == :paused,
       iteration: state.iteration_count,
-      current_work: state.current_work
+      current_work: state.current_work,
+      in_flight_issues: in_flight,
+      in_flight_count: length(in_flight),
+      available_workers: available_workers
     }
 
     Phoenix.PubSub.broadcast(Noface.PubSub, "loop", {:loop, payload})

@@ -233,6 +233,30 @@ defmodule Noface.Core.State do
     GenServer.call(__MODULE__, {:create_batch_from_pending, max_size})
   end
 
+  @doc """
+  Get the next ready issue for greedy scheduling.
+
+  Returns the highest-priority pending issue that:
+  1. Has status :pending
+  2. Does not conflict with any in-flight worker's manifest
+  3. Has all beads dependencies satisfied (checked via `bd ready`)
+
+  Priority ordering: P0 > P1 > P2 (lower number = higher priority).
+  Returns nil if no ready issue is available.
+  """
+  @spec next_ready_issue(keyword()) :: IssueState.t() | nil
+  def next_ready_issue(opts \\ []) do
+    GenServer.call(__MODULE__, {:next_ready_issue, opts})
+  end
+
+  @doc """
+  Get all in-flight issue IDs (issues currently being worked on by workers).
+  """
+  @spec get_in_flight_issues() :: [String.t()]
+  def get_in_flight_issues do
+    GenServer.call(__MODULE__, :get_in_flight_issues)
+  end
+
   # GenServer callbacks
 
   @impl true
@@ -672,6 +696,60 @@ defmodule Noface.Core.State do
     end
   end
 
+  @impl true
+  def handle_call({:next_ready_issue, opts}, _from, state) do
+    # Get all pending issues from state
+    issue_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
+
+    pending_issues =
+      issue_ids
+      |> Enum.map(fn id -> CubDB.get(state.db, {:issue, id}) end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.filter(fn issue -> issue.status == :pending end)
+
+    # Get in-flight issues (issues currently being worked on)
+    in_flight_ids = get_in_flight_issue_ids(state.db)
+
+    # Get ready issue IDs from beads (respects dependencies)
+    ready_ids =
+      if Keyword.get(opts, :skip_beads_check, false) do
+        # Skip beads check for testing - treat all pending as ready
+        :all_pending
+      else
+        get_beads_ready_ids()
+      end
+
+    # Filter to issues that are both pending and ready in beads
+    # :all_pending means all pending issues are considered ready
+    ready_pending_issues =
+      case ready_ids do
+        :all_pending ->
+          pending_issues
+
+        %MapSet{} = ids ->
+          Enum.filter(pending_issues, fn issue -> MapSet.member?(ids, issue.id) end)
+      end
+
+    # Sort by priority (lower number = higher priority)
+    sorted_issues =
+      ready_pending_issues
+      |> Enum.sort_by(&extract_priority/1)
+
+    # Find first issue that doesn't conflict with in-flight work
+    result =
+      Enum.find(sorted_issues, fn issue ->
+        not conflicts_with_in_flight?(state.db, issue, in_flight_ids)
+      end)
+
+    {:reply, result, state}
+  end
+
+  @impl true
+  def handle_call(:get_in_flight_issues, _from, state) do
+    in_flight_ids = get_in_flight_issue_ids(state.db)
+    {:reply, in_flight_ids, state}
+  end
+
   # Private functions
 
   defp read_beads_issues do
@@ -787,4 +865,88 @@ defmodule Noface.Core.State do
   end
 
   defp normalize_priority(_), do: nil
+
+  # Get issue IDs currently being worked on by active workers
+  defp get_in_flight_issue_ids(db) do
+    workers = CubDB.get(db, :workers) || []
+
+    workers
+    |> Enum.filter(fn w -> w.status in [:starting, :running] and w.current_issue != nil end)
+    |> Enum.map(fn w -> w.current_issue end)
+  end
+
+  # Get ready issue IDs from beads (issues with no unsatisfied dependencies)
+  defp get_beads_ready_ids do
+    # Use --json format and extract IDs, with limit high enough for typical workloads
+    case System.cmd("bd", ["ready", "--json", "--limit", "100"], stderr_to_stdout: true) do
+      {output, 0} ->
+        case Jason.decode(output) do
+          {:ok, issues} when is_list(issues) ->
+            issues
+            |> Enum.map(fn issue -> Map.get(issue, "id") end)
+            |> Enum.reject(&is_nil/1)
+            |> MapSet.new()
+
+          _ ->
+            # If JSON parsing fails, treat all pending issues as ready
+            # This is safe because dependency checking is a courtesy, not a hard requirement
+            :all_pending
+        end
+
+      _ ->
+        # If bd command fails (not installed, daemon not running, etc.),
+        # treat all pending issues as ready to avoid blocking the scheduler
+        Logger.debug("[STATE] bd ready command failed, treating all pending issues as ready")
+        :all_pending
+    end
+  end
+
+  # Extract priority from issue (lower = higher priority)
+  # P0 -> 0, P1 -> 1, P2 -> 2, etc. Missing priority defaults to 99
+  defp extract_priority(%IssueState{content: content}) when is_map(content) do
+    priority = Map.get(content, "priority") || Map.get(content, :priority)
+    normalize_priority_value(priority)
+  end
+
+  defp extract_priority(_), do: 99
+
+  defp normalize_priority_value(nil), do: 99
+  defp normalize_priority_value(p) when is_integer(p), do: p
+
+  defp normalize_priority_value(p) when is_binary(p) do
+    case Integer.parse(p) do
+      {int, _} -> int
+      :error -> 99
+    end
+  end
+
+  defp normalize_priority_value(_), do: 99
+
+  # Check if an issue conflicts with any in-flight issue's manifest
+  defp conflicts_with_in_flight?(db, issue, in_flight_ids) do
+    Enum.any?(in_flight_ids, fn in_flight_id ->
+      issues_conflict_internal?(db, issue.id, in_flight_id)
+    end)
+  end
+
+  # Internal conflict check (doesn't go through GenServer)
+  defp issues_conflict_internal?(db, issue_a_id, issue_b_id) do
+    issue_a = CubDB.get(db, {:issue, issue_a_id})
+    issue_b = CubDB.get(db, {:issue, issue_b_id})
+
+    case {issue_a, issue_b} do
+      {%{manifest: %Manifest{} = a}, %{manifest: %Manifest{} = b}} ->
+        Enum.any?(a.primary_files, fn file_a ->
+          base_a = extract_base_file(file_a)
+
+          Enum.any?(b.primary_files, fn file_b ->
+            extract_base_file(file_b) == base_a
+          end)
+        end)
+
+      _ ->
+        # No conflict if either doesn't have a manifest
+        false
+    end
+  end
 end

@@ -66,6 +66,32 @@ defmodule Noface.Core.WorkerPool do
     GenServer.call(__MODULE__, :interrupt_all)
   end
 
+  @doc "Get count of available (idle) workers."
+  @spec available_worker_count() :: non_neg_integer()
+  def available_worker_count do
+    GenServer.call(__MODULE__, :available_worker_count)
+  end
+
+  @doc """
+  Dispatch a single issue to an available worker.
+  Returns {:ok, task_ref} if dispatched, {:error, :no_workers} if none available.
+  The task runs asynchronously - use collect_completed/0 to get results.
+  """
+  @spec dispatch_issue(String.t()) ::
+          {:ok, reference()} | {:error, :no_workers | :not_initialized}
+  def dispatch_issue(issue_id) do
+    GenServer.call(__MODULE__, {:dispatch_issue, issue_id})
+  end
+
+  @doc """
+  Collect completed task results without blocking.
+  Returns list of completed results and removes them from the pool state.
+  """
+  @spec collect_completed() :: [WorkerResult.t()]
+  def collect_completed do
+    GenServer.call(__MODULE__, :collect_completed)
+  end
+
   # GenServer callbacks
 
   @impl true
@@ -190,7 +216,138 @@ defmodule Noface.Core.WorkerPool do
     {:reply, :ok, %{state | active_tasks: %{}}}
   end
 
+  @impl true
+  def handle_call(:available_worker_count, _from, state) do
+    config = state.config
+    max_workers = if config, do: config.num_workers || 5, else: 5
+    active_count = map_size(state.active_tasks)
+    available = max(0, max_workers - active_count)
+    {:reply, available, state}
+  end
+
+  @impl true
+  def handle_call({:dispatch_issue, _issue_id}, _from, %{config: nil} = state) do
+    {:reply, {:error, :not_initialized}, state}
+  end
+
+  def handle_call({:dispatch_issue, issue_id}, _from, state) do
+    config = state.config
+    max_workers = config.num_workers || 5
+    active_count = map_size(state.active_tasks)
+
+    if active_count >= max_workers do
+      {:reply, {:error, :no_workers}, state}
+    else
+      # Assign worker ID based on next available slot
+      worker_id = find_available_worker_id(state.active_tasks, max_workers)
+      timeout = (config.agent_timeout_seconds || 900) * 1000
+
+      # Mark issue as running and assign worker in State
+      # This updates worker records so get_in_flight_issues returns correct data
+      State.update_issue(issue_id, :running)
+      State.assign_worker(worker_id, issue_id)
+
+      # Emit telemetry for issue dispatch
+      :telemetry.execute(
+        [:noface, :worker_pool, :issue, :dispatch],
+        %{},
+        %{issue_id: issue_id, worker_id: worker_id}
+      )
+
+      Logger.info("[POOL] Dispatching issue #{issue_id} to worker #{worker_id}")
+
+      # Start async task
+      task =
+        Task.Supervisor.async_nolink(
+          state.task_supervisor,
+          fn -> run_worker(issue_id, worker_id, config) end,
+          timeout: timeout
+        )
+
+      new_active =
+        Map.put(state.active_tasks, task.ref, %{
+          task: task,
+          issue_id: issue_id,
+          worker_id: worker_id
+        })
+
+      {:reply, {:ok, task.ref}, %{state | active_tasks: new_active}}
+    end
+  end
+
+  @impl true
+  def handle_call(:collect_completed, _from, state) do
+    {:reply, state.completed, %{state | completed: []}}
+  end
+
+  @impl true
+  def handle_info({ref, result}, state) when is_reference(ref) do
+    # Task completed successfully
+    Process.demonitor(ref, [:flush])
+
+    case Map.pop(state.active_tasks, ref) do
+      {%{issue_id: issue_id, worker_id: worker_id}, new_active} ->
+        Logger.info(
+          "[POOL] Issue #{issue_id} completed: #{if result.success, do: "success", else: "failed"}"
+        )
+
+        # Emit telemetry
+        :telemetry.execute(
+          [:noface, :worker_pool, :issue, :complete],
+          %{duration_ms: result.duration_ms, success: result.success},
+          %{issue_id: issue_id, worker_id: result.worker_id}
+        )
+
+        # Update issue and worker status
+        # Note: run_implementation_cycle may have already marked issue completed,
+        # but this is idempotent and ensures consistency
+        if result.success do
+          State.mark_issue_completed(issue_id)
+        else
+          State.update_issue(issue_id, :failed)
+        end
+
+        State.complete_worker(worker_id, result.success)
+
+        {:noreply, %{state | active_tasks: new_active, completed: [result | state.completed]}}
+
+      {nil, _} ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+    # Task failed or was killed
+    case Map.pop(state.active_tasks, ref) do
+      {%{issue_id: issue_id, worker_id: worker_id}, new_active} ->
+        Logger.warning(
+          "[POOL] Worker #{worker_id} crashed for issue #{issue_id}: #{inspect(reason)}"
+        )
+
+        result = %WorkerResult{
+          issue_id: issue_id,
+          worker_id: worker_id,
+          success: false,
+          exit_code: -1,
+          output: "Worker crashed: #{inspect(reason)}"
+        }
+
+        State.update_issue(issue_id, :failed)
+        State.complete_worker(worker_id, false)
+
+        {:noreply, %{state | active_tasks: new_active, completed: [result | state.completed]}}
+
+      {nil, _} ->
+        {:noreply, state}
+    end
+  end
+
   # Private functions
+
+  defp find_available_worker_id(active_tasks, max_workers) do
+    used_ids = active_tasks |> Map.values() |> Enum.map(& &1.worker_id) |> MapSet.new()
+    Enum.find(0..(max_workers - 1), fn id -> not MapSet.member?(used_ids, id) end) || 0
+  end
 
   defp run_worker(issue_id, worker_id, config) do
     start_time = System.monotonic_time(:millisecond)

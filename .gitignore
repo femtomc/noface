@@ -35,3 +35,13 @@ Thumbs.db
 # Frontend assets
 assets/node_modules/
 assets/package-lock.json
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json
+.mcp.json
+
+# Expert/LSP runtime artifacts
+.expert/
+
+# Beads backups
+.beads.backup-*/
