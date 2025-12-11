@@ -7,6 +7,7 @@ const std = @import("std");
 const state_mod = @import("state.zig");
 const config_mod = @import("config.zig");
 const prompts = @import("prompts.zig");
+const merge_agent = @import("merge_agent.zig");
 const process = @import("../util/process.zig");
 const signals = @import("../util/signals.zig");
 const transcript_mod = @import("../util/transcript.zig");
@@ -587,7 +588,38 @@ pub const WorkerPool = struct {
                                 if (merge_success) {
                                     logInfo("Worker {d} changes merged from workspace", .{worker_id});
                                 } else {
-                                    logWarn("Worker {d} merge conflict, changes remain in workspace: {s}", .{ worker_id, workspace_path });
+                                    // Attempt merge agent resolution
+                                    logInfo("Worker {d} conflict detected, invoking merge agent...", .{worker_id});
+
+                                    const merge_config = merge_agent.MergeAgentConfig{
+                                        .impl_agent = self.config.impl_agent,
+                                        .build_cmd = if (self.config.build_command.len > 0) self.config.build_command else null,
+                                        .test_cmd = if (self.config.test_command.len > 0) self.config.test_command else null,
+                                        .dry_run = self.config.dry_run,
+                                    };
+
+                                    var merge_result = merge_agent.resolveConflicts(
+                                        self.allocator,
+                                        merge_config,
+                                        worker.issue_id,
+                                    ) catch |err| {
+                                        logWarn("Merge agent error: {}", .{err});
+                                        continue; // Leave merge_success as false
+                                    };
+                                    defer merge_result.deinit();
+
+                                    if (merge_result.success) {
+                                        logInfo("Merge agent resolved {d} file(s)", .{merge_result.resolved_files.len});
+                                        merge_success = true;
+                                    } else {
+                                        logWarn("Worker {d} merge conflict unresolved, {d} file(s) remain", .{
+                                            worker_id,
+                                            merge_result.unresolved_files.len,
+                                        });
+                                        if (merge_result.error_message) |msg| {
+                                            logWarn("Merge error: {s}", .{msg});
+                                        }
+                                    }
                                 }
                             }
                         }

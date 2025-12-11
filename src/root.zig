@@ -11,6 +11,7 @@ pub const loop = @import("core/loop.zig");
 pub const state = @import("core/state.zig");
 pub const worker_pool = @import("core/worker_pool.zig");
 pub const prompts = @import("core/prompts.zig");
+pub const merge_agent = @import("core/merge_agent.zig");
 
 // VCS modules
 pub const jj = @import("vcs/jj.zig");
@@ -52,6 +53,9 @@ pub const IssueStatus = state.IssueStatus;
 pub const WorkerPool = worker_pool.WorkerPool;
 pub const TranscriptDb = transcript.TranscriptDb;
 pub const JjRepo = jj.JjRepo;
+pub const MergeAgent = merge_agent;
+pub const MergeResult = merge_agent.MergeResult;
+pub const MergeAgentConfig = merge_agent.MergeAgentConfig;
 
 test {
     std.testing.refAllDecls(@This());
