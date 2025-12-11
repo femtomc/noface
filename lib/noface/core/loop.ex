@@ -116,6 +116,32 @@ defmodule Noface.Core.Loop do
     GenServer.call(__MODULE__, {:external_message, message})
   end
 
+  @doc """
+  Run exactly one iteration, then pause.
+  Useful for step-wise debugging.
+  """
+  @spec step() :: {:ok, map()} | {:error, :not_started}
+  def step do
+    GenServer.call(__MODULE__, :step, :infinity)
+  end
+
+  @doc """
+  Get the full internal loop state for inspection.
+  """
+  @spec get_loop_state() :: LoopState.t()
+  def get_loop_state do
+    GenServer.call(__MODULE__, :get_loop_state)
+  end
+
+  @doc """
+  Start the loop in paused mode (for step-wise debugging).
+  Call step() to advance one iteration at a time.
+  """
+  @spec start_paused(Config.t()) :: :ok | {:error, term()}
+  def start_paused(config) do
+    GenServer.call(__MODULE__, {:start_paused, config}, :infinity)
+  end
+
   @doc "Legacy: run synchronously (blocks until stopped)."
   @spec run(Config.t()) :: :ok | {:error, term()}
   def run(config) do
@@ -222,6 +248,43 @@ defmodule Noface.Core.Loop do
   def handle_call({:external_message, message}, _from, state) do
     Logger.debug("[LOOP] Received external message: #{inspect(message)}")
     {:reply, :ok, state}
+  end
+
+  def handle_call(:step, _from, %{config: nil} = state) do
+    {:reply, {:error, :not_started}, state}
+  end
+
+  def handle_call(:step, _from, %{config: config} = state) when config != nil do
+    Logger.info("[LOOP] Stepping one iteration")
+    new_state = run_iteration(state)
+    # Return to paused after step
+    new_state = %{new_state | status: :paused}
+
+    # Return a summary of what happened
+    summary = %{
+      iteration: new_state.iteration_count,
+      current_work: new_state.current_work,
+      status: new_state.status
+    }
+
+    {:reply, {:ok, summary}, new_state}
+  end
+
+  def handle_call(:get_loop_state, _from, state) do
+    {:reply, state, state}
+  end
+
+  def handle_call({:start_paused, config}, _from, state) do
+    Logger.info("[LOOP] Starting noface orchestrator in PAUSED mode for #{config.project_name}")
+
+    case initialize_loop(config) do
+      :ok ->
+        new_state = %{state | config: config, status: :paused}
+        {:reply, :ok, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
   end
 
   @impl true
