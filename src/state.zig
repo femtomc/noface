@@ -213,14 +213,11 @@ pub const WorkerState = struct {
     current_issue: ?[]const u8 = null,
     process_pid: ?i32 = null,
     started_at: ?i64 = null,
-    /// File path this worker is waiting on (only valid when status == .waiting)
-    blocked_on_file: ?[]const u8 = null,
 
-    pub const Status = enum { idle, starting, running, completed, failed, timeout, waiting };
+    pub const Status = enum { idle, starting, running, completed, failed, timeout };
 
     pub fn deinit(self: *WorkerState, allocator: std.mem.Allocator) void {
         if (self.current_issue) |issue| allocator.free(issue);
-        if (self.blocked_on_file) |file| allocator.free(file);
     }
 
     pub fn isAvailable(self: WorkerState) bool {
@@ -246,19 +243,6 @@ pub const Batch = struct {
     }
 };
 
-/// Lock table entry
-pub const LockEntry = struct {
-    file: []const u8,
-    issue_id: []const u8,
-    worker_id: u32,
-    acquired_at: i64,
-
-    pub fn deinit(self: *LockEntry, allocator: std.mem.Allocator) void {
-        allocator.free(self.file);
-        allocator.free(self.issue_id);
-    }
-};
-
 /// Main orchestrator state
 pub const OrchestratorState = struct {
     allocator: std.mem.Allocator,
@@ -278,9 +262,6 @@ pub const OrchestratorState = struct {
     workers: [MAX_WORKERS]WorkerState = undefined,
     num_workers: u32 = 3, // Default to 3 parallel workers
 
-    // Lock table (keyed by file path)
-    locks: std.StringHashMap(LockEntry),
-
     // Counters
     total_iterations: u32 = 0,
     successful_completions: u32 = 0,
@@ -290,7 +271,6 @@ pub const OrchestratorState = struct {
         var state = OrchestratorState{
             .allocator = allocator,
             .issues = std.StringHashMap(IssueState).init(allocator),
-            .locks = std.StringHashMap(LockEntry).init(allocator),
             .pending_batches = .{},
         };
 
@@ -313,14 +293,6 @@ pub const OrchestratorState = struct {
             issue.deinit(self.allocator);
         }
         self.issues.deinit();
-
-        // Free locks
-        var lock_it = self.locks.iterator();
-        while (lock_it.next()) |entry| {
-            var lock = entry.value_ptr.*;
-            lock.deinit(self.allocator);
-        }
-        self.locks.deinit();
 
         // Free current batch
         if (self.current_batch) |*batch| {
@@ -365,10 +337,7 @@ pub const OrchestratorState = struct {
         // Parse JSON state
         try state.parseJson(content);
 
-        logInfo("Loaded state: {d} issues, {d} locks", .{
-            state.issues.count(),
-            state.locks.count(),
-        });
+        logInfo("Loaded state: {d} issues", .{state.issues.count()});
 
         return state;
     }
@@ -509,26 +478,6 @@ pub const OrchestratorState = struct {
         }
         try out.appendSlice(self.allocator, "\n  },\n");
 
-        // Locks
-        try out.appendSlice(self.allocator, "  \"locks\": {\n");
-        var first_lock = true;
-        var lock_it = self.locks.iterator();
-        while (lock_it.next()) |entry| {
-            if (!first_lock) try out.appendSlice(self.allocator, ",\n");
-            first_lock = false;
-            const lock = entry.value_ptr.*;
-            try out.appendSlice(self.allocator, "    \"");
-            try out.appendSlice(self.allocator, lock.file);
-            try out.appendSlice(self.allocator, "\": {");
-            try appendJsonStringField(self.allocator, out, "\"issue_id\"", lock.issue_id);
-            try out.appendSlice(self.allocator, ", ");
-            try appendJsonField(self.allocator, out, "\"worker_id\"", lock.worker_id);
-            try out.appendSlice(self.allocator, ", ");
-            try appendJsonField(self.allocator, out, "\"acquired_at\"", lock.acquired_at);
-            try out.appendSlice(self.allocator, "}");
-        }
-        try out.appendSlice(self.allocator, "\n  },\n");
-
         // Current batch
         if (self.current_batch) |batch| {
             try out.appendSlice(self.allocator, "  \"current_batch\": {");
@@ -617,11 +566,6 @@ pub const OrchestratorState = struct {
         // Parse issues object
         if (findJsonSection(json, "\"issues\"")) |issues_section| {
             try self.parseIssues(issues_section);
-        }
-
-        // Parse locks object
-        if (findJsonSection(json, "\"locks\"")) |locks_section| {
-            try self.parseLocks(locks_section);
         }
 
         // Parse current_batch
@@ -873,145 +817,6 @@ pub const OrchestratorState = struct {
         }
     }
 
-    fn parseLocks(self: *OrchestratorState, json: []const u8) !void {
-        var i: usize = 0;
-
-        while (i < json.len) {
-            // Find next key (file path)
-            if (std.mem.indexOfPos(u8, json, i, "\"")) |key_start| {
-                if (std.mem.indexOfPos(u8, json, key_start + 1, "\"")) |key_end| {
-                    const file_path = json[key_start + 1 .. key_end];
-
-                    // Skip internal keys
-                    if (std.mem.eql(u8, file_path, "issue_id") or
-                        std.mem.eql(u8, file_path, "worker_id") or
-                        std.mem.eql(u8, file_path, "acquired_at"))
-                    {
-                        i = key_end + 1;
-                        continue;
-                    }
-
-                    // Find the value object
-                    if (std.mem.indexOfPos(u8, json, key_end, "{")) |val_start| {
-                        if (std.mem.indexOfPos(u8, json, val_start, "}")) |val_end| {
-                            const val_json = json[val_start .. val_end + 1];
-
-                            const issue_id = parseJsonString(self.allocator, val_json, "\"issue_id\"") orelse continue;
-                            const worker_id: u32 = if (parseJsonInt(val_json, "\"worker_id\"")) |v| @intCast(v) else 0;
-                            const acquired_at: i64 = parseJsonInt(val_json, "\"acquired_at\"") orelse 0;
-
-                            // Use single allocation for both HashMap key and lock.file
-                            const owned_file = try self.allocator.dupe(u8, file_path);
-
-                            const lock = LockEntry{
-                                .file = owned_file,
-                                .issue_id = issue_id,
-                                .worker_id = worker_id,
-                                .acquired_at = acquired_at,
-                            };
-
-                            try self.locks.put(owned_file, lock);
-
-                            i = val_end + 1;
-                            continue;
-                        }
-                    }
-                }
-            }
-            break;
-        }
-    }
-
-    // === Lock Management ===
-
-    /// Try to acquire locks for all files in a manifest
-    pub fn tryAcquireLocks(self: *OrchestratorState, issue_id: []const u8, manifest: Manifest, worker_id: u32) !bool {
-        // Check all files are available
-        for (manifest.primary_files) |file| {
-            const base_file = extractBaseFile(file);
-            if (self.locks.get(base_file)) |lock| {
-                if (!std.mem.eql(u8, lock.issue_id, issue_id)) {
-                    return false; // Locked by another issue
-                }
-            }
-        }
-
-        // Acquire all locks (skip files already locked by this issue)
-        const now = std.time.timestamp();
-        for (manifest.primary_files) |file| {
-            const base_file = extractBaseFile(file);
-
-            // Skip if already locked by this issue
-            if (self.locks.get(base_file)) |existing| {
-                if (std.mem.eql(u8, existing.issue_id, issue_id)) {
-                    continue;
-                }
-            }
-
-            const owned_file = try self.allocator.dupe(u8, base_file);
-            const owned_issue = try self.allocator.dupe(u8, issue_id);
-
-            try self.locks.put(owned_file, .{
-                .file = owned_file,
-                .issue_id = owned_issue,
-                .worker_id = worker_id,
-                .acquired_at = now,
-            });
-        }
-
-        return true;
-    }
-
-    /// Release all locks held by an issue
-    pub fn releaseLocks(self: *OrchestratorState, issue_id: []const u8) void {
-        var to_remove = std.ArrayListUnmanaged([]const u8){};
-        defer to_remove.deinit(self.allocator);
-
-        var it = self.locks.iterator();
-        while (it.next()) |entry| {
-            if (std.mem.eql(u8, entry.value_ptr.issue_id, issue_id)) {
-                to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
-            }
-        }
-
-        for (to_remove.items) |key| {
-            if (self.locks.fetchRemove(key)) |kv| {
-                var lock = kv.value;
-                // Note: lock.file and kv.key point to the same memory,
-                // so deinit frees both the file path and issue_id
-                lock.deinit(self.allocator);
-            }
-        }
-    }
-
-    /// Clean up stale locks (from crashed workers)
-    pub fn cleanupStaleLocks(self: *OrchestratorState, max_age_seconds: i64) u32 {
-        const now = std.time.timestamp();
-        var removed: u32 = 0;
-
-        var to_remove = std.ArrayListUnmanaged([]const u8){};
-        defer to_remove.deinit(self.allocator);
-
-        var it = self.locks.iterator();
-        while (it.next()) |entry| {
-            if (now - entry.value_ptr.acquired_at > max_age_seconds) {
-                to_remove.append(self.allocator, entry.key_ptr.*) catch continue;
-            }
-        }
-
-        for (to_remove.items) |key| {
-            if (self.locks.fetchRemove(key)) |kv| {
-                var lock = kv.value;
-                // Note: lock.file and kv.key point to the same memory,
-                // so deinit frees both the file path and issue_id
-                lock.deinit(self.allocator);
-                removed += 1;
-            }
-        }
-
-        return removed;
-    }
-
     // === Worker Management ===
 
     /// Find an idle worker
@@ -1197,9 +1002,6 @@ pub const OrchestratorState = struct {
                 });
 
                 if (w.current_issue) |issue_id| {
-                    // Release locks
-                    self.releaseLocks(issue_id);
-
                     // Reset issue status
                     if (self.issues.getPtr(issue_id)) |issue| {
                         issue.status = .pending;
@@ -1214,13 +1016,6 @@ pub const OrchestratorState = struct {
                 w.started_at = null;
                 recovered += 1;
             }
-        }
-
-        // Clean up stale locks (older than 1 hour)
-        const stale = self.cleanupStaleLocks(3600);
-        if (stale > 0) {
-            logWarn("Cleaned up {d} stale locks", .{stale});
-            recovered += stale;
         }
 
         return recovered;
@@ -1861,182 +1656,6 @@ test "get pending batch count" {
 
     // Now pending count should be 0
     try std.testing.expectEqual(@as(usize, 0), state.getPendingBatchCount());
-}
-
-test "tryAcquireLocks acquires locks for manifest files" {
-    var state = OrchestratorState.init(std.testing.allocator);
-    defer state.deinit();
-
-    // Create a manifest with primary files
-    var primary = try std.testing.allocator.alloc([]const u8, 2);
-    primary[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
-    primary[1] = try std.testing.allocator.dupe(u8, "src/bar.zig");
-    const manifest = Manifest{ .primary_files = primary };
-
-    // Store manifest for cleanup
-    try state.setManifest("issue-1", manifest);
-
-    // Acquire locks for issue-1
-    const acquired = try state.tryAcquireLocks("issue-1", manifest, 0);
-    try std.testing.expect(acquired);
-
-    // Verify locks were created
-    try std.testing.expectEqual(@as(usize, 2), state.locks.count());
-    try std.testing.expect(state.locks.contains("src/foo.zig"));
-    try std.testing.expect(state.locks.contains("src/bar.zig"));
-
-    // Verify lock details
-    const lock = state.locks.get("src/foo.zig").?;
-    try std.testing.expect(std.mem.eql(u8, lock.issue_id, "issue-1"));
-    try std.testing.expectEqual(@as(u32, 0), lock.worker_id);
-}
-
-test "tryAcquireLocks fails when files locked by another issue" {
-    var state = OrchestratorState.init(std.testing.allocator);
-    defer state.deinit();
-
-    // Create manifests for two issues that conflict
-    var primary1 = try std.testing.allocator.alloc([]const u8, 1);
-    primary1[0] = try std.testing.allocator.dupe(u8, "src/shared.zig");
-    const manifest1 = Manifest{ .primary_files = primary1 };
-    try state.setManifest("issue-1", manifest1);
-
-    var primary2 = try std.testing.allocator.alloc([]const u8, 1);
-    primary2[0] = try std.testing.allocator.dupe(u8, "src/shared.zig");
-    const manifest2 = Manifest{ .primary_files = primary2 };
-    try state.setManifest("issue-2", manifest2);
-
-    // First issue acquires locks successfully
-    const acquired1 = try state.tryAcquireLocks("issue-1", manifest1, 0);
-    try std.testing.expect(acquired1);
-
-    // Second issue fails to acquire locks (file already locked)
-    const acquired2 = try state.tryAcquireLocks("issue-2", manifest2, 1);
-    try std.testing.expect(!acquired2);
-}
-
-test "tryAcquireLocks allows same issue to re-acquire its locks" {
-    var state = OrchestratorState.init(std.testing.allocator);
-    defer state.deinit();
-
-    var primary = try std.testing.allocator.alloc([]const u8, 1);
-    primary[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
-    const manifest = Manifest{ .primary_files = primary };
-    try state.setManifest("issue-1", manifest);
-
-    // Acquire locks
-    const acquired1 = try state.tryAcquireLocks("issue-1", manifest, 0);
-    try std.testing.expect(acquired1);
-
-    // Same issue can re-acquire (idempotent)
-    const acquired2 = try state.tryAcquireLocks("issue-1", manifest, 0);
-    try std.testing.expect(acquired2);
-}
-
-test "releaseLocks removes all locks for an issue" {
-    var state = OrchestratorState.init(std.testing.allocator);
-    defer state.deinit();
-
-    var primary = try std.testing.allocator.alloc([]const u8, 2);
-    primary[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
-    primary[1] = try std.testing.allocator.dupe(u8, "src/bar.zig");
-    const manifest = Manifest{ .primary_files = primary };
-    try state.setManifest("issue-1", manifest);
-
-    // Acquire locks
-    _ = try state.tryAcquireLocks("issue-1", manifest, 0);
-    try std.testing.expectEqual(@as(usize, 2), state.locks.count());
-
-    // Release locks
-    state.releaseLocks("issue-1");
-    try std.testing.expectEqual(@as(usize, 0), state.locks.count());
-}
-
-test "releaseLocks only removes locks for specified issue" {
-    var state = OrchestratorState.init(std.testing.allocator);
-    defer state.deinit();
-
-    // Two issues with different files
-    var primary1 = try std.testing.allocator.alloc([]const u8, 1);
-    primary1[0] = try std.testing.allocator.dupe(u8, "src/foo.zig");
-    const manifest1 = Manifest{ .primary_files = primary1 };
-    try state.setManifest("issue-1", manifest1);
-
-    var primary2 = try std.testing.allocator.alloc([]const u8, 1);
-    primary2[0] = try std.testing.allocator.dupe(u8, "src/bar.zig");
-    const manifest2 = Manifest{ .primary_files = primary2 };
-    try state.setManifest("issue-2", manifest2);
-
-    // Both acquire locks
-    _ = try state.tryAcquireLocks("issue-1", manifest1, 0);
-    _ = try state.tryAcquireLocks("issue-2", manifest2, 1);
-    try std.testing.expectEqual(@as(usize, 2), state.locks.count());
-
-    // Release only issue-1's locks
-    state.releaseLocks("issue-1");
-    try std.testing.expectEqual(@as(usize, 1), state.locks.count());
-    try std.testing.expect(!state.locks.contains("src/foo.zig"));
-    try std.testing.expect(state.locks.contains("src/bar.zig"));
-}
-
-test "cleanupStaleLocks removes old locks" {
-    var state = OrchestratorState.init(std.testing.allocator);
-    defer state.deinit();
-
-    // Manually add a stale lock (very old timestamp)
-    const file = try std.testing.allocator.dupe(u8, "src/stale.zig");
-    const issue = try std.testing.allocator.dupe(u8, "issue-old");
-    try state.locks.put(file, .{
-        .file = file,
-        .issue_id = issue,
-        .worker_id = 0,
-        .acquired_at = 0, // Very old timestamp (epoch)
-    });
-
-    try std.testing.expectEqual(@as(usize, 1), state.locks.count());
-
-    // Cleanup locks older than 1 second
-    const removed = state.cleanupStaleLocks(1);
-    try std.testing.expectEqual(@as(u32, 1), removed);
-    try std.testing.expectEqual(@as(usize, 0), state.locks.count());
-}
-
-test "cleanupStaleLocks preserves fresh locks" {
-    var state = OrchestratorState.init(std.testing.allocator);
-    defer state.deinit();
-
-    var primary = try std.testing.allocator.alloc([]const u8, 1);
-    primary[0] = try std.testing.allocator.dupe(u8, "src/fresh.zig");
-    const manifest = Manifest{ .primary_files = primary };
-    try state.setManifest("issue-1", manifest);
-
-    // Acquire fresh locks (timestamp will be now)
-    _ = try state.tryAcquireLocks("issue-1", manifest, 0);
-    try std.testing.expectEqual(@as(usize, 1), state.locks.count());
-
-    // Cleanup locks older than 1 hour - should not remove fresh lock
-    const removed = state.cleanupStaleLocks(3600);
-    try std.testing.expectEqual(@as(u32, 0), removed);
-    try std.testing.expectEqual(@as(usize, 1), state.locks.count());
-}
-
-test "tryAcquireLocks handles file spec with line ranges" {
-    var state = OrchestratorState.init(std.testing.allocator);
-    defer state.deinit();
-
-    // Manifest with line range format
-    var primary = try std.testing.allocator.alloc([]const u8, 1);
-    primary[0] = try std.testing.allocator.dupe(u8, "src/foo.zig:100-200");
-    const manifest = Manifest{ .primary_files = primary };
-    try state.setManifest("issue-1", manifest);
-
-    // Acquire locks - should extract base file
-    const acquired = try state.tryAcquireLocks("issue-1", manifest, 0);
-    try std.testing.expect(acquired);
-
-    // Lock should be on base file, not the spec with line range
-    try std.testing.expect(state.locks.contains("src/foo.zig"));
-    try std.testing.expect(!state.locks.contains("src/foo.zig:100-200"));
 }
 
 test "manifest serialization roundtrip" {

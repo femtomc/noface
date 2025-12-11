@@ -8,7 +8,8 @@ const state_mod = @import("state.zig");
 const process = @import("process.zig");
 const config_mod = @import("config.zig");
 const signals = @import("signals.zig");
-const git = @import("git.zig");
+const jj = @import("jj.zig");
+const prompts = @import("prompts.zig");
 
 const OrchestratorState = state_mod.OrchestratorState;
 const IssueCompletionHandler = state_mod.IssueCompletionHandler;
@@ -41,10 +42,6 @@ pub const WorkerPool = struct {
     /// Pending results from completed workers (to be processed by coordinator)
     pending_results: std.ArrayListUnmanaged(WorkerResult) = .{},
 
-    /// Workers waiting to be resumed (blocked on files held by other workers)
-    /// Maps worker_id to the issue they were working on
-    waiting_workers: std.AutoHashMapUnmanaged(u32, WaitingWorker) = .{},
-
     /// Transcript database for logging worker sessions
     transcript_db: ?transcript_mod.TranscriptDb = null,
 
@@ -55,15 +52,8 @@ pub const WorkerPool = struct {
     /// These are the files that were already modified before the worker began.
     worker_baselines: [state_mod.MAX_WORKERS][]const []const u8 = [_][]const []const u8{&.{}} ** state_mod.MAX_WORKERS,
 
-    /// Worktree paths per worker (null if not using worktrees or worker not running)
-    worker_worktrees: [state_mod.MAX_WORKERS]?[]const u8 = [_]?[]const u8{null} ** state_mod.MAX_WORKERS,
-
-    /// Info about a waiting worker
-    const WaitingWorker = struct {
-        issue_id: []const u8,
-        blocked_on_file: []const u8,
-        wait_started: i64,
-    };
+    /// Workspace paths per worker (null if not using workspaces or worker not running)
+    worker_workspaces: [state_mod.MAX_WORKERS]?[]const u8 = [_]?[]const u8{null} ** state_mod.MAX_WORKERS,
 
     pub fn init(allocator: std.mem.Allocator, cfg: Config, orchestrator_state: *OrchestratorState) WorkerPool {
         // Try to open transcript database (non-fatal if it fails)
@@ -72,11 +62,11 @@ pub const WorkerPool = struct {
             break :blk null;
         };
 
-        // Clean up any orphaned worktrees from previous crashes
-        var repo = git.GitRepo.init(allocator);
-        const cleaned = repo.cleanupOrphanedWorktrees() catch 0;
+        // Clean up any orphaned workspaces from previous crashes
+        var repo = jj.JjRepo.init(allocator);
+        const cleaned = repo.cleanupOrphanedWorkspaces() catch 0;
         if (cleaned > 0) {
-            logInfo("Cleaned up {d} orphaned worker worktrees from previous run", .{cleaned});
+            logInfo("Cleaned up {d} orphaned worker workspaces from previous run", .{cleaned});
         }
 
         return .{
@@ -116,23 +106,15 @@ pub const WorkerPool = struct {
             baseline.* = &.{};
         }
 
-        // Cleanup worker worktrees
-        var repo = git.GitRepo.init(self.allocator);
-        for (&self.worker_worktrees) |*worktree| {
-            if (worktree.*) |path| {
-                repo.removeWorktree(path) catch {};
+        // Cleanup worker workspaces
+        var repo = jj.JjRepo.init(self.allocator);
+        for (&self.worker_workspaces) |*workspace| {
+            if (workspace.*) |path| {
+                repo.removeWorkspace(path) catch {};
                 self.allocator.free(path);
-                worktree.* = null;
+                workspace.* = null;
             }
         }
-
-        // Free waiting workers
-        var it = self.waiting_workers.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.value_ptr.issue_id);
-            self.allocator.free(entry.value_ptr.blocked_on_file);
-        }
-        self.waiting_workers.deinit(self.allocator);
     }
 
     /// Execute a batch of issues in parallel using the worker pool.
@@ -174,20 +156,16 @@ pub const WorkerPool = struct {
             // 1. Poll output from running workers (updates last_output_time for idle detection)
             self.pollAllWorkerOutput();
 
-            // 2. Check for workers that have signaled they're blocked on a file
-            try self.checkForBlockedWorkers();
-
-            // 3. Collect results from completed workers
+            // 2. Collect results from completed workers
             try self.collectCompletedWorkers();
 
-            // 4. Detect and handle idle/timed out workers
+            // 3. Detect and handle idle/timed out workers
             const crashed = try self.detectCrashedWorkers();
             if (crashed > 0) {
                 logWarn("Detected {d} crashed/timed out worker(s)", .{crashed});
             }
 
-            // 5. Process any pending results
-            var locks_released = false;
+            // 4. Process any pending results
             while (self.pending_results.items.len > 0) {
                 const result = self.pending_results.orderedRemove(0);
                 defer {
@@ -253,10 +231,6 @@ pub const WorkerPool = struct {
                         const status: state_mod.IssueStatus = if (final_success) .completed else .failed;
                         _ = self.state.updateIssue(result.issue_id, status) catch {};
 
-                        // Release locks for this issue
-                        self.state.releaseLocks(result.issue_id);
-                        locks_released = true;
-
                         // Mark worker as idle
                         self.state.workers[result.worker_id].status = if (final_success) .completed else .failed;
                         if (self.state.workers[result.worker_id].current_issue) |issue| {
@@ -269,34 +243,15 @@ pub const WorkerPool = struct {
                 }
             }
 
-            // 6. If locks were released, try to wake up waiting workers
-            if (locks_released) {
-                const woken = try self.wakeUnblockedWorkers();
-                if (woken > 0) {
-                    logInfo("Woke {d} waiting worker(s)", .{woken});
-                }
-            }
-
-            // 7. Assign unassigned issues to idle workers
+            // 5. Assign unassigned issues to idle workers
             for (batch.issue_ids, 0..) |issue_id, i| {
                 if (assigned[i]) continue;
 
                 // Find an idle worker
                 if (self.findIdleWorkerSlot()) |worker_id| {
-                    // Try to acquire locks for this issue
-                    const manifest = self.state.getManifest(issue_id) orelse state_mod.Manifest{};
-                    const locks_acquired = self.state.tryAcquireLocks(issue_id, manifest, worker_id) catch false;
-
-                    if (!locks_acquired) {
-                        // Skip this issue for now - another worker has conflicting locks
-                        logWarn("Cannot acquire locks for issue {s}, skipping", .{issue_id});
-                        continue;
-                    }
-
                     // Start the worker process
                     self.startWorker(worker_id, issue_id) catch |err| {
                         logError("Failed to start worker {d} for issue {s}: {}", .{ worker_id, issue_id, err });
-                        self.state.releaseLocks(issue_id);
                         continue;
                     };
 
@@ -308,7 +263,7 @@ pub const WorkerPool = struct {
                 }
             }
 
-            // 8. Brief sleep to avoid busy-waiting
+            // 6. Brief sleep to avoid busy-waiting
             if (issues_remaining > 0) {
                 std.Thread.sleep(100 * std.time.ns_per_ms);
             }
@@ -345,7 +300,7 @@ pub const WorkerPool = struct {
     /// Returns list of file paths that were already modified or untracked.
     /// Caller must free with freeBaseline.
     fn captureBaseline(self: *WorkerPool) ![]const []const u8 {
-        var repo = git.GitRepo.init(self.allocator);
+        var repo = jj.JjRepo.init(self.allocator);
         var changed = try repo.getAllChangedFiles();
         // Don't defer deinit - we need to copy strings first before freeing
 
@@ -366,16 +321,16 @@ pub const WorkerPool = struct {
             }
         }.check;
 
-        // Copy all unique files
+        // Copy all unique files (jj uses modified/added/deleted)
         for (changed.modified) |f| {
             try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
         }
-        for (changed.staged) |f| {
+        for (changed.added) |f| {
             if (!isInList(baseline.items, f)) {
                 try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
             }
         }
-        for (changed.untracked) |f| {
+        for (changed.deleted) |f| {
             if (!isInList(baseline.items, f)) {
                 try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
             }
@@ -398,7 +353,7 @@ pub const WorkerPool = struct {
     /// We exclude files that are in ANY other issue's manifest (not just currently locked).
     /// Caller must free each string and the list.
     fn buildChangedFilesListExcludingOtherManifests(self: *WorkerPool, this_issue_id: []const u8) ![]const []const u8 {
-        var repo = git.GitRepo.init(self.allocator);
+        var repo = jj.JjRepo.init(self.allocator);
         var changed = try repo.getAllChangedFiles();
         // Don't defer deinit - we need to copy strings first
 
@@ -440,18 +395,18 @@ pub const WorkerPool = struct {
             }
         }.check;
 
-        // Copy all unique files, excluding those owned by other issues
+        // Copy all unique files, excluding those owned by other issues (jj uses modified/added/deleted)
         for (changed.modified) |f| {
             if (!isInOtherManifest(self.state, f, this_issue_id)) {
                 try result.append(self.allocator, try self.allocator.dupe(u8, f));
             }
         }
-        for (changed.staged) |f| {
+        for (changed.added) |f| {
             if (!isInList(result.items, f) and !isInOtherManifest(self.state, f, this_issue_id)) {
                 try result.append(self.allocator, try self.allocator.dupe(u8, f));
             }
         }
-        for (changed.untracked) |f| {
+        for (changed.deleted) |f| {
             if (!isInList(result.items, f) and !isInOtherManifest(self.state, f, this_issue_id)) {
                 try result.append(self.allocator, try self.allocator.dupe(u8, f));
             }
@@ -479,26 +434,26 @@ pub const WorkerPool = struct {
             self.worker_baselines[worker_id] = try self.captureBaseline();
         }
 
-        // Create worktree for this worker (if not resuming with existing worktree)
-        var worktree_path: ?[]const u8 = null;
-        if (!resuming or self.worker_worktrees[worker_id] == null) {
-            var repo = git.GitRepo.init(self.allocator);
-            worktree_path = repo.createWorktree(worker_id) catch |err| blk: {
-                logWarn("Failed to create worktree for worker {d}: {}, running in main directory", .{ worker_id, err });
+        // Create workspace for this worker (if not resuming with existing workspace)
+        var workspace_path: ?[]const u8 = null;
+        if (!resuming or self.worker_workspaces[worker_id] == null) {
+            var repo = jj.JjRepo.init(self.allocator);
+            workspace_path = repo.createWorkspace(worker_id) catch |err| blk: {
+                logWarn("Failed to create workspace for worker {d}: {}, running in main directory", .{ worker_id, err });
                 break :blk null;
             };
 
-            // Free old worktree path if exists and store new one
-            if (self.worker_worktrees[worker_id]) |old_path| {
+            // Free old workspace path if exists and store new one
+            if (self.worker_workspaces[worker_id]) |old_path| {
                 self.allocator.free(old_path);
             }
-            self.worker_worktrees[worker_id] = worktree_path;
+            self.worker_workspaces[worker_id] = workspace_path;
 
-            if (worktree_path != null) {
-                logInfo("Worker {d} using worktree: {s}", .{ worker_id, worktree_path.? });
+            if (workspace_path != null) {
+                logInfo("Worker {d} using workspace: {s}", .{ worker_id, workspace_path.? });
             }
         } else {
-            worktree_path = self.worker_worktrees[worker_id];
+            workspace_path = self.worker_workspaces[worker_id];
         }
 
         // Build the worker command
@@ -519,8 +474,8 @@ pub const WorkerPool = struct {
             prompt,
         };
 
-        // Spawn worker in worktree directory (or main dir if worktree creation failed)
-        var worker = try WorkerProcess.spawnInDir(self.allocator, &argv, worker_id, issue_id, worktree_path);
+        // Spawn worker in workspace directory (or main dir if workspace creation failed)
+        var worker = try WorkerProcess.spawnInDir(self.allocator, &argv, worker_id, issue_id, workspace_path);
 
         // Start transcript session for this worker
         if (self.transcript_db) |*db| {
@@ -571,88 +526,15 @@ pub const WorkerPool = struct {
         else
             "(no manifest - you may modify any file)";
 
-        // Add resume context if this worker was previously blocked
-        const resume_context = if (resuming)
-            \\
-            \\IMPORTANT - RESUMING PREVIOUS WORK:
-            \\You were previously working on this issue but got blocked because another engineer
-            \\was modifying a file you needed. That work is now complete.
-            \\
-            \\Before starting fresh, CHECK YOUR PROGRESS:
-            \\1. Run `git status` and `git diff` to see what changes already exist
-            \\2. If you already made changes, DON'T redo them - continue from where you left off
-            \\3. If tests were failing due to another file, try running them again now
-            \\
-        else
-            "";
-
-        return std.fmt.allocPrint(self.allocator,
-            \\You are a senior software engineer working autonomously on issue {s} in the {s} project.
-            \\
-            \\MANIFEST - FILES YOU OWN:
-            \\{s}
-            \\
-            \\You are working in PARALLEL with other engineers on different issues.
-            \\Other engineers may be modifying other files at the same time.
-            \\{s}
-            \\APPROACH:
-            \\Before writing any code, take a moment to:
-            \\1. Understand the issue fully - run `bd show {s}` and read carefully
-            \\2. Explore related code - understand existing patterns and conventions
-            \\3. Plan your approach - consider edge cases, error handling, and testability
-            \\4. Keep changes minimal and focused - solve the issue, don't refactor unrelated code
-            \\
-            \\WORKFLOW:
-            \\1. Mark issue in progress: `bd update {s} --status in_progress`
-            \\2. Implement the solution following existing code style and patterns
-            \\3. Verify your changes: `{s}`
-            \\   - If tests fail, check WHY they fail (see PARALLEL WORK CONFLICTS below)
-            \\   - Add tests if the change is testable and tests don't exist
-            \\4. Self-review your diff: `git diff`
-            \\   - Check for: debugging artifacts, commented code, style inconsistencies
-            \\5. Request review: `{s} review --uncommitted`
-            \\6. Address ALL feedback - re-run review until approved
-            \\7. Create marker: `touch .noface/codex-approved`
-            \\8. Commit with a clear message:
-            \\   - Format: "<type>: <description>" (e.g., "fix: resolve null pointer in parser")
-            \\   - Reference the issue in the body
-            \\9. Close the issue: `bd close {s} --reason "Completed: <one-line summary>"`
-            \\
-            \\PARALLEL WORK CONFLICTS:
-            \\If build or tests fail with errors in files YOU DON'T OWN (not in your manifest above):
-            \\1. Check if the error is in a file you modified - if so, fix it
-            \\2. If the error is in a file you did NOT modify and is NOT in your manifest:
-            \\   - Another engineer is likely modifying that file right now
-            \\   - Output: BLOCKED_BY_FILE: <path/to/file.zig>
-            \\   - The orchestrator will pause you and wake you when the file is available
-            \\   - Example: if you see "error: src/foo.zig:42: ..." and src/foo.zig is not yours,
-            \\     output "BLOCKED_BY_FILE: src/foo.zig"
-            \\
-            \\QUALITY STANDARDS:
-            \\- Code should be clear enough to not need comments explaining *what* it does
-            \\- Error messages should help users understand what went wrong
-            \\- No hardcoded values that should be configurable
-            \\- Handle edge cases explicitly, don't rely on "it probably won't happen"
-            \\
-            \\CONSTRAINTS:
-            \\- Do NOT commit until review explicitly approves
-            \\- Do NOT modify files outside your manifest (listed above)
-            \\- Do NOT add dependencies without clear justification
-            \\
-            \\When finished, output: ISSUE_COMPLETE
-            \\If blocked by another engineer's file, output: BLOCKED_BY_FILE: <path>
-            \\If blocked for other reasons, output: BLOCKED: <reason>
-        , .{
+        return prompts.buildWorkerPrompt(
+            self.allocator,
             issue_id,
             self.config.project_name,
             owned_files,
-            resume_context,
-            issue_id,
-            issue_id,
             self.config.test_command,
             self.config.review_agent,
-            issue_id,
-        });
+            resuming,
+        );
     }
 
     /// Poll output from all running workers (non-blocking).
@@ -662,40 +544,6 @@ pub const WorkerPool = struct {
             const worker_id: u32 = @intCast(i);
             if (self.worker_processes[worker_id]) |*worker| {
                 worker.pollOutput();
-            }
-        }
-    }
-
-    /// Check all running workers for BLOCKED_BY_FILE signals and mark them as waiting
-    fn checkForBlockedWorkers(self: *WorkerPool) !void {
-        for (0..self.state.num_workers) |i| {
-            const worker_id: u32 = @intCast(i);
-            if (self.worker_processes[worker_id]) |*worker| {
-                if (worker.isBlocked()) {
-                    const blocked_file = worker.getBlockedFile() orelse continue;
-
-                    // Check if the file is actually locked by another worker
-                    const issue_id = self.state.workers[worker_id].current_issue orelse continue;
-                    if (self.isFileLockedByOther(blocked_file, issue_id)) {
-                        logInfo("Worker {d} blocked on file {s} (locked by another worker)", .{
-                            worker_id,
-                            blocked_file,
-                        });
-                        try self.markWorkerWaiting(worker_id, blocked_file);
-                    } else {
-                        // File is not locked by another worker - the error might be something else
-                        // Let the worker continue and handle it
-                        logWarn("Worker {d} reported blocked on {s}, but file is not locked - ignoring", .{
-                            worker_id,
-                            blocked_file,
-                        });
-                        // Clear the blocked flag so it doesn't keep triggering
-                        if (worker.blocked_on_file) |file| {
-                            self.allocator.free(file);
-                            worker.blocked_on_file = null;
-                        }
-                    }
-                }
             }
         }
     }
@@ -721,36 +569,36 @@ pub const WorkerPool = struct {
                     const baseline = self.worker_baselines[worker_id];
                     self.worker_baselines[worker_id] = &.{}; // Clear without freeing
 
-                    // If worker was using a worktree, merge changes back and cleanup
+                    // If worker was using a workspace, merge changes back and cleanup
                     var merge_success = true;
-                    if (self.worker_worktrees[worker_id]) |worktree_path| {
-                        var repo = git.GitRepo.init(self.allocator);
+                    if (self.worker_workspaces[worker_id]) |workspace_path| {
+                        var repo = jj.JjRepo.init(self.allocator);
 
                         // Only merge if worker succeeded
                         if (exit_code == 0) {
-                            // First commit changes in the worktree
+                            // First commit changes in the workspace
                             const commit_msg = try std.fmt.allocPrint(self.allocator, "Worker {d} changes for {s}", .{ worker_id, worker.issue_id });
                             defer self.allocator.free(commit_msg);
 
-                            const committed = repo.commitInWorktree(worktree_path, commit_msg) catch false;
+                            const committed = repo.commitInWorkspace(workspace_path, commit_msg) catch false;
                             if (committed) {
-                                // Cherry-pick the commit into main
-                                merge_success = repo.cherryPickFromWorktree(worktree_path) catch false;
+                                // Squash workspace changes into main working copy
+                                merge_success = repo.squashFromWorkspace(workspace_path) catch false;
                                 if (merge_success) {
-                                    logInfo("Worker {d} changes merged from worktree", .{worker_id});
+                                    logInfo("Worker {d} changes merged from workspace", .{worker_id});
                                 } else {
-                                    logWarn("Worker {d} merge conflict, changes remain in worktree: {s}", .{ worker_id, worktree_path });
+                                    logWarn("Worker {d} merge conflict, changes remain in workspace: {s}", .{ worker_id, workspace_path });
                                 }
                             }
                         }
 
-                        // Cleanup worktree (only if merge succeeded or worker failed)
+                        // Cleanup workspace (only if merge succeeded or worker failed)
                         if (merge_success or exit_code != 0) {
-                            repo.removeWorktree(worktree_path) catch |err| {
-                                logWarn("Failed to remove worktree {s}: {}", .{ worktree_path, err });
+                            repo.removeWorkspace(workspace_path) catch |err| {
+                                logWarn("Failed to remove workspace {s}: {}", .{ workspace_path, err });
                             };
-                            self.allocator.free(worktree_path);
-                            self.worker_worktrees[worker_id] = null;
+                            self.allocator.free(workspace_path);
+                            self.worker_workspaces[worker_id] = null;
                         }
                     }
 
@@ -838,9 +686,6 @@ pub const WorkerPool = struct {
             if (self.worker_processes[worker_id]) |*worker| {
                 logWarn("Killing worker {d} (issue: {s})", .{ worker_id, worker.issue_id });
 
-                // Release locks BEFORE deinit (which frees issue_id)
-                self.state.releaseLocks(worker.issue_id);
-
                 worker.kill();
                 worker.deinit();
                 self.worker_processes[worker_id] = null;
@@ -865,109 +710,6 @@ pub const WorkerPool = struct {
         }
         return count;
     }
-
-    /// Mark a worker as waiting on a file blocked by another worker.
-    /// The worker process is killed and will be restarted when the file is unlocked.
-    pub fn markWorkerWaiting(self: *WorkerPool, worker_id: u32, blocked_file: []const u8) !void {
-        const worker_state = &self.state.workers[worker_id];
-        const issue_id = worker_state.current_issue orelse return;
-
-        logInfo("Worker {d} waiting on file {s} (issue: {s})", .{ worker_id, blocked_file, issue_id });
-
-        // Kill the worker process (it will be restarted when unblocked)
-        if (self.worker_processes[worker_id]) |*worker| {
-            worker.kill();
-            worker.deinit();
-            self.worker_processes[worker_id] = null;
-        }
-
-        // Store waiting worker info
-        const owned_issue = try self.allocator.dupe(u8, issue_id);
-        errdefer self.allocator.free(owned_issue);
-        const owned_file = try self.allocator.dupe(u8, blocked_file);
-        errdefer self.allocator.free(owned_file);
-
-        try self.waiting_workers.put(self.allocator, worker_id, .{
-            .issue_id = owned_issue,
-            .blocked_on_file = owned_file,
-            .wait_started = std.time.timestamp(),
-        });
-
-        // Update worker state
-        worker_state.status = .waiting;
-        worker_state.blocked_on_file = try self.allocator.dupe(u8, blocked_file);
-    }
-
-    /// Check if any waiting workers can be woken up (their blocked file is now unlocked).
-    /// Returns the number of workers that were woken.
-    pub fn wakeUnblockedWorkers(self: *WorkerPool) !u32 {
-        var woken: u32 = 0;
-        var to_wake = std.ArrayListUnmanaged(u32){};
-        defer to_wake.deinit(self.allocator);
-
-        // Find workers whose blocked file is no longer locked
-        var it = self.waiting_workers.iterator();
-        while (it.next()) |entry| {
-            const worker_id = entry.key_ptr.*;
-            const waiting = entry.value_ptr.*;
-
-            // Check if the file is still locked by another issue
-            if (self.state.locks.get(waiting.blocked_on_file)) |lock| {
-                // Still locked - check if it's by a different issue than ours
-                const our_issue = self.state.workers[worker_id].current_issue orelse continue;
-                if (!std.mem.eql(u8, lock.issue_id, our_issue)) {
-                    // Still blocked by another worker
-                    continue;
-                }
-            }
-
-            // File is unlocked (or locked by us) - wake this worker
-            try to_wake.append(self.allocator, worker_id);
-        }
-
-        // Wake the workers
-        for (to_wake.items) |worker_id| {
-            if (self.waiting_workers.fetchRemove(worker_id)) |kv| {
-                const waiting = kv.value;
-                logInfo("Waking worker {d} - file {s} is now available", .{ worker_id, waiting.blocked_on_file });
-
-                // Restart the worker with resume context
-                self.startWorkerWithResume(worker_id, waiting.issue_id, true) catch |err| {
-                    logError("Failed to restart worker {d}: {}", .{ worker_id, err });
-                    // Put it back in waiting state
-                    try self.waiting_workers.put(self.allocator, worker_id, waiting);
-                    continue;
-                };
-
-                // Free the waiting info
-                self.allocator.free(waiting.issue_id);
-                self.allocator.free(waiting.blocked_on_file);
-
-                // Clear blocked_on_file from worker state
-                if (self.state.workers[worker_id].blocked_on_file) |file| {
-                    self.allocator.free(file);
-                    self.state.workers[worker_id].blocked_on_file = null;
-                }
-
-                woken += 1;
-            }
-        }
-
-        return woken;
-    }
-
-    /// Check if a file path is currently locked by a worker other than the given issue
-    pub fn isFileLockedByOther(self: *WorkerPool, file_path: []const u8, our_issue_id: []const u8) bool {
-        if (self.state.locks.get(file_path)) |lock| {
-            return !std.mem.eql(u8, lock.issue_id, our_issue_id);
-        }
-        return false;
-    }
-
-    /// Get the count of waiting workers
-    pub fn waitingWorkerCount(self: *WorkerPool) u32 {
-        return @intCast(self.waiting_workers.count());
-    }
 };
 
 /// Represents a running worker child process
@@ -978,12 +720,6 @@ const WorkerProcess = struct {
     issue_id: []const u8,
     /// Timestamp of last output received (for idle timeout tracking)
     last_output_time: i64,
-    /// Buffer for detecting BLOCKED_BY_FILE signals in output
-    output_buffer: std.ArrayListUnmanaged(u8) = .{},
-    /// Position in output_buffer up to which we've scanned for signals (avoids re-scanning)
-    output_scan_pos: usize = 0,
-    /// File that this worker is blocked on (if detected)
-    blocked_on_file: ?[]const u8 = null,
     /// Line buffer for JSON parsing (accumulates until newline)
     line_buffer: std.ArrayListUnmanaged(u8) = .{},
     /// Last displayed status (to avoid duplicate messages)
@@ -994,8 +730,6 @@ const WorkerProcess = struct {
     event_seq: u32 = 0,
     /// Pointer to transcript database (owned by WorkerPool)
     transcript_db: ?*transcript_mod.TranscriptDb = null,
-
-    const BLOCKED_SIGNAL = "BLOCKED_BY_FILE:";
 
     /// Worker colors for terminal output (cycle through these)
     const worker_colors = [_][]const u8{
@@ -1039,11 +773,7 @@ const WorkerProcess = struct {
 
     pub fn deinit(self: *WorkerProcess) void {
         self.allocator.free(self.issue_id);
-        self.output_buffer.deinit(self.allocator);
         self.line_buffer.deinit(self.allocator);
-        if (self.blocked_on_file) |file| {
-            self.allocator.free(file);
-        }
         if (self.last_status) |status| {
             self.allocator.free(status);
         }
@@ -1055,7 +785,6 @@ const WorkerProcess = struct {
     /// Poll for output from the worker (non-blocking).
     /// Updates last_output_time if any output is received.
     /// Parses streaming JSON and displays formatted status summaries.
-    /// Also scans for BLOCKED_BY_FILE: signals.
     pub fn pollOutput(self: *WorkerProcess) void {
         const is_test = @import("builtin").is_test;
         var buf: [4096]u8 = undefined;
@@ -1081,9 +810,6 @@ const WorkerProcess = struct {
                     if (!is_test) {
                         self.processLineBuffer();
                     }
-
-                    // Also keep in output_buffer for BLOCKED_BY_FILE detection
-                    self.output_buffer.appendSlice(self.allocator, buf[0..n]) catch {};
 
                     // Check if more data available without blocking
                     const more = std.posix.poll(&poll_fds, 0) catch 0;
@@ -1112,9 +838,6 @@ const WorkerProcess = struct {
                         self.processLineBuffer();
                     }
 
-                    // Also keep in output_buffer for BLOCKED_BY_FILE detection
-                    self.output_buffer.appendSlice(self.allocator, buf[0..n]) catch {};
-
                     const more = std.posix.poll(&poll_fds, 0) catch 0;
                     if (more == 0 or (poll_fds[0].revents & std.posix.POLL.IN) == 0) break;
                 }
@@ -1123,14 +846,6 @@ const WorkerProcess = struct {
 
         if (received_output) {
             self.last_output_time = std.time.timestamp();
-            // Check for BLOCKED_BY_FILE signal
-            self.checkForBlockedSignal();
-            // Keep buffer from growing unbounded (keep last 8KB)
-            if (self.output_buffer.items.len > 8192) {
-                const keep_from = self.output_buffer.items.len - 4096;
-                std.mem.copyForwards(u8, self.output_buffer.items[0..4096], self.output_buffer.items[keep_from..]);
-                self.output_buffer.shrinkRetainingCapacity(4096);
-            }
         }
     }
 
@@ -1320,94 +1035,6 @@ const WorkerProcess = struct {
         if (std.mem.indexOf(u8, json, "\"tool_use\"") == null) return null;
 
         return extractJsonString(json, "\"name\"");
-    }
-
-    /// Check output buffer for BLOCKED_BY_FILE: signal.
-    /// The signal may appear inside JSON content (e.g., {"content":"BLOCKED_BY_FILE: src/foo.zig"})
-    /// so we need to handle both raw text and JSON-embedded signals.
-    /// Only scans new content since last check to avoid infinite re-detection loops.
-    fn checkForBlockedSignal(self: *WorkerProcess) void {
-        if (self.blocked_on_file != null) return; // Already detected
-
-        const output = self.output_buffer.items;
-        // Only scan new content since last check
-        if (self.output_scan_pos >= output.len) return;
-        const search_slice = output[self.output_scan_pos..];
-
-        if (std.mem.indexOf(u8, search_slice, BLOCKED_SIGNAL)) |relative_pos| {
-            const pos = self.output_scan_pos + relative_pos;
-            // Found the signal - extract the file path
-            const after_signal = output[pos + BLOCKED_SIGNAL.len ..];
-            // Skip whitespace
-            var start: usize = 0;
-            while (start < after_signal.len and (after_signal[start] == ' ' or after_signal[start] == '\t')) {
-                start += 1;
-            }
-            // Find end of file path - stop at newline, carriage return, or JSON string terminator
-            // The signal might be embedded in JSON like: "BLOCKED_BY_FILE: src/foo.zig"
-            // So we also need to stop at quotes or backslashes (escape sequences)
-            var end = start;
-            while (end < after_signal.len) {
-                const c = after_signal[end];
-                if (c == '\n' or c == '\r') break;
-                // Stop at quotes or backslashes (JSON escape sequences)
-                if (c == '"' or c == '\\') break;
-                end += 1;
-            }
-            if (end > start) {
-                const file_path = std.mem.trim(u8, after_signal[start..end], " \t\r\n");
-                if (file_path.len > 0 and isValidFilePath(file_path)) {
-                    self.blocked_on_file = self.allocator.dupe(u8, file_path) catch null;
-                }
-            }
-            // Move scan position past this signal to avoid re-detecting it
-            self.output_scan_pos = pos + BLOCKED_SIGNAL.len + end;
-        } else {
-            // No signal found in new content, update scan position to end
-            self.output_scan_pos = output.len;
-        }
-    }
-
-    /// Validate that a string looks like a reasonable file path.
-    /// This helps filter out garbage that might slip through if parsing fails.
-    fn isValidFilePath(path: []const u8) bool {
-        if (path.len == 0 or path.len > 512) return false;
-
-        // File paths shouldn't contain JSON syntax characters, escape sequences,
-        // or placeholder markers like < >
-        for (path) |c| {
-            switch (c) {
-                '{', '}', '[', ']', ':', ',', '"', '\\', '<', '>' => return false,
-                else => {},
-            }
-        }
-
-        // Must look like a file path: contain '/' or have a file extension
-        const has_slash = std.mem.indexOf(u8, path, "/") != null;
-        const has_extension = if (std.mem.lastIndexOf(u8, path, ".")) |dot_pos|
-            dot_pos > 0 and dot_pos < path.len - 1 // dot not at start or end
-        else
-            false;
-
-        if (!has_slash and !has_extension) return false;
-
-        // Should contain at least some alphanumeric characters
-        for (path) |c| {
-            if (std.ascii.isAlphanumeric(c)) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    /// Check if this worker has signaled it's blocked on a file
-    pub fn isBlocked(self: *const WorkerProcess) bool {
-        return self.blocked_on_file != null;
-    }
-
-    /// Get the file this worker is blocked on (if any)
-    pub fn getBlockedFile(self: *const WorkerProcess) ?[]const u8 {
-        return self.blocked_on_file;
     }
 
     /// Get the idle time in seconds (time since last output)
@@ -1629,127 +1256,4 @@ test "idle timeout triggers only on idle workers" {
 
     // Process should have completed, no timeout triggered
     try std.testing.expect(pool.worker_processes[0] == null);
-}
-
-test "isValidFilePath accepts valid paths" {
-    try std.testing.expect(WorkerProcess.isValidFilePath("src/foo.zig"));
-    try std.testing.expect(WorkerProcess.isValidFilePath("src/worker_pool.zig"));
-    try std.testing.expect(WorkerProcess.isValidFilePath("file.txt"));
-    try std.testing.expect(WorkerProcess.isValidFilePath("path/to/deep/file.rs"));
-    try std.testing.expect(WorkerProcess.isValidFilePath("./relative/path.go"));
-    try std.testing.expect(WorkerProcess.isValidFilePath("/absolute/path.py"));
-}
-
-test "isValidFilePath rejects JSON garbage" {
-    // These contain JSON syntax characters that should be rejected
-    try std.testing.expect(!WorkerProcess.isValidFilePath("src/loop.zig\"}]"));
-    try std.testing.expect(!WorkerProcess.isValidFilePath("file.zig\",\"stop_reason\":null"));
-    try std.testing.expect(!WorkerProcess.isValidFilePath("{\"content\":\"foo\"}"));
-    try std.testing.expect(!WorkerProcess.isValidFilePath("path[0]"));
-    try std.testing.expect(!WorkerProcess.isValidFilePath(""));
-    // Placeholder text from instructions
-    try std.testing.expect(!WorkerProcess.isValidFilePath("<path/to/file.zig>"));
-    try std.testing.expect(!WorkerProcess.isValidFilePath("<path>"));
-    // Words that aren't file paths (no / or extension)
-    try std.testing.expect(!WorkerProcess.isValidFilePath("signal"));
-    try std.testing.expect(!WorkerProcess.isValidFilePath("blocked"));
-}
-
-test "checkForBlockedSignal extracts path from JSON content" {
-    // Simulate the problematic case: signal embedded in JSON
-    var worker = try WorkerProcess.spawn(
-        std.testing.allocator,
-        &[_][]const u8{ "echo", "test" },
-        0,
-        "test-issue",
-    );
-    defer worker.deinit();
-
-    // Wait for echo to finish
-    std.Thread.sleep(50 * std.time.ns_per_ms);
-    _ = worker.tryWait();
-
-    // Simulate JSON-embedded signal (the bug scenario)
-    const json_output = "{\"content\":\"BLOCKED_BY_FILE: src/loop.zig\"}],\"stop_reason\":null";
-    try worker.output_buffer.appendSlice(std.testing.allocator, json_output);
-
-    worker.checkForBlockedSignal();
-
-    // Should extract just "src/loop.zig", not the JSON garbage
-    try std.testing.expect(worker.blocked_on_file != null);
-    try std.testing.expectEqualStrings("src/loop.zig", worker.blocked_on_file.?);
-}
-
-test "checkForBlockedSignal handles plain text signal" {
-    var worker = try WorkerProcess.spawn(
-        std.testing.allocator,
-        &[_][]const u8{ "echo", "test" },
-        0,
-        "test-issue",
-    );
-    defer worker.deinit();
-
-    std.Thread.sleep(50 * std.time.ns_per_ms);
-    _ = worker.tryWait();
-
-    // Plain text signal (newline terminated)
-    const plain_output = "Some output\nBLOCKED_BY_FILE: src/other.zig\nMore output";
-    try worker.output_buffer.appendSlice(std.testing.allocator, plain_output);
-
-    worker.checkForBlockedSignal();
-
-    try std.testing.expect(worker.blocked_on_file != null);
-    try std.testing.expectEqualStrings("src/other.zig", worker.blocked_on_file.?);
-}
-
-test "checkForBlockedSignal rejects malformed paths" {
-    var worker = try WorkerProcess.spawn(
-        std.testing.allocator,
-        &[_][]const u8{ "echo", "test" },
-        0,
-        "test-issue",
-    );
-    defer worker.deinit();
-
-    std.Thread.sleep(50 * std.time.ns_per_ms);
-    _ = worker.tryWait();
-
-    // Signal followed directly by JSON garbage without proper file path
-    const bad_output = "BLOCKED_BY_FILE: {\"some\":\"json\"}";
-    try worker.output_buffer.appendSlice(std.testing.allocator, bad_output);
-
-    worker.checkForBlockedSignal();
-
-    // Should not set blocked_on_file since the extracted content contains JSON chars
-    try std.testing.expect(worker.blocked_on_file == null);
-}
-
-test "checkForBlockedSignal does not re-detect after clearing" {
-    var worker = try WorkerProcess.spawn(
-        std.testing.allocator,
-        &[_][]const u8{ "echo", "test" },
-        0,
-        "test-issue",
-    );
-    defer worker.deinit();
-
-    std.Thread.sleep(50 * std.time.ns_per_ms);
-    _ = worker.tryWait();
-
-    // Add a valid signal
-    const output = "BLOCKED_BY_FILE: src/foo.zig\n";
-    try worker.output_buffer.appendSlice(std.testing.allocator, output);
-
-    // First detection should work
-    worker.checkForBlockedSignal();
-    try std.testing.expect(worker.blocked_on_file != null);
-    try std.testing.expectEqualStrings("src/foo.zig", worker.blocked_on_file.?);
-
-    // Simulate orchestrator clearing the blocked flag
-    std.testing.allocator.free(worker.blocked_on_file.?);
-    worker.blocked_on_file = null;
-
-    // Second call should NOT re-detect the same signal (scan position advanced)
-    worker.checkForBlockedSignal();
-    try std.testing.expect(worker.blocked_on_file == null);
 }

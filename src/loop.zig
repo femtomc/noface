@@ -6,7 +6,8 @@
 const std = @import("std");
 const config_mod = @import("config.zig");
 const process = @import("process.zig");
-const git = @import("git.zig");
+const jj = @import("jj.zig");
+const prompts = @import("prompts.zig");
 const streaming = @import("streaming.zig");
 const signals = @import("signals.zig");
 const markdown = @import("markdown.zig");
@@ -726,169 +727,20 @@ pub const AgentLoop = struct {
             try self.allocator.dupe(u8, "");
         defer self.allocator.free(directions_section);
 
-        // Common manifest generation section
-        const manifest_section =
-            \\
-            \\FILE MANIFEST GENERATION:
-            \\For each issue that will be worked on, predict which files will be modified.
-            \\This is CRITICAL for enabling parallel execution without file conflicts.
-            \\
-            \\After analyzing each issue, output a MANIFEST block:
-            \\
-            \\```manifest
-            \\ISSUE: <issue-id>
-            \\PRIMARY_FILES:
-            \\- src/path/to/file.zig
-            \\- src/another/file.zig
-            \\READ_FILES:
-            \\- src/shared/types.zig
-            \\FORBIDDEN_FILES:
-            \\- src/main.zig
-            \\```
-            \\
-            \\Guidelines for manifest generation:
-            \\- PRIMARY_FILES: Files this issue will modify (exclusive access needed)
-            \\- READ_FILES: Files that will be read but not modified (shared access OK)
-            \\- FORBIDDEN_FILES: Files that must NOT be touched (e.g., unrelated modules)
-            \\- Analyze the issue description and acceptance criteria carefully
-            \\- Consider which modules/files are relevant based on the codebase structure
-            \\- If unsure, include more files in PRIMARY_FILES (safer for conflict detection)
-            \\- Use glob patterns sparingly: prefer explicit file paths
-            \\
-            \\After outputting a manifest, store it as a comment on the issue:
-            \\  bd comment <issue-id> "MANIFEST: primary=[file1,file2] read=[file3] forbidden=[file4]"
-            \\
-            \\PARALLEL BATCH GROUPING:
-            \\After generating manifests for all ready issues, group them into parallel batches.
-            \\Issues in the same batch can be worked on simultaneously by multiple workers.
-            \\
-            \\Rules for batch grouping:
-            \\1. Issues with OVERLAPPING PRIMARY_FILES must be in DIFFERENT batches (file conflict)
-            \\2. If issue A depends on issue B (A is blocked by B), they must be in DIFFERENT batches
-            \\   - B's batch must come BEFORE A's batch (respect dependency ordering)
-            \\3. Maximize parallelism: put as many non-conflicting issues in each batch as possible
-            \\4. Earlier batches should contain foundation/blocking work
-            \\
-            \\Output batch groupings as PARALLEL_BATCH blocks:
-            \\
-            \\```batch
-            \\PARALLEL_BATCH: 1
-            \\ISSUES:
-            \\- issue-abc
-            \\- issue-xyz
-            \\REASON: No file conflicts, independent changes
-            \\```
-            \\
-            \\```batch
-            \\PARALLEL_BATCH: 2
-            \\ISSUES:
-            \\- issue-def
-            \\REASON: Depends on issue-abc from batch 1
-            \\```
-            \\
-        ;
-
         // Two different prompts: with design docs (monowiki) or without
         if (self.config.monowiki_config) |mwc| {
-            return std.fmt.allocPrint(self.allocator,
-                \\You are the strategic planner for {s}.
-                \\
-                \\DESIGN DOCUMENTS:
-                \\The design documents define what we're building. They are your primary source of truth.
-                \\Location: {s}
-                \\
-                \\Commands:
-                \\- monowiki search "<query>" --json    # Find relevant design docs
-                \\- monowiki note <slug> --format json  # Read a specific document
-                \\- monowiki graph neighbors --slug <slug> --json  # Find related docs
-                \\
-                \\OBJECTIVE:
-                \\Chart an implementation path through the issue backlog that progresses toward
-                \\the architecture and features specified in the design documents.
-                \\
-                \\ASSESS CURRENT STATE:
-                \\1. Run `bd list` to see all issues
-                \\2. Run `bd ready` to see the implementation queue
-                \\3. Survey design documents to understand target architecture
-                \\4. For each ready issue, analyze which files will need modification
-                \\
-                \\PLANNING TASKS:
-                \\
-                \\Gap Analysis:
-                \\- Compare design documents against existing issues
-                \\- Identify design elements with no corresponding issues
-                \\- Create issues to fill gaps (reference the design doc slug)
-                \\
-                \\Priority Assignment:
-                \\- P0: Blocking issues, security vulnerabilities, broken builds
-                \\- P1: Foundation work that unblocks other features
-                \\- P2: Features specified in design docs
-                \\- P3: Nice-to-haves, future work
-                \\
-                \\Sequencing:
-                \\- Ensure dependencies flow correctly (foundations before features)
-                \\- Use `bd dep add <issue> <blocker>` to express dependencies
-                \\{s}{s}
-                \\CONSTRAINTS:
-                \\- READ-ONLY for code and design documents
-                \\- Only modify beads issues (create, update, close, add deps, comment)
-                \\- Do not begin implementation work
-                \\- Do NOT search for design docs outside the monowiki vault
-                \\
-                \\OUTPUT:
-                \\1. Output MANIFEST blocks for all ready issues
-                \\2. Store each manifest as a bd comment
-                \\3. Output PARALLEL_BATCH blocks grouping non-conflicting issues
-                \\4. Summarize gaps identified, issues created, and recommended critical path
-                \\End with: PLANNING_COMPLETE
-            , .{ self.config.project_name, mwc.vault, directions_section, manifest_section });
+            return prompts.buildPlannerPromptWithMonowiki(
+                self.allocator,
+                self.config.project_name,
+                mwc.vault,
+                directions_section,
+            );
         } else {
-            // No design docs - simpler backlog management prompt
-            return std.fmt.allocPrint(self.allocator,
-                \\You are the strategic planner for {s}.
-                \\
-                \\NOTE: No design documents are configured for this project.
-                \\Focus on organizing and prioritizing the existing backlog.
-                \\
-                \\OBJECTIVE:
-                \\Manage the issue backlog to ensure work is well-organized and sequenced.
-                \\
-                \\ASSESS CURRENT STATE:
-                \\1. Run `bd list` to see all issues
-                \\2. Run `bd ready` to see the implementation queue
-                \\3. Run `bd blocked` to see what's waiting on dependencies
-                \\4. For each ready issue, analyze which files will need modification
-                \\
-                \\PLANNING TASKS:
-                \\
-                \\Priority Review:
-                \\- P0: Blocking issues, security vulnerabilities, broken builds
-                \\- P1: Foundation work that unblocks other features
-                \\- P2: Standard features and improvements
-                \\- P3: Nice-to-haves, future work
-                \\
-                \\Sequencing:
-                \\- Ensure dependencies flow correctly (foundations before features)
-                \\- Use `bd dep add <issue> <blocker>` to express dependencies
-                \\- Split issues that are too large into smaller pieces
-                \\
-                \\Issue Quality:
-                \\- Each issue should have a clear, actionable title
-                \\- Description should explain what, why, and acceptance criteria
-                \\{s}{s}
-                \\CONSTRAINTS:
-                \\- READ-ONLY for code files
-                \\- Only modify beads issues (create, update, close, add deps, comment)
-                \\- Do not begin implementation work
-                \\- Do NOT search for design docs - there are none configured
-                \\
-                \\OUTPUT:
-                \\1. Output MANIFEST blocks for all ready issues
-                \\2. Store each manifest as a bd comment
-                \\3. Output PARALLEL_BATCH blocks grouping non-conflicting issues
-                \\4. Summarize any changes made and recommend the critical path
-                \\End with: PLANNING_COMPLETE
-            , .{ self.config.project_name, directions_section, manifest_section });
+            return prompts.buildPlannerPromptSimple(
+                self.allocator,
+                self.config.project_name,
+                directions_section,
+            );
         }
     }
 
@@ -1250,38 +1102,12 @@ pub const AgentLoop = struct {
 
         const issue_json = if (show_result.success()) show_result.stdout else "{}";
 
-        return std.fmt.allocPrint(self.allocator,
-            \\You are the strategic planner for {s}.
-            \\
-            \\CONTEXT:
-            \\The implementation agent failed to complete the following issue after multiple attempts.
-            \\Your task is to break it down into smaller, more manageable sub-issues.
-            \\
-            \\FAILED ISSUE:
-            \\ID: {s}
-            \\Details: {s}
-            \\
-            \\BREAKDOWN INSTRUCTIONS:
-            \\1. Analyze why this issue might be too complex for a single implementation pass
-            \\2. Identify logical sub-tasks that can be completed independently
-            \\3. Create 2-5 new issues using `bd create` that together accomplish the original goal
-            \\4. Set appropriate dependencies between the new issues using `bd dep add`
-            \\5. Update the original issue to depend on the new sub-issues (making it a tracking issue)
-            \\
-            \\COMMANDS:
-            \\- bd create "title" -t task -p <priority> --description "..." --acceptance "..."
-            \\- bd dep add <issue-id> <depends-on-id>   # first issue depends on second
-            \\- bd update <issue-id> --status open      # reset status if needed
-            \\- bd show <issue-id>                      # view issue details
-            \\
-            \\GUIDELINES:
-            \\- Each sub-issue should be completable in a single agent session
-            \\- Lower priority sub-issues should come first (foundations before features)
-            \\- Include clear acceptance criteria for each sub-issue
-            \\- The original issue ({s}) should remain open and depend on all sub-issues
-            \\
-            \\End with: BREAKDOWN_COMPLETE
-        , .{ self.config.project_name, issue_id, issue_json, issue_id });
+        return prompts.buildBreakdownPrompt(
+            self.allocator,
+            self.config.project_name,
+            issue_id,
+            issue_json,
+        );
     }
 
     /// Build quality pass prompt with optional monowiki integration
@@ -1314,71 +1140,11 @@ pub const AgentLoop = struct {
         } else try self.allocator.dupe(u8, "");
         defer self.allocator.free(monowiki_section);
 
-        return std.fmt.allocPrint(self.allocator,
-            \\You are conducting a code quality audit for {s}.
-            \\
-            \\OBJECTIVE:
-            \\Identify maintainability issues and technical debt. Create actionable issues
-            \\for problems that matter, not style nitpicks.
-            \\{s}
-            \\FOCUS AREAS (in priority order):
-            \\
-            \\1. Correctness Risks
-            \\   - Potential null/undefined access
-            \\   - Unchecked error conditions
-            \\   - Race conditions or state inconsistencies
-            \\   - Integer overflow/underflow possibilities
-            \\
-            \\2. Maintainability Blockers
-            \\   - Functions >50 lines or >10 branches
-            \\   - Circular dependencies between modules
-            \\   - God objects or functions doing too many things
-            \\   - Copy-pasted code blocks (3+ similar instances)
-            \\
-            \\3. Missing Safety Nets
-            \\   - Public APIs without input validation
-            \\   - Operations that could fail silently
-            \\   - Missing bounds checks on arrays/slices
-            \\
-            \\4. Performance Red Flags
-            \\   - Allocations in hot loops
-            \\   - O(n²) or worse algorithms on unbounded data
-            \\   - Repeated expensive computations
-            \\
-            \\SKIP:
-            \\- Style preferences (formatting, naming conventions)
-            \\- Single-use code that's clearly temporary
-            \\- Test files (unless tests themselves are buggy)
-            \\- Generated code
-            \\
-            \\PROCESS:
-            \\1. Run `bd list` to check existing tech-debt issues (avoid duplicates)
-            \\2. Scan src/ directory systematically
-            \\3. For each finding, assess: "Would fixing this prevent a future bug or
-            \\   significantly ease future development?"
-            \\4. Only create issues for clear "yes" answers
-            \\
-            \\ISSUE CREATION:
-            \\  bd create "<Verb> <specific problem>" -t tech-debt -p <1|2> --note "<details>"
-            \\
-            \\Include in note:
-            \\- File and line number (e.g., src/loop.zig:142)
-            \\- Brief description of the problem
-            \\- Suggested approach (if obvious)
-            \\
-            \\LIMITS:
-            \\- Maximum 5 issues per pass (focus on highest impact)
-            \\- Priority 1: Would cause bugs or blocks feature work
-            \\- Priority 2: Makes code harder to understand or modify
-            \\
-            \\CONSTRAINTS:
-            \\- READ-ONLY: Do not modify any code or design documents
-            \\- Focus on src/ directory
-            \\
-            \\OUTPUT:
-            \\List findings with rationale, then the bd commands used.
-            \\End with: QUALITY_REVIEW_COMPLETE
-        , .{ self.config.project_name, monowiki_section });
+        return prompts.buildQualityPrompt(
+            self.allocator,
+            self.config.project_name,
+            monowiki_section,
+        );
     }
 
     /// Run a code quality review pass
@@ -1468,7 +1234,7 @@ pub const AgentLoop = struct {
     /// Returns list of file paths that were already modified or untracked
     /// Caller must free the returned list with freeBaseline
     fn captureChangedFilesBaseline(self: *AgentLoop) ![]const []const u8 {
-        var repo = git.GitRepo.init(self.allocator);
+        var repo = jj.JjRepo.init(self.allocator);
         var changed = try repo.getAllChangedFiles();
         // Don't defer deinit - we need to copy the strings first before freeing
 
@@ -1490,15 +1256,16 @@ pub const AgentLoop = struct {
         }.check;
 
         // Copy all unique files
+        // jj uses modified/added/deleted instead of git's modified/staged/untracked
         for (changed.modified) |f| {
             try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
         }
-        for (changed.staged) |f| {
+        for (changed.added) |f| {
             if (!isInList(baseline.items, f)) {
                 try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
             }
         }
-        for (changed.untracked) |f| {
+        for (changed.deleted) |f| {
             if (!isInList(baseline.items, f)) {
                 try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
             }
@@ -1529,8 +1296,8 @@ pub const AgentLoop = struct {
         }
         const m = manifest.?;
 
-        // Get all changed files using git module
-        var repo = git.GitRepo.init(self.allocator);
+        // Get all changed files using jj module
+        var repo = jj.JjRepo.init(self.allocator);
         var changed = try repo.getAllChangedFiles();
         defer changed.deinit();
 
@@ -1611,13 +1378,13 @@ pub const AgentLoop = struct {
             try processFile(self.allocator, file, baseline, m, &all_touched, &unauthorized, &forbidden_touched);
         }
 
-        // Check staged files
-        for (changed.staged) |file| {
+        // Check added files (jj equivalent of staged)
+        for (changed.added) |file| {
             try processFile(self.allocator, file, baseline, m, &all_touched, &unauthorized, &forbidden_touched);
         }
 
-        // Check untracked files
-        for (changed.untracked) |file| {
+        // Check deleted files
+        for (changed.deleted) |file| {
             try processFile(self.allocator, file, baseline, m, &all_touched, &unauthorized, &forbidden_touched);
         }
 
@@ -1665,8 +1432,8 @@ pub const AgentLoop = struct {
             return;
         }
 
-        // Rollback each file individually using git module
-        var repo = git.GitRepo.init(self.allocator);
+        // Rollback each file individually using jj module
+        var repo = jj.JjRepo.init(self.allocator);
         for (files_to_rollback.items) |file| {
             try repo.rollbackFile(file);
             self.logInfo("  Rolled back: {s}", .{file});
@@ -1680,46 +1447,12 @@ pub const AgentLoop = struct {
         const base_prompt = try self.buildImplementationPrompt(issue_id);
         defer self.allocator.free(base_prompt);
 
-        // Build violation details
-        var violation_details = std.ArrayListUnmanaged(u8){};
-        defer violation_details.deinit(self.allocator);
-
-        try violation_details.appendSlice(self.allocator,
-            \\
-            \\CRITICAL WARNING - PREVIOUS ATTEMPT VIOLATED FILE MANIFEST:
-            \\Your previous attempt modified files outside the allowed scope. This is NOT allowed.
-            \\
-            \\
+        return prompts.buildStricterPrompt(
+            self.allocator,
+            base_prompt,
+            violation_result.forbidden_files_touched,
+            violation_result.unauthorized_files,
         );
-
-        if (violation_result.forbidden_files_touched.len > 0) {
-            try violation_details.appendSlice(self.allocator, "FORBIDDEN FILES TOUCHED (must NEVER modify):\n");
-            for (violation_result.forbidden_files_touched) |f| {
-                try violation_details.appendSlice(self.allocator, "  - ");
-                try violation_details.appendSlice(self.allocator, f);
-                try violation_details.appendSlice(self.allocator, "\n");
-            }
-        }
-
-        if (violation_result.unauthorized_files.len > 0) {
-            try violation_details.appendSlice(self.allocator, "UNAUTHORIZED FILES MODIFIED (not in primary_files):\n");
-            for (violation_result.unauthorized_files) |f| {
-                try violation_details.appendSlice(self.allocator, "  - ");
-                try violation_details.appendSlice(self.allocator, f);
-                try violation_details.appendSlice(self.allocator, "\n");
-            }
-        }
-
-        try violation_details.appendSlice(self.allocator,
-            \\
-            \\You MUST only modify the files explicitly allowed in the manifest.
-            \\Run `bd show <issue-id>` and check the MANIFEST comment for allowed files.
-            \\If you need to modify additional files, explain why in a comment and stop.
-            \\
-            \\
-        );
-
-        return std.fmt.allocPrint(self.allocator, "{s}{s}", .{ violation_details.items, base_prompt });
     }
 
     /// Run an agent with streaming output and SQLite transcript logging
@@ -2065,57 +1798,16 @@ pub const AgentLoop = struct {
             try self.allocator.dupe(u8, "");
         defer self.allocator.free(progress_section);
 
-        return std.fmt.allocPrint(self.allocator,
-            \\You are a senior software engineer working autonomously on issue {s} in the {s} project.
-            \\{s}{s}
-            \\APPROACH:
-            \\Before writing any code, take a moment to:
-            \\1. Understand the issue fully - run `bd show {s}` and read carefully
-            \\2. Review the code references above - use Read tool to fetch specific sections as needed
-            \\3. Plan your approach - consider edge cases, error handling, and testability
-            \\4. Keep changes minimal and focused - solve the issue, don't refactor unrelated code
-            \\
-            \\WORKFLOW:
-            \\1. Mark issue in progress: `bd update {s} --status in_progress`
-            \\2. Implement the solution following existing code style and patterns
-            \\3. Verify your changes: `{s}`
-            \\   - If tests fail, debug and fix before proceeding
-            \\   - Add tests if the change is testable and tests don't exist
-            \\4. Self-review your diff: `git diff`
-            \\   - Check for: debugging artifacts, commented code, style inconsistencies
-            \\5. Request review: `{s} review --uncommitted`
-            \\6. Address ALL feedback - re-run review until approved
-            \\7. Create marker: `touch .noface/codex-approved`
-            \\8. Commit with a clear message:
-            \\   - Format: "<type>: <description>" (e.g., "fix: resolve null pointer in parser")
-            \\   - Reference the issue in the body
-            \\9. Close the issue: `bd close {s} --reason "Completed: <one-line summary>"`
-            \\{s}
-            \\QUALITY STANDARDS:
-            \\- Code should be clear enough to not need comments explaining *what* it does
-            \\- Error messages should help users understand what went wrong
-            \\- No hardcoded values that should be configurable
-            \\- Handle edge cases explicitly, don't rely on "it probably won't happen"
-            \\
-            \\CONSTRAINTS:
-            \\- Do NOT commit until review explicitly approves
-            \\- Do NOT modify code unrelated to this issue
-            \\- Do NOT add dependencies without clear justification
-            \\
-            \\When finished, output: ISSUE_COMPLETE
-            \\If blocked and cannot proceed, output: BLOCKED: <reason>
-        , .{
+        return prompts.buildImplementationPrompt(
+            self.allocator,
             issue_id,
             self.config.project_name,
             code_refs_section,
             monowiki_section,
-            issue_id,
-            issue_id,
             self.config.test_command,
             self.config.review_agent,
-            issue_id,
             progress_section,
-        });
+        );
     }
 
     /// Sync issues to GitHub
