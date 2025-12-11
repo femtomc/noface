@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verification — noface</title>
+  <meta name="description" content="Verification">
+  <meta name="author" content="noface">
+  <meta name="monowiki-base-url" content="/">
+  <meta name="monowiki-note-slug" content="verification">
+  
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/previews.css">
+  <link rel="stylesheet" href="/css/graph.css">
+  <link rel="stylesheet" href="/css/search.css">
+
+  <!-- Frontend bundle -->
+  <script type="module" src="/js/bundle.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <nav class="nav">
+        <a href="/index.html">home</a>
+        
+        <a href="https://github.com/femtomc/noface">github</a>
+        <button id="search-trigger" class="search-trigger" aria-label="Search">
+          <span class="search-trigger-text">search</span>
+          <span class="search-trigger-hint">⌘K</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article>
+      
+      
+
+      
+      <p>
+        Tags: <code>design</code> <code>verification</code> <code>testing</code> <code>acceptance</code> 
+      </p>
+      
+
+      
+        <div id="toc" class="toc-container">
+          <nav class="toc-nav"><h3>Contents</h3><ul class="toc-list"><li class="toc-level-1"><a href="#verification">Verification</a></li><li class="toc-level-2"><a href="#current-design">Current Design</a></li><li class="toc-level-2"><a href="#relation-to-survey">Relation to Survey</a></li><li class="toc-level-2"><a href="#design-decisions">Design Decisions</a></li><li class="toc-level-3"><a href="#1-test-coverage-require-tests-for-new-behavior">1. Test Coverage: Require tests for new behavior</a></li><li class="toc-level-3"><a href="#2-review-pass-optional-but-recommended-for-non-trivial-changes">2. Review Pass: Optional but recommended for non-trivial changes</a></li><li class="toc-level-3"><a href="#3-static-analysis-integrate-repos-existing-tools">3. Static Analysis: Integrate repo&#39;s existing tools</a></li><li class="toc-level-3"><a href="#4-semantic-verification-judge-agent-for-complex-issues">4. Semantic Verification: Judge agent for complex issues</a></li><li class="toc-level-3"><a href="#5-confidence-signals-explicit-confidence-risk-metadata">5. Confidence Signals: Explicit confidence + risk metadata</a></li><li class="toc-level-3"><a href="#6-partial-acceptance-hard-vs-soft-gates">6. Partial Acceptance: Hard vs soft gates</a></li><li class="toc-level-3"><a href="#7-human-review-gate-risk-classification-for-high-risk-changes">7. Human Review Gate: Risk classification for high-risk changes</a></li><li class="toc-level-2"><a href="#implementation-notes">Implementation Notes</a></li><li class="toc-level-3"><a href="#todo">TODO</a></li></ul></nav>
+        </div>
+        
+
+      <div class="page-subheader">
+        
+          <button id="copy-page-source" class="copy-page-btn" type="button" aria-label="Copy page Markdown">Copy page source</button>
+          
+        <button id="global-graph-toggle" class="graph-btn" type="button" aria-label="Open graph">Graph</button>
+      </div>
+
+      <h1 id="verification">Verification<a class="heading-anchor" href="#verification" aria-label="Link to heading">#</a></h1>
+<p>How noface determines whether an agent succeeded.</p>
+<h2 id="current-design">Current Design<a class="heading-anchor" href="#current-design" aria-label="Link to heading">#</a></h2>
+<p>noface uses multiple verification layers:</p>
+<ol>
+<li><strong>Test execution</strong> — runs the configured test command; failure = not done</li>
+<li><strong>Manifest compliance</strong> — <code>git diff</code> checked against declared files; violations = rollback</li>
+<li><strong>Build check</strong> — runs the configured build command (implicit in agent workflow)</li>
+</ol>
+<p>The agent is instructed to self-verify (run tests, check output) before committing.</p>
+<h2 id="relation-to-survey">Relation to Survey<a class="heading-anchor" href="#relation-to-survey" aria-label="Link to heading">#</a></h2>
+<p>The survey emphasizes <strong>automated testing as ground truth</strong>:</p>
+<blockquote>
+<p>"This ensures that code isn't accepted as 'done' until it passes its tests. Even single-agent approaches like OpenAI's Codex have employed this idea (often called execute-and-fix): run the code, and if an error or failing test is detected, prompt the model to fix it."</p>
+</blockquote>
+<p>And <strong>manifest verification</strong>:</p>
+<blockquote>
+<p>"Tools like MAID runner perform static analysis on the diff: did the agent only modify the allowed files and functions?"</p>
+</blockquote>
+<p>The survey also discusses <strong>LLM critics</strong> as an additional layer — a second agent that reviews the code.</p>
+<h2 id="design-decisions">Design Decisions<a class="heading-anchor" href="#design-decisions" aria-label="Link to heading">#</a></h2>
+<h3 id="1-test-coverage-require-tests-for-new-behavior">1. Test Coverage: Require tests for new behavior<a class="heading-anchor" href="#1-test-coverage-require-tests-for-new-behavior" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Add test-centric enhancements for changes that add new behavior.</p>
+<p><strong>For changes that add new behavior:</strong></p>
+<ul>
+<li>Ask agent to write or update tests as part of the task</li>
+<li>Optionally run coverage diff if coverage tool exists:
+<ul>
+<li>If new/changed lines have zero coverage → soft or hard gate</li>
+</ul>
+</li>
+</ul>
+<p><strong>Where tooling is limited:</strong></p>
+<ul>
+<li>At least ensure: "If tests exist in this module, check that they were updated"</li>
+<li>Warn if tests not updated for behavioral changes</li>
+</ul>
+<h3 id="2-review-pass-optional-but-recommended-for-non-trivial-changes">2. Review Pass: Optional but recommended for non-trivial changes<a class="heading-anchor" href="#2-review-pass-optional-but-recommended-for-non-trivial-changes" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Add dedicated reviewer pass as an optional gate for non-trivial changes.</p>
+<p><strong>Reviewer inputs:</strong></p>
+<ul>
+<li>Issue description</li>
+<li>Old code vs new code diff</li>
+<li>Test results</li>
+</ul>
+<p><strong>Reviewer outputs:</strong></p>
+<ul>
+<li>Verdict: <code>OK</code> / <code>NOT_OK</code> / <code>NEEDS_HUMAN</code></li>
+<li>Specific comments</li>
+</ul>
+<p><strong>Trigger heuristics:</strong></p>
+<table><thead><tr><th>Condition</th><th>Action</th></tr></thead><tbody>
+<tr><td>Large diffs</td><td>Always review</td></tr>
+<tr><td>High-risk directories</td><td>Always review</td></tr>
+<tr><td>Changes without tests</td><td>Always review</td></tr>
+<tr><td>Small, well-tested changes</td><td>Skip or downgrade</td></tr>
+</tbody></table>
+<h3 id="3-static-analysis-integrate-repos-existing-tools">3. Static Analysis: Integrate repo's existing tools<a class="heading-anchor" href="#3-static-analysis-integrate-repos-existing-tools" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Integrate whatever static analysis the repo already has.</p>
+<p><strong>Hard gates (block on failure):</strong></p>
+<ul>
+<li>Type errors (<code>zig build</code>, <code>tsc</code>, <code>mypy</code>)</li>
+<li>Formatter failures (<code>zig fmt</code>, <code>prettier</code>)</li>
+</ul>
+<p><strong>Soft gates (log, maybe create follow-up):</strong></p>
+<ul>
+<li>New lint warnings</li>
+<li>Security scanner findings (unless critical)</li>
+</ul>
+<div class="code-block">
+<div class="code-toolbar"><button class="copy-code-btn" type="button" aria-label="Copy code">Copy</button></div>
+<pre style="background-color:#ffffff;">
+<span style="color:#323232;">[verification.static_analysis]
+</span><span style="color:#323232;">hard_gates = [&quot;zig build&quot;, &quot;zig fmt --check&quot;]
+</span><span style="color:#323232;">soft_gates = [&quot;clippy&quot;, &quot;eslint&quot;]
+</span></pre>
+
+</div>
+<h3 id="4-semantic-verification-judge-agent-for-complex-issues">4. Semantic Verification: Judge agent for complex issues<a class="heading-anchor" href="#4-semantic-verification-judge-agent-for-complex-issues" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Add semantic check step for complex issues.</p>
+<p><strong>Option 1: Explicit reasoning</strong></p>
+<ul>
+<li>Have implementer/reviewer write: "Here is how the change addresses the issue…"</li>
+<li>Check coherence between explanation and diff</li>
+</ul>
+<p><strong>Option 2: Judge agent</strong></p>
+<ul>
+<li>Input: issue description + old code + new code</li>
+<li>Question: "Does this change resolve the described behavior? Is anything missing or unrelated?"</li>
+</ul>
+<p>Doesn't need to be perfect; even catching obvious mismatches is a big win.</p>
+<h3 id="5-confidence-signals-explicit-confidence-risk-metadata">5. Confidence Signals: Explicit confidence + risk metadata<a class="heading-anchor" href="#5-confidence-signals-explicit-confidence-risk-metadata" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Ask agent to output explicit confidence and risks.</p>
+<p><strong>Prompt addition:</strong></p>
+<div class="code-block">
+<div class="code-toolbar"><button class="copy-code-btn" type="button" aria-label="Copy code">Copy</button></div>
+<pre style="background-color:#ffffff;">
+<span style="color:#323232;">After implementing, output:
+</span><span style="color:#323232;">CONFIDENCE: X/5
+</span><span style="color:#323232;">RISKS:
+</span><span style="color:#323232;">- [list any edge cases or uncertainties]
+</span></pre>
+
+</div>
+<p><strong>Policy:</strong></p>
+<ul>
+<li>If confidence ≤ 2/5 → require reviewer + maybe human</li>
+<li>Also watch for heuristics:
+<ul>
+<li>Lots of TODOs in output</li>
+<li>"I think / maybe" in comments</li>
+<li>Weirdly small or huge diffs</li>
+</ul>
+</li>
+</ul>
+<h3 id="6-partial-acceptance-hard-vs-soft-gates">6. Partial Acceptance: Hard vs soft gates<a class="heading-anchor" href="#6-partial-acceptance-hard-vs-soft-gates" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Define hard vs soft gates; never partially merge.</p>
+<p><strong>Hard gates (must pass for merge):</strong></p>
+<ul>
+<li>Tests passing</li>
+<li>No syntax/build errors</li>
+<li>Manifest compliance</li>
+</ul>
+<p><strong>Soft gates (can proceed with warnings):</strong></p>
+<ul>
+<li>Lint warnings</li>
+<li>Coverage thresholds</li>
+<li>Reviewer "nit" comments</li>
+</ul>
+<p><strong>Policy:</strong></p>
+<ul>
+<li>Automated merge requires all hard gates</li>
+<li>Soft gate failures:
+<ul>
+<li>Either block and open follow-up issue, or</li>
+<li>Allow merge but log warnings and create cleanup issues</li>
+</ul>
+</li>
+</ul>
+<p>Avoid partial merges of file subsets; use the branch model from <a href="/failure-recovery.html">failure-recovery</a> instead.</p>
+<h3 id="7-human-review-gate-risk-classification-for-high-risk-changes">7. Human Review Gate: Risk classification for high-risk changes<a class="heading-anchor" href="#7-human-review-gate-risk-classification-for-high-risk-changes" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Build risk classification with hard human gate for sensitive areas.</p>
+<p><strong>High-risk triggers:</strong></p>
+<ul>
+<li>Files/directories: <code>auth/</code>, <code>payments/</code>, <code>secrets/</code>, <code>infra/</code>, <code>prod-config/</code></li>
+<li>Labels: <code>security</code>, <code>compliance</code>, <code>breaking-change</code></li>
+</ul>
+<p><strong>For high-risk changes:</strong></p>
+<ul>
+<li>noface never auto-merges</li>
+<li>Opens PR or surfaces diff with "requires human approval" flag</li>
+<li>Optionally pre-annotated with AI reviewer's comments</li>
+</ul>
+<div class="code-block">
+<div class="code-toolbar"><button class="copy-code-btn" type="button" aria-label="Copy code">Copy</button></div>
+<pre style="background-color:#ffffff;">
+<span style="color:#323232;">[verification.human_required]
+</span><span style="color:#323232;">paths = [&quot;src/auth/&quot;, &quot;src/payments/&quot;, &quot;config/prod/&quot;]
+</span><span style="color:#323232;">labels = [&quot;security&quot;, &quot;compliance&quot;]
+</span></pre>
+
+</div>
+<h2 id="implementation-notes">Implementation Notes<a class="heading-anchor" href="#implementation-notes" aria-label="Link to heading">#</a></h2>
+<p>See <code>src/loop.zig:verifyManifestCompliance</code> and prompt instructions for self-testing.</p>
+<h3 id="todo">TODO<a class="heading-anchor" href="#todo" aria-label="Link to heading">#</a></h3>
+<ul>
+<li><input disabled="" type="checkbox"/>
+Add test coverage checking (if coverage tool available)</li>
+<li><input disabled="" type="checkbox"/>
+Implement reviewer pass with risk-based triggering</li>
+<li><input disabled="" type="checkbox"/>
+Add static analysis integration (hard/soft gates)</li>
+<li><input disabled="" type="checkbox"/>
+Add judge agent for semantic verification</li>
+<li><input disabled="" type="checkbox"/>
+Parse confidence/risk metadata from agent output</li>
+<li><input disabled="" type="checkbox"/>
+Add human review gate for high-risk paths</li>
+<li><input disabled="" type="checkbox"/>
+Implement soft gate → follow-up issue creation</li>
+</ul>
+
+
+      
+      <hr>
+      <div id="backlinks">
+        <h3>Backlinks</h3>
+        <ul class="backlinks-list">
+          
+          <li><a href="/index.html">noface</a></li>
+          
+        </ul>
+      </div>
+      
+    </article>
+
+    
+    <hr>
+
+    <p>
+      <a href="/index.html">← Back to home</a>
+    </p>
+    
+    </article>
+
+  </main>
+
+
+
+  <!-- Global Graph Modal -->
+  <div class="global-graph-outer" id="global-graph-outer">
+    <div class="global-graph-container" id="global-graph-container"></div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal">
+    <div class="search-modal-wrapper">
+      <div class="search-modal-header">
+        <input
+          type="text"
+          id="search-modal-input"
+          class="search-modal-input"
+          placeholder="Search documentation..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="search-modal-tabs">
+        <button class="search-tab active" data-tab="results">Results</button>
+        <button class="search-tab" data-tab="graph">Graph</button>
+      </div>
+      <div class="search-modal-content">
+        <div class="search-tab-panel active" id="search-tab-results">
+          <div class="search-modal-results" id="search-modal-results"></div>
+        </div>
+        <div class="search-tab-panel" id="search-tab-graph">
+          <div class="search-graph-container" id="search-graph-container"></div>
+        </div>
+      </div>
+      <div class="search-modal-footer">
+        <div class="search-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>↵</kbd> Select</span>
+          <span><kbd>ESC</kbd> Close</span>
+        </div>
+        <div class="search-count"></div>
+      </div>
+    </div>
+  </div>
+
+  
+    <script id="page-source-data" type="application/json">"# Verification\n\nHow noface determines whether an agent succeeded.\n\n## Current Design\n\nnoface uses multiple verification layers:\n\n1. **Test execution** — runs the configured test command; failure = not done\n2. **Manifest compliance** — `git diff` checked against declared files; violations = rollback\n3. **Build check** — runs the configured build command (implicit in agent workflow)\n\nThe agent is instructed to self-verify (run tests, check output) before committing.\n\n## Relation to Survey\n\nThe survey emphasizes **automated testing as ground truth**:\n\n\u003e \"This ensures that code isn\u0027t accepted as \u0027done\u0027 until it passes its tests. Even single-agent approaches like OpenAI\u0027s Codex have employed this idea (often called execute-and-fix): run the code, and if an error or failing test is detected, prompt the model to fix it.\"\n\nAnd **manifest verification**:\n\n\u003e \"Tools like MAID runner perform static analysis on the diff: did the agent only modify the allowed files and functions?\"\n\nThe survey also discusses **LLM critics** as an additional layer — a second agent that reviews the code.\n\n## Design Decisions\n\n### 1. Test Coverage: Require tests for new behavior\n\n**Decision:** Add test-centric enhancements for changes that add new behavior.\n\n**For changes that add new behavior:**\n- Ask agent to write or update tests as part of the task\n- Optionally run coverage diff if coverage tool exists:\n  - If new/changed lines have zero coverage → soft or hard gate\n\n**Where tooling is limited:**\n- At least ensure: \"If tests exist in this module, check that they were updated\"\n- Warn if tests not updated for behavioral changes\n\n### 2. Review Pass: Optional but recommended for non-trivial changes\n\n**Decision:** Add dedicated reviewer pass as an optional gate for non-trivial changes.\n\n**Reviewer inputs:**\n- Issue description\n- Old code vs new code diff\n- Test results\n\n**Reviewer outputs:**\n- Verdict: `OK` / `NOT_OK` / `NEEDS_HUMAN`\n- Specific comments\n\n**Trigger heuristics:**\n| Condition | Action |\n|-----------|--------|\n| Large diffs | Always review |\n| High-risk directories | Always review |\n| Changes without tests | Always review |\n| Small, well-tested changes | Skip or downgrade |\n\n### 3. Static Analysis: Integrate repo\u0027s existing tools\n\n**Decision:** Integrate whatever static analysis the repo already has.\n\n**Hard gates (block on failure):**\n- Type errors (`zig build`, `tsc`, `mypy`)\n- Formatter failures (`zig fmt`, `prettier`)\n\n**Soft gates (log, maybe create follow-up):**\n- New lint warnings\n- Security scanner findings (unless critical)\n\n```toml\n[verification.static_analysis]\nhard_gates = [\"zig build\", \"zig fmt --check\"]\nsoft_gates = [\"clippy\", \"eslint\"]\n```\n\n### 4. Semantic Verification: Judge agent for complex issues\n\n**Decision:** Add semantic check step for complex issues.\n\n**Option 1: Explicit reasoning**\n- Have implementer/reviewer write: \"Here is how the change addresses the issue…\"\n- Check coherence between explanation and diff\n\n**Option 2: Judge agent**\n- Input: issue description + old code + new code\n- Question: \"Does this change resolve the described behavior? Is anything missing or unrelated?\"\n\nDoesn\u0027t need to be perfect; even catching obvious mismatches is a big win.\n\n### 5. Confidence Signals: Explicit confidence + risk metadata\n\n**Decision:** Ask agent to output explicit confidence and risks.\n\n**Prompt addition:**\n```\nAfter implementing, output:\nCONFIDENCE: X/5\nRISKS:\n- [list any edge cases or uncertainties]\n```\n\n**Policy:**\n- If confidence ≤ 2/5 → require reviewer + maybe human\n- Also watch for heuristics:\n  - Lots of TODOs in output\n  - \"I think / maybe\" in comments\n  - Weirdly small or huge diffs\n\n### 6. Partial Acceptance: Hard vs soft gates\n\n**Decision:** Define hard vs soft gates; never partially merge.\n\n**Hard gates (must pass for merge):**\n- Tests passing\n- No syntax/build errors\n- Manifest compliance\n\n**Soft gates (can proceed with warnings):**\n- Lint warnings\n- Coverage thresholds\n- Reviewer \"nit\" comments\n\n**Policy:**\n- Automated merge requires all hard gates\n- Soft gate failures:\n  - Either block and open follow-up issue, or\n  - Allow merge but log warnings and create cleanup issues\n\nAvoid partial merges of file subsets; use the branch model from [[failure-recovery]] instead.\n\n### 7. Human Review Gate: Risk classification for high-risk changes\n\n**Decision:** Build risk classification with hard human gate for sensitive areas.\n\n**High-risk triggers:**\n- Files/directories: `auth/`, `payments/`, `secrets/`, `infra/`, `prod-config/`\n- Labels: `security`, `compliance`, `breaking-change`\n\n**For high-risk changes:**\n- noface never auto-merges\n- Opens PR or surfaces diff with \"requires human approval\" flag\n- Optionally pre-annotated with AI reviewer\u0027s comments\n\n```toml\n[verification.human_required]\npaths = [\"src/auth/\", \"src/payments/\", \"config/prod/\"]\nlabels = [\"security\", \"compliance\"]\n```\n\n## Implementation Notes\n\nSee `src/loop.zig:verifyManifestCompliance` and prompt instructions for self-testing.\n\n### TODO\n- [ ] Add test coverage checking (if coverage tool available)\n- [ ] Implement reviewer pass with risk-based triggering\n- [ ] Add static analysis integration (hard/soft gates)\n- [ ] Add judge agent for semantic verification\n- [ ] Parse confidence/risk metadata from agent output\n- [ ] Add human review gate for high-risk paths\n- [ ] Implement soft gate → follow-up issue creation\n"</script>
+    
+
+</body>
+</html>

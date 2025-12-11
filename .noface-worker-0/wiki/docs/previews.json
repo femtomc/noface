@@ -1,0 +1,65 @@
+{
+  "agent.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#monowiki-agent-guide\">monowiki Agent Guide</a></li></ul></nav>",
+    "title": "AGENT",
+    "type": "essay",
+    "url": "/agent.html"
+  },
+  "context-injection.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#context-injection\">Context Injection</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#design-decisions\">Design Decisions</a></li><li class=\"toc-level-3\"><a href=\"#1-context-budget-dynamic-based-on-token-budget-and-complexity\">1. Context Budget: Dynamic based on token budget and complexity</a></li><li class=\"toc-level-3\"><a href=\"#2-relevance-ranking-hybrid-bm25-embeddings\">2. Relevance Ranking: Hybrid BM25 + embeddings</a></li><li class=\"toc-level-3\"><a href=\"#3-code-context-manifest-files-relevant-snippets\">3. Code Context: Manifest files + relevant snippets</a></li><li class=\"toc-level-3\"><a href=\"#4-context-freshness-downrank-stale-docs-dont-hard-exclude\">4. Context Freshness: Downrank stale docs, don&#39;t hard exclude</a></li><li class=\"toc-level-3\"><a href=\"#5-negative-context-explicit-exclusion-list\">5. Negative Context: Explicit exclusion list</a></li><li class=\"toc-level-3\"><a href=\"#6-agent-requested-context-thin-orchestrator-layer-harness-delegation\">6. Agent-Requested Context: Thin orchestrator layer + harness delegation</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li><li class=\"toc-level-3\"><a href=\"#todo\">TODO</a></li></ul></nav>",
+    "title": "Context Injection",
+    "type": "essay",
+    "url": "/context-injection.html"
+  },
+  "failure-recovery.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#failure-recovery\">Failure Recovery</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#design-decisions\">Design Decisions</a></li><li class=\"toc-level-3\"><a href=\"#1-retry-strategies-informed-retries-not-blind\">1. Retry Strategies: Informed retries, not blind</a></li><li class=\"toc-level-3\"><a href=\"#2-task-breakdown-minimal-concrete-decomposition\">2. Task Breakdown: Minimal, concrete decomposition</a></li><li class=\"toc-level-3\"><a href=\"#3-partial-progress-keep-on-branch-all-or-nothing-to-main\">3. Partial Progress: Keep on branch, all-or-nothing to main</a></li><li class=\"toc-level-3\"><a href=\"#4-model-escalation-simple-escalation-policy\">4. Model Escalation: Simple escalation policy</a></li><li class=\"toc-level-3\"><a href=\"#5-failure-classification-taxonomy-with-strategy-mapping\">5. Failure Classification: Taxonomy with strategy mapping</a></li><li class=\"toc-level-3\"><a href=\"#6-human-escalation-clear-threshold-summary\">6. Human Escalation: Clear threshold + summary</a></li><li class=\"toc-level-3\"><a href=\"#7-learning-from-failures-lightweight-rule-based-lessons\">7. Learning from Failures: Lightweight rule-based lessons</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li><li class=\"toc-level-3\"><a href=\"#todo\">TODO</a></li></ul></nav>",
+    "title": "Failure Recovery",
+    "type": "essay",
+    "url": "/failure-recovery.html"
+  },
+  "index.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#noface\">noface</a></li><li class=\"toc-level-2\"><a href=\"#research\">Research</a></li><li class=\"toc-level-2\"><a href=\"#design\">Design</a></li><li class=\"toc-level-2\"><a href=\"#quick-links\">Quick Links</a></li></ul></nav>",
+    "title": "noface",
+    "type": "essay",
+    "url": "/index.html"
+  },
+  "manifests.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#file-manifests\">File Manifests</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#design-decisions\">Design Decisions</a></li><li class=\"toc-level-3\"><a href=\"#1-granularity-file-level-with-soft-function-hints\">1. Granularity: File-level with soft function hints</a></li><li class=\"toc-level-3\"><a href=\"#2-manifest-generation-instrumentation-replan-on-miss\">2. Manifest Generation: Instrumentation + replan on miss</a></li><li class=\"toc-level-3\"><a href=\"#3-manifest-violations-never-accept-as-is\">3. Manifest Violations: Never accept as-is</a></li><li class=\"toc-level-3\"><a href=\"#4-dynamic-expansion-yes-via-orchestrator-mediated-manifest-v2\">4. Dynamic Expansion: Yes, via orchestrator-mediated &quot;manifest v2&quot;</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li><li class=\"toc-level-3\"><a href=\"#todo\">TODO</a></li></ul></nav>",
+    "title": "File Manifests",
+    "type": "essay",
+    "url": "/manifests.html"
+  },
+  "multi-pass.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#multi-pass-architecture\">Multi-Pass Architecture</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#design-decisions\">Design Decisions</a></li><li class=\"toc-level-3\"><a href=\"#1-pass-intervals-event-driven-adaptive-not-fixed\">1. Pass Intervals: Event-driven + adaptive (not fixed)</a></li><li class=\"toc-level-3\"><a href=\"#2-reviewer-pass-yes-for-high-risk-changes\">2. Reviewer Pass: Yes, for high-risk changes</a></li><li class=\"toc-level-3\"><a href=\"#3-feedback-loops-quality-findings-feed-back-to-implementer\">3. Feedback Loops: Quality findings feed back to implementer</a></li><li class=\"toc-level-3\"><a href=\"#4-pass-ordering-planner-on-demand-per-issue-not-just-periodic\">4. Pass Ordering: Planner on-demand per-issue (not just periodic)</a></li><li class=\"toc-level-3\"><a href=\"#5-diminishing-returns-data-driven-pass-value-metrics\">5. Diminishing Returns: Data-driven pass value metrics</a></li><li class=\"toc-level-3\"><a href=\"#6-model-selection-abstract-behind-roles-default-to-strong-model\">6. Model Selection: Abstract behind roles, default to strong model</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li><li class=\"toc-level-3\"><a href=\"#todo\">TODO</a></li></ul></nav>",
+    "title": "Multi-Pass Architecture",
+    "type": "essay",
+    "url": "/multi-pass.html"
+  },
+  "orchestration-survey.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#design-patterns-for-orchestrating-black-box-code-agents-a-literature-survey\">Design Patterns for Orchestrating Black-Box Code Agents: A Literature Survey</a></li><li class=\"toc-level-2\"><a href=\"#task-assignment-and-granularity\">Task Assignment and Granularity</a></li><li class=\"toc-level-2\"><a href=\"#context-curation-providing-helpful-context-and-avoiding-harmful-noise\">Context Curation: Providing Helpful Context (and Avoiding Harmful Noise)</a></li><li class=\"toc-level-2\"><a href=\"#prompt-engineering-at-the-orchestration-level\">Prompt Engineering at the Orchestration Level</a></li><li class=\"toc-level-2\"><a href=\"#parallelism-conflict-avoidance\">Parallelism &amp; Conflict Avoidance</a></li><li class=\"toc-level-2\"><a href=\"#verification-acceptance-criteria\">Verification &amp; Acceptance Criteria</a></li><li class=\"toc-level-2\"><a href=\"#failure-modes-recovery-strategies\">Failure Modes &amp; Recovery Strategies</a></li><li class=\"toc-level-2\"><a href=\"#multi-pass-architectures-planner-implementer-reviewer-etc\">Multi-Pass Architectures (Planner, Implementer, Reviewer, etc.)</a></li><li class=\"toc-level-2\"><a href=\"#human-in-the-loop-in-orchestration\">Human-in-the-Loop in Orchestration</a></li><li class=\"toc-level-2\"><a href=\"#conclusion\">Conclusion</a></li><li class=\"toc-level-2\"><a href=\"#references\">References</a></li></ul></nav>",
+    "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+    "type": "essay",
+    "url": "/orchestration-survey.html"
+  },
+  "parallel-execution.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#parallel-execution\">Parallel Execution</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#design-decisions\">Design Decisions</a></li><li class=\"toc-level-3\"><a href=\"#1-lock-granularity-file-level-only-for-now\">1. Lock Granularity: File-level only (for now)</a></li><li class=\"toc-level-3\"><a href=\"#2-batch-sizing-adaptive-concurrency\">2. Batch Sizing: Adaptive concurrency</a></li><li class=\"toc-level-3\"><a href=\"#3-lock-contention-hot-file-detection-mitigation\">3. Lock Contention: Hot file detection + mitigation</a></li><li class=\"toc-level-3\"><a href=\"#4-conflict-recovery-three-step-policy\">4. Conflict Recovery: Three-step policy</a></li><li class=\"toc-level-3\"><a href=\"#5-crdt-exploration-ast-aware-patching-as-middle-ground\">5. CRDT Exploration: AST-aware patching as middle ground</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li><li class=\"toc-level-3\"><a href=\"#todo\">TODO</a></li></ul></nav>",
+    "title": "Parallel Execution",
+    "type": "essay",
+    "url": "/parallel-execution.html"
+  },
+  "verification.html": {
+    "has_toc": true,
+    "preview": "<nav class=\"toc-nav\"><h3>Contents</h3><ul class=\"toc-list\"><li class=\"toc-level-1\"><a href=\"#verification\">Verification</a></li><li class=\"toc-level-2\"><a href=\"#current-design\">Current Design</a></li><li class=\"toc-level-2\"><a href=\"#relation-to-survey\">Relation to Survey</a></li><li class=\"toc-level-2\"><a href=\"#design-decisions\">Design Decisions</a></li><li class=\"toc-level-3\"><a href=\"#1-test-coverage-require-tests-for-new-behavior\">1. Test Coverage: Require tests for new behavior</a></li><li class=\"toc-level-3\"><a href=\"#2-review-pass-optional-but-recommended-for-non-trivial-changes\">2. Review Pass: Optional but recommended for non-trivial changes</a></li><li class=\"toc-level-3\"><a href=\"#3-static-analysis-integrate-repos-existing-tools\">3. Static Analysis: Integrate repo&#39;s existing tools</a></li><li class=\"toc-level-3\"><a href=\"#4-semantic-verification-judge-agent-for-complex-issues\">4. Semantic Verification: Judge agent for complex issues</a></li><li class=\"toc-level-3\"><a href=\"#5-confidence-signals-explicit-confidence-risk-metadata\">5. Confidence Signals: Explicit confidence + risk metadata</a></li><li class=\"toc-level-3\"><a href=\"#6-partial-acceptance-hard-vs-soft-gates\">6. Partial Acceptance: Hard vs soft gates</a></li><li class=\"toc-level-3\"><a href=\"#7-human-review-gate-risk-classification-for-high-risk-changes\">7. Human Review Gate: Risk classification for high-risk changes</a></li><li class=\"toc-level-2\"><a href=\"#implementation-notes\">Implementation Notes</a></li><li class=\"toc-level-3\"><a href=\"#todo\">TODO</a></li></ul></nav>",
+    "title": "Verification",
+    "type": "essay",
+    "url": "/verification.html"
+  }
+}

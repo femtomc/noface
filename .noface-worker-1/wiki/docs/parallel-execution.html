@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parallel Execution — noface</title>
+  <meta name="description" content="Parallel Execution">
+  <meta name="author" content="noface">
+  <meta name="monowiki-base-url" content="/">
+  <meta name="monowiki-note-slug" content="parallel-execution">
+  
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/previews.css">
+  <link rel="stylesheet" href="/css/graph.css">
+  <link rel="stylesheet" href="/css/search.css">
+
+  <!-- Frontend bundle -->
+  <script type="module" src="/js/bundle.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <nav class="nav">
+        <a href="/index.html">home</a>
+        
+        <a href="https://github.com/femtomc/noface">github</a>
+        <button id="search-trigger" class="search-trigger" aria-label="Search">
+          <span class="search-trigger-text">search</span>
+          <span class="search-trigger-hint">⌘K</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article>
+      
+      
+
+      
+      <p>
+        Tags: <code>design</code> <code>parallelism</code> <code>batching</code> <code>locking</code> 
+      </p>
+      
+
+      
+        <div id="toc" class="toc-container">
+          <nav class="toc-nav"><h3>Contents</h3><ul class="toc-list"><li class="toc-level-1"><a href="#parallel-execution">Parallel Execution</a></li><li class="toc-level-2"><a href="#current-design">Current Design</a></li><li class="toc-level-2"><a href="#relation-to-survey">Relation to Survey</a></li><li class="toc-level-2"><a href="#design-decisions">Design Decisions</a></li><li class="toc-level-3"><a href="#1-lock-granularity-file-level-only-for-now">1. Lock Granularity: File-level only (for now)</a></li><li class="toc-level-3"><a href="#2-batch-sizing-adaptive-concurrency">2. Batch Sizing: Adaptive concurrency</a></li><li class="toc-level-3"><a href="#3-lock-contention-hot-file-detection-mitigation">3. Lock Contention: Hot file detection + mitigation</a></li><li class="toc-level-3"><a href="#4-conflict-recovery-three-step-policy">4. Conflict Recovery: Three-step policy</a></li><li class="toc-level-3"><a href="#5-crdt-exploration-ast-aware-patching-as-middle-ground">5. CRDT Exploration: AST-aware patching as middle ground</a></li><li class="toc-level-2"><a href="#implementation-notes">Implementation Notes</a></li><li class="toc-level-3"><a href="#todo">TODO</a></li></ul></nav>
+        </div>
+        
+
+      <div class="page-subheader">
+        
+          <button id="copy-page-source" class="copy-page-btn" type="button" aria-label="Copy page Markdown">Copy page source</button>
+          
+        <button id="global-graph-toggle" class="graph-btn" type="button" aria-label="Open graph">Graph</button>
+      </div>
+
+      <h1 id="parallel-execution">Parallel Execution<a class="heading-anchor" href="#parallel-execution" aria-label="Link to heading">#</a></h1>
+<p>How noface runs multiple agents concurrently without conflicts.</p>
+<h2 id="current-design">Current Design<a class="heading-anchor" href="#current-design" aria-label="Link to heading">#</a></h2>
+<ol>
+<li><strong>Planner pass</strong> groups issues into batches based on manifest analysis</li>
+<li>Issues in the same batch have <strong>disjoint primary_files</strong> (no overlap)</li>
+<li><strong>Worker pool</strong> spawns up to N parallel processes (configurable, default 8)</li>
+<li><strong>Lock entries</strong> track which files are held by which worker</li>
+<li>Batches execute sequentially; issues within a batch execute in parallel</li>
+</ol>
+<h2 id="relation-to-survey">Relation to Survey<a class="heading-anchor" href="#relation-to-survey" aria-label="Link to heading">#</a></h2>
+<p>This implements the <strong>file-level locking</strong> pattern from <a href="/orchestration-survey.html">orchestration-survey</a>:</p>
+<blockquote>
+<p>"A community-built 'Claude code agent farm' demonstrates this with a coordination protocol: each agent must create a lock file listing the files/features it intends to work on, and consult a shared active work registry to ensure no overlap."</p>
+</blockquote>
+<p>The survey also discusses <strong>CRDTs</strong> for lock-free coordination (CodeCRDT achieved 100% merge convergence). This is more scalable but more complex.</p>
+<h2 id="design-decisions">Design Decisions<a class="heading-anchor" href="#design-decisions" aria-label="Link to heading">#</a></h2>
+<h3 id="1-lock-granularity-file-level-only-for-now">1. Lock Granularity: File-level only (for now)<a class="heading-anchor" href="#1-lock-granularity-file-level-only-for-now" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Start with file-level locking only. Add function-level as a future optimization for specific languages.</p>
+<p><strong>File-level:</strong></p>
+<ul>
+<li>Easy to reason about</li>
+<li>Guarantees no diff overlap</li>
+</ul>
+<p><strong>Function-level (deferred):</strong></p>
+<ul>
+<li>Needs parser, symbol table, stable function IDs</li>
+<li>Harder for languages with macros, generated code, ad-hoc patterns</li>
+</ul>
+<p><strong>Instead, get most of the win by:</strong></p>
+<ul>
+<li>Task design: aim one issue per file or small set of files</li>
+<li>Using manifest to ensure each issue's scope is small and minimally overlapping</li>
+</ul>
+<p>If later we need function-level:</p>
+<ul>
+<li>Limit to languages where we already have a good AST + symbol index</li>
+<li>Keep file-level as fallback</li>
+</ul>
+<h3 id="2-batch-sizing-adaptive-concurrency">2. Batch Sizing: Adaptive concurrency<a class="heading-anchor" href="#2-batch-sizing-adaptive-concurrency" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Use adaptive concurrency based on runtime signals.</p>
+<p><strong>Config:</strong></p>
+<div class="code-block">
+<div class="code-toolbar"><button class="copy-code-btn" type="button" aria-label="Copy code">Copy</button></div>
+<pre style="background-color:#ffffff;">
+<span style="color:#323232;">[parallelism]
+</span><span style="color:#323232;">max_concurrent_global = 8      # hard cap
+</span><span style="color:#323232;">max_concurrent_per_repo = 4    # per-repo cap
+</span><span style="color:#323232;">initial_concurrency = 2        # starting point
+</span></pre>
+
+</div>
+<p><strong>Runtime signals:</strong></p>
+<ul>
+<li>Average agent latency</li>
+<li>Queue length</li>
+<li>Error rate</li>
+</ul>
+<p><strong>Policy:</strong></p>
+<ol>
+<li>Start with N = 2</li>
+<li>If queue backlog grows and success rate is high → increase toward max</li>
+<li>If failures/timeouts increase or host is resource constrained → back off</li>
+</ol>
+<p>Also: maintain a "serial bucket" for issues touching very hot files (see below).</p>
+<h3 id="3-lock-contention-hot-file-detection-mitigation">3. Lock Contention: Hot file detection + mitigation<a class="heading-anchor" href="#3-lock-contention-hot-file-detection-mitigation" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Track per-file lock statistics and treat "hot files" specially.</p>
+<p><strong>Metrics to track:</strong></p>
+<ul>
+<li>Lock wait time per file</li>
+<li>Number of pending issues referencing each file</li>
+</ul>
+<p><strong>If a file (e.g., <code>main.zig</code>) is often a bottleneck:</strong></p>
+<ul>
+<li>Force tasks that touch that file into a single-threaded lane (queue)</li>
+<li>Encourage planner to batch related issues touching that file into one larger issue</li>
+<li>Suggest refactor tasks: spawn meta-issue "split main.zig into modules"</li>
+</ul>
+<p><strong>Implementation:</strong></p>
+<div class="code-block">
+<div class="code-toolbar"><button class="copy-code-btn" type="button" aria-label="Copy code">Copy</button></div>
+<pre style="background-color:#ffffff;">
+<span style="color:#323232;">// In-memory or persisted
+</span><span style="color:#323232;">const HotFileStats = struct {
+</span><span style="color:#323232;">    lock_count: u32,
+</span><span style="color:#323232;">    avg_wait_ms: u64,
+</span><span style="color:#323232;">    queue_depth: u32,
+</span><span style="color:#323232;">};
+</span><span style="color:#323232;">// Map: file_path -&gt; HotFileStats
+</span></pre>
+
+</div>
+<p>Use this when scheduling new issues.</p>
+<h3 id="4-conflict-recovery-three-step-policy">4. Conflict Recovery: Three-step policy<a class="heading-anchor" href="#4-conflict-recovery-three-step-policy" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Define a concrete conflict resolution pipeline.</p>
+<p><strong>Step 1: Detect</strong></p>
+<ul>
+<li>Two diffs touch overlapping hunks, or</li>
+<li><code>git apply</code> fails</li>
+</ul>
+<p><strong>Step 2: Auto-merge</strong></p>
+<ul>
+<li>Try a 3-way merge (base, A, B)</li>
+<li>If succeeds cleanly, run tests</li>
+<li>If tests pass, accept merged result</li>
+</ul>
+<p><strong>Step 3: LLM-assisted merge</strong></p>
+<ul>
+<li>Spawn a "merge agent" with both diffs + conflicts</li>
+<li>Ask it to produce a unified patch</li>
+<li>Run tests again</li>
+</ul>
+<p><strong>Step 4: Escalate</strong></p>
+<ul>
+<li>If merge agent fails or tests still fail</li>
+<li>Escalate to human</li>
+<li>Leave a merge PR with both original diffs + explanation</li>
+</ul>
+<h3 id="5-crdt-exploration-ast-aware-patching-as-middle-ground">5. CRDT Exploration: AST-aware patching as middle ground<a class="heading-anchor" href="#5-crdt-exploration-ast-aware-patching-as-middle-ground" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Use AST-aware patching + 3-way merge instead of full CRDTs.</p>
+<p><strong>Approach:</strong></p>
+<ul>
+<li>Ask agents to emit structured edits per file:
+<ul>
+<li>"Replace function foo body with …"</li>
+<li>"Add new function bar…"</li>
+</ul>
+</li>
+<li>Internally apply these as AST transformations, not raw text splice</li>
+</ul>
+<p><strong>Merge behavior:</strong></p>
+<ul>
+<li>Two agents modifying different functions in the same file → trivially merge</li>
+<li>Same function → conflict; go through the conflict policy above</li>
+</ul>
+<p>This gets most of the benefits of CRDT-style structural merges without full-blown replicated state machinery.</p>
+<h2 id="implementation-notes">Implementation Notes<a class="heading-anchor" href="#implementation-notes" aria-label="Link to heading">#</a></h2>
+<p>See <code>src/worker_pool.zig:WorkerPool</code> and <code>src/state.zig:LockEntry</code>.</p>
+<h3 id="todo">TODO<a class="heading-anchor" href="#todo" aria-label="Link to heading">#</a></h3>
+<ul>
+<li><input disabled="" type="checkbox"/>
+Add <code>HotFileStats</code> tracking</li>
+<li><input disabled="" type="checkbox"/>
+Implement adaptive concurrency (start low, ramp up)</li>
+<li><input disabled="" type="checkbox"/>
+Add serial lane for hot files</li>
+<li><input disabled="" type="checkbox"/>
+Implement 3-way merge fallback</li>
+<li><input disabled="" type="checkbox"/>
+Design structured edit format for AST-aware patching</li>
+</ul>
+
+
+      
+      <hr>
+      <div id="backlinks">
+        <h3>Backlinks</h3>
+        <ul class="backlinks-list">
+          
+          <li><a href="/index.html">noface</a></li>
+          
+        </ul>
+      </div>
+      
+    </article>
+
+    
+    <hr>
+
+    <p>
+      <a href="/index.html">← Back to home</a>
+    </p>
+    
+    </article>
+
+  </main>
+
+
+
+  <!-- Global Graph Modal -->
+  <div class="global-graph-outer" id="global-graph-outer">
+    <div class="global-graph-container" id="global-graph-container"></div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal">
+    <div class="search-modal-wrapper">
+      <div class="search-modal-header">
+        <input
+          type="text"
+          id="search-modal-input"
+          class="search-modal-input"
+          placeholder="Search documentation..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="search-modal-tabs">
+        <button class="search-tab active" data-tab="results">Results</button>
+        <button class="search-tab" data-tab="graph">Graph</button>
+      </div>
+      <div class="search-modal-content">
+        <div class="search-tab-panel active" id="search-tab-results">
+          <div class="search-modal-results" id="search-modal-results"></div>
+        </div>
+        <div class="search-tab-panel" id="search-tab-graph">
+          <div class="search-graph-container" id="search-graph-container"></div>
+        </div>
+      </div>
+      <div class="search-modal-footer">
+        <div class="search-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>↵</kbd> Select</span>
+          <span><kbd>ESC</kbd> Close</span>
+        </div>
+        <div class="search-count"></div>
+      </div>
+    </div>
+  </div>
+
+  
+    <script id="page-source-data" type="application/json">"# Parallel Execution\n\nHow noface runs multiple agents concurrently without conflicts.\n\n## Current Design\n\n1. **Planner pass** groups issues into batches based on manifest analysis\n2. Issues in the same batch have **disjoint primary_files** (no overlap)\n3. **Worker pool** spawns up to N parallel processes (configurable, default 8)\n4. **Lock entries** track which files are held by which worker\n5. Batches execute sequentially; issues within a batch execute in parallel\n\n## Relation to Survey\n\nThis implements the **file-level locking** pattern from [[orchestration-survey]]:\n\n\u003e \"A community-built \u0027Claude code agent farm\u0027 demonstrates this with a coordination protocol: each agent must create a lock file listing the files/features it intends to work on, and consult a shared active work registry to ensure no overlap.\"\n\nThe survey also discusses **CRDTs** for lock-free coordination (CodeCRDT achieved 100% merge convergence). This is more scalable but more complex.\n\n## Design Decisions\n\n### 1. Lock Granularity: File-level only (for now)\n\n**Decision:** Start with file-level locking only. Add function-level as a future optimization for specific languages.\n\n**File-level:**\n- Easy to reason about\n- Guarantees no diff overlap\n\n**Function-level (deferred):**\n- Needs parser, symbol table, stable function IDs\n- Harder for languages with macros, generated code, ad-hoc patterns\n\n**Instead, get most of the win by:**\n- Task design: aim one issue per file or small set of files\n- Using manifest to ensure each issue\u0027s scope is small and minimally overlapping\n\nIf later we need function-level:\n- Limit to languages where we already have a good AST + symbol index\n- Keep file-level as fallback\n\n### 2. Batch Sizing: Adaptive concurrency\n\n**Decision:** Use adaptive concurrency based on runtime signals.\n\n**Config:**\n```toml\n[parallelism]\nmax_concurrent_global = 8      # hard cap\nmax_concurrent_per_repo = 4    # per-repo cap\ninitial_concurrency = 2        # starting point\n```\n\n**Runtime signals:**\n- Average agent latency\n- Queue length\n- Error rate\n\n**Policy:**\n1. Start with N = 2\n2. If queue backlog grows and success rate is high → increase toward max\n3. If failures/timeouts increase or host is resource constrained → back off\n\nAlso: maintain a \"serial bucket\" for issues touching very hot files (see below).\n\n### 3. Lock Contention: Hot file detection + mitigation\n\n**Decision:** Track per-file lock statistics and treat \"hot files\" specially.\n\n**Metrics to track:**\n- Lock wait time per file\n- Number of pending issues referencing each file\n\n**If a file (e.g., `main.zig`) is often a bottleneck:**\n- Force tasks that touch that file into a single-threaded lane (queue)\n- Encourage planner to batch related issues touching that file into one larger issue\n- Suggest refactor tasks: spawn meta-issue \"split main.zig into modules\"\n\n**Implementation:**\n```zig\n// In-memory or persisted\nconst HotFileStats = struct {\n    lock_count: u32,\n    avg_wait_ms: u64,\n    queue_depth: u32,\n};\n// Map: file_path -\u003e HotFileStats\n```\n\nUse this when scheduling new issues.\n\n### 4. Conflict Recovery: Three-step policy\n\n**Decision:** Define a concrete conflict resolution pipeline.\n\n**Step 1: Detect**\n- Two diffs touch overlapping hunks, or\n- `git apply` fails\n\n**Step 2: Auto-merge**\n- Try a 3-way merge (base, A, B)\n- If succeeds cleanly, run tests\n- If tests pass, accept merged result\n\n**Step 3: LLM-assisted merge**\n- Spawn a \"merge agent\" with both diffs + conflicts\n- Ask it to produce a unified patch\n- Run tests again\n\n**Step 4: Escalate**\n- If merge agent fails or tests still fail\n- Escalate to human\n- Leave a merge PR with both original diffs + explanation\n\n### 5. CRDT Exploration: AST-aware patching as middle ground\n\n**Decision:** Use AST-aware patching + 3-way merge instead of full CRDTs.\n\n**Approach:**\n- Ask agents to emit structured edits per file:\n  - \"Replace function foo body with …\"\n  - \"Add new function bar…\"\n- Internally apply these as AST transformations, not raw text splice\n\n**Merge behavior:**\n- Two agents modifying different functions in the same file → trivially merge\n- Same function → conflict; go through the conflict policy above\n\nThis gets most of the benefits of CRDT-style structural merges without full-blown replicated state machinery.\n\n## Implementation Notes\n\nSee `src/worker_pool.zig:WorkerPool` and `src/state.zig:LockEntry`.\n\n### TODO\n- [ ] Add `HotFileStats` tracking\n- [ ] Implement adaptive concurrency (start low, ramp up)\n- [ ] Add serial lane for hot files\n- [ ] Implement 3-way merge fallback\n- [ ] Design structured edit format for AST-aware patching\n"</script>
+    
+
+</body>
+</html>

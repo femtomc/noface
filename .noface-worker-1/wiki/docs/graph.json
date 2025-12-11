@@ -1,0 +1,113 @@
+{
+  "edges": [
+    {
+      "source": "parallel-execution",
+      "target": "orchestration-survey"
+    },
+    {
+      "source": "manifests",
+      "target": "orchestration-survey"
+    },
+    {
+      "source": "verification",
+      "target": "failure-recovery"
+    },
+    {
+      "source": "multi-pass",
+      "target": "orchestration-survey"
+    },
+    {
+      "source": "index",
+      "target": "orchestration-survey"
+    },
+    {
+      "source": "index",
+      "target": "manifests"
+    },
+    {
+      "source": "index",
+      "target": "parallel-execution"
+    },
+    {
+      "source": "index",
+      "target": "context-injection"
+    },
+    {
+      "source": "index",
+      "target": "multi-pass"
+    },
+    {
+      "source": "index",
+      "target": "failure-recovery"
+    },
+    {
+      "source": "index",
+      "target": "verification"
+    }
+  ],
+  "nodes": [
+    {
+      "href": "/agent.html",
+      "id": "agent",
+      "title": "AGENT",
+      "type": "essay",
+      "url": "agent.html"
+    },
+    {
+      "href": "/orchestration-survey.html",
+      "id": "orchestration-survey",
+      "title": "Design Patterns for Orchestrating Black-Box Code Agents",
+      "type": "essay",
+      "url": "orchestration-survey.html"
+    },
+    {
+      "href": "/context-injection.html",
+      "id": "context-injection",
+      "title": "Context Injection",
+      "type": "essay",
+      "url": "context-injection.html"
+    },
+    {
+      "href": "/parallel-execution.html",
+      "id": "parallel-execution",
+      "title": "Parallel Execution",
+      "type": "essay",
+      "url": "parallel-execution.html"
+    },
+    {
+      "href": "/failure-recovery.html",
+      "id": "failure-recovery",
+      "title": "Failure Recovery",
+      "type": "essay",
+      "url": "failure-recovery.html"
+    },
+    {
+      "href": "/manifests.html",
+      "id": "manifests",
+      "title": "File Manifests",
+      "type": "essay",
+      "url": "manifests.html"
+    },
+    {
+      "href": "/verification.html",
+      "id": "verification",
+      "title": "Verification",
+      "type": "essay",
+      "url": "verification.html"
+    },
+    {
+      "href": "/multi-pass.html",
+      "id": "multi-pass",
+      "title": "Multi-Pass Architecture",
+      "type": "essay",
+      "url": "multi-pass.html"
+    },
+    {
+      "href": "/index.html",
+      "id": "index",
+      "title": "noface",
+      "type": "essay",
+      "url": "index.html"
+    }
+  ]
+}

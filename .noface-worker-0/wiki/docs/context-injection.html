@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Context Injection — noface</title>
+  <meta name="description" content="Context Injection">
+  <meta name="author" content="noface">
+  <meta name="monowiki-base-url" content="/">
+  <meta name="monowiki-note-slug" content="context-injection">
+  
+  <link rel="stylesheet" href="/css/reset.css">
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="/css/previews.css">
+  <link rel="stylesheet" href="/css/graph.css">
+  <link rel="stylesheet" href="/css/search.css">
+
+  <!-- Frontend bundle -->
+  <script type="module" src="/js/bundle.js"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <nav class="nav">
+        <a href="/index.html">home</a>
+        
+        <a href="https://github.com/femtomc/noface">github</a>
+        <button id="search-trigger" class="search-trigger" aria-label="Search">
+          <span class="search-trigger-text">search</span>
+          <span class="search-trigger-hint">⌘K</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <article>
+      
+      
+
+      
+      <p>
+        Tags: <code>design</code> <code>context</code> <code>prompts</code> <code>monowiki</code> 
+      </p>
+      
+
+      
+        <div id="toc" class="toc-container">
+          <nav class="toc-nav"><h3>Contents</h3><ul class="toc-list"><li class="toc-level-1"><a href="#context-injection">Context Injection</a></li><li class="toc-level-2"><a href="#current-design">Current Design</a></li><li class="toc-level-2"><a href="#relation-to-survey">Relation to Survey</a></li><li class="toc-level-2"><a href="#design-decisions">Design Decisions</a></li><li class="toc-level-3"><a href="#1-context-budget-dynamic-based-on-token-budget-and-complexity">1. Context Budget: Dynamic based on token budget and complexity</a></li><li class="toc-level-3"><a href="#2-relevance-ranking-hybrid-bm25-embeddings">2. Relevance Ranking: Hybrid BM25 + embeddings</a></li><li class="toc-level-3"><a href="#3-code-context-manifest-files-relevant-snippets">3. Code Context: Manifest files + relevant snippets</a></li><li class="toc-level-3"><a href="#4-context-freshness-downrank-stale-docs-dont-hard-exclude">4. Context Freshness: Downrank stale docs, don&#39;t hard exclude</a></li><li class="toc-level-3"><a href="#5-negative-context-explicit-exclusion-list">5. Negative Context: Explicit exclusion list</a></li><li class="toc-level-3"><a href="#6-agent-requested-context-thin-orchestrator-layer-harness-delegation">6. Agent-Requested Context: Thin orchestrator layer + harness delegation</a></li><li class="toc-level-2"><a href="#implementation-notes">Implementation Notes</a></li><li class="toc-level-3"><a href="#todo">TODO</a></li></ul></nav>
+        </div>
+        
+
+      <div class="page-subheader">
+        
+          <button id="copy-page-source" class="copy-page-btn" type="button" aria-label="Copy page Markdown">Copy page source</button>
+          
+        <button id="global-graph-toggle" class="graph-btn" type="button" aria-label="Open graph">Graph</button>
+      </div>
+
+      <h1 id="context-injection">Context Injection<a class="heading-anchor" href="#context-injection" aria-label="Link to heading">#</a></h1>
+<p>What information noface provides to agents and how.</p>
+<h2 id="current-design">Current Design<a class="heading-anchor" href="#current-design" aria-label="Link to heading">#</a></h2>
+<p>The implementation prompt includes:</p>
+<ol>
+<li><strong>Issue description</strong> — from beads</li>
+<li><strong>Manifest</strong> — which files the agent can touch</li>
+<li><strong>Build/test commands</strong> — from <code>.noface.toml</code></li>
+<li><strong>Design docs</strong> — fetched from monowiki if configured</li>
+<li><strong>Workflow instructions</strong> — step-by-step process (implement → test → commit)</li>
+</ol>
+<p>Context is capped by <code>max_context_docs</code> setting (default 5).</p>
+<h2 id="relation-to-survey">Relation to Survey<a class="heading-anchor" href="#relation-to-survey" aria-label="Link to heading">#</a></h2>
+<p>The survey warns about <strong>context dilution</strong>:</p>
+<blockquote>
+<p>"Recent studies have shown that even if all provided context is relevant, performance can degrade substantially (by 13–85%) as input length grows."</p>
+</blockquote>
+<p>And recommends <strong>iterative context expansion</strong>:</p>
+<blockquote>
+<p>"The Context-Augmentation pattern described by Hugging Face highlights that context expansion should be iterative and need-based: the agent identifies what extra info it needs, the orchestrator fetches it."</p>
+</blockquote>
+<h2 id="design-decisions">Design Decisions<a class="heading-anchor" href="#design-decisions" aria-label="Link to heading">#</a></h2>
+<h3 id="1-context-budget-dynamic-based-on-token-budget-and-complexity">1. Context Budget: Dynamic based on token budget and complexity<a class="heading-anchor" href="#1-context-budget-dynamic-based-on-token-budget-and-complexity" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Make context budget dynamic, not fixed.</p>
+<p><strong>Approach:</strong></p>
+<ul>
+<li>Define a target fraction of prompt tokens for retrieved docs (e.g., 30–40%)</li>
+<li>Fill that slot with as many top-ranked docs as fit</li>
+<li>Complexity heuristics:
+<ul>
+<li>More files / cross-cutting change → allow more docs</li>
+<li>Tiny, local change → maybe 0–2 docs only</li>
+</ul>
+</li>
+</ul>
+<p>Keep <code>max_context_docs = 5</code> as a hard cap, but choose K ∈ [0, 5] per issue based on:</p>
+<ul>
+<li>Issue complexity score</li>
+<li>Available token budget</li>
+<li>Relevance scores of candidate docs</li>
+</ul>
+<h3 id="2-relevance-ranking-hybrid-bm25-embeddings">2. Relevance Ranking: Hybrid BM25 + embeddings<a class="heading-anchor" href="#2-relevance-ranking-hybrid-bm25-embeddings" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Use hybrid ranking instead of simple wikilink fetching.</p>
+<p><strong>Pipeline:</strong></p>
+<ol>
+<li><strong>Candidate generation:</strong>
+<ul>
+<li>Wikilinks / explicit references from the issue</li>
+<li>BM25 search (already have <code>src/bm25.zig</code>)</li>
+</ul>
+</li>
+<li><strong>Re-ranking:</strong>
+<ul>
+<li>Embedding similarity (doc ↔ issue description)</li>
+</ul>
+</li>
+<li><strong>Final score:</strong><div class="code-block">
+<div class="code-toolbar"><button class="copy-code-btn" type="button" aria-label="Copy code">Copy</button></div>
+<pre style="background-color:#ffffff;">
+<span style="color:#323232;">score = α * BM25 + β * embedding_score + boost_if_explicitly_linked
+</span></pre>
+
+</div></li>
+</ol>
+<p>This will beat naive "first N by wikilink" in most repos.</p>
+<h3 id="3-code-context-manifest-files-relevant-snippets">3. Code Context: Manifest files + relevant snippets<a class="heading-anchor" href="#3-code-context-manifest-files-relevant-snippets" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Include manifest files plus targeted snippets from related code.</p>
+<p><strong>Always include:</strong></p>
+<ul>
+<li>The files in the manifest that the agent is allowed to edit</li>
+</ul>
+<p><strong>Optionally include:</strong></p>
+<ul>
+<li>Small snippets from related files:
+<ul>
+<li>Direct callers/callees (if xref info available)</li>
+<li>BM25/embedding matches for key identifiers in the issue</li>
+</ul>
+</li>
+</ul>
+<p><strong>Guardrails:</strong></p>
+<ul>
+<li>Truncate to relevant functions rather than whole files when possible</li>
+<li>If file is huge, include:
+<ul>
+<li>Signature + docstring + 1–2 nearby functions</li>
+</ul>
+</li>
+<li>Use BM25 over code to pick relevant ranges, not entire files</li>
+</ul>
+<h3 id="4-context-freshness-downrank-stale-docs-dont-hard-exclude">4. Context Freshness: Downrank stale docs, don't hard exclude<a class="heading-anchor" href="#4-context-freshness-downrank-stale-docs-dont-hard-exclude" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Add freshness metadata + downranking, not hard exclusion.</p>
+<p><strong>For each doc, track:</strong></p>
+<ul>
+<li><code>last_updated</code> timestamp</li>
+<li>Optionally "tied-to-commit" info</li>
+</ul>
+<p><strong>Heuristics:</strong></p>
+<ul>
+<li>If doc references symbols that no longer exist in code → heavily downrank or mark stale</li>
+<li>If <code>now - last_updated &gt; threshold</code> and code around it changed a lot → downrank</li>
+</ul>
+<p><strong>In the prompt, for borderline docs:</strong></p>
+<div class="code-block">
+<div class="code-toolbar"><button class="copy-code-btn" type="button" aria-label="Copy code">Copy</button></div>
+<pre style="background-color:#ffffff;">
+<span style="color:#323232;">Note: this doc may be outdated; prefer the current code as source of truth.
+</span></pre>
+
+</div>
+<p>Relevant but slightly stale docs can still help, but the model is warned.</p>
+<h3 id="5-negative-context-explicit-exclusion-list">5. Negative Context: Explicit exclusion list<a class="heading-anchor" href="#5-negative-context-explicit-exclusion-list" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Define explicit exclusions + heuristics.</p>
+<p><strong>Path-based exclusions:</strong></p>
+<ul>
+<li><code>vendor/</code>, <code>node_modules/</code>, <code>dist/</code>, <code>build/</code>, <code>.cache/</code></li>
+<li><code>*.min.js</code>, large generated protobufs</li>
+</ul>
+<p><strong>Size-based:</strong></p>
+<ul>
+<li>Files &gt; X KB not included unless explicitly requested</li>
+</ul>
+<p><strong>Type-based:</strong></p>
+<ul>
+<li>Binary blobs, lockfiles, big JSON dumps</li>
+</ul>
+<p>Implement in retrieval pipeline so excluded files never show up as candidates.</p>
+<h3 id="6-agent-requested-context-thin-orchestrator-layer-harness-delegation">6. Agent-Requested Context: Thin orchestrator layer + harness delegation<a class="heading-anchor" href="#6-agent-requested-context-thin-orchestrator-layer-harness-delegation" aria-label="Link to heading">#</a></h3>
+<p><strong>Decision:</strong> Lean on Claude Code's native file-opening capabilities, add thin orchestrator layer for explicit requests.</p>
+<p><strong>If using Claude Code / similar harness:</strong></p>
+<ul>
+<li>Let the harness handle intra-session context (open file, run search, etc.)</li>
+</ul>
+<p><strong>At orchestration level:</strong></p>
+<ul>
+<li>Support structured "needs more context" signals:<div class="code-block">
+<div class="code-toolbar"><button class="copy-code-btn" type="button" aria-label="Copy code">Copy</button></div>
+<pre style="background-color:#ffffff;">
+<span style="color:#323232;">NEED_CODE: auth/login.zig
+</span><span style="color:#323232;">NEED_DOC: docs/auth.md
+</span></pre>
+
+</div></li>
+<li>When signal detected:
+<ul>
+<li>Fetch &amp; add context on next call, or</li>
+<li>Delegate to harness's file-opening APIs</li>
+</ul>
+</li>
+</ul>
+<p><strong>Don't</strong> build a whole second interactive context loop on top of Claude.
+<strong>Do</strong> add a thin layer to observe/log/respond when agent clearly asks for more info.</p>
+<h2 id="implementation-notes">Implementation Notes<a class="heading-anchor" href="#implementation-notes" aria-label="Link to heading">#</a></h2>
+<p>See <code>src/loop.zig:buildImplementationPrompt</code> and <code>src/monowiki.zig</code>.</p>
+<h3 id="todo">TODO<a class="heading-anchor" href="#todo" aria-label="Link to heading">#</a></h3>
+<ul>
+<li><input disabled="" type="checkbox"/>
+Implement dynamic context budget based on issue complexity</li>
+<li><input disabled="" type="checkbox"/>
+Add hybrid ranking (BM25 + embeddings)</li>
+<li><input disabled="" type="checkbox"/>
+Add freshness tracking to monowiki docs</li>
+<li><input disabled="" type="checkbox"/>
+Implement exclusion list in retrieval pipeline</li>
+<li><input disabled="" type="checkbox"/>
+Parse <code>NEED_CODE</code> / <code>NEED_DOC</code> signals from agent output</li>
+</ul>
+
+
+      
+      <hr>
+      <div id="backlinks">
+        <h3>Backlinks</h3>
+        <ul class="backlinks-list">
+          
+          <li><a href="/index.html">noface</a></li>
+          
+        </ul>
+      </div>
+      
+    </article>
+
+    
+    <hr>
+
+    <p>
+      <a href="/index.html">← Back to home</a>
+    </p>
+    
+    </article>
+
+  </main>
+
+
+
+  <!-- Global Graph Modal -->
+  <div class="global-graph-outer" id="global-graph-outer">
+    <div class="global-graph-container" id="global-graph-container"></div>
+  </div>
+
+  <!-- Search Modal -->
+  <div id="search-modal">
+    <div class="search-modal-wrapper">
+      <div class="search-modal-header">
+        <input
+          type="text"
+          id="search-modal-input"
+          class="search-modal-input"
+          placeholder="Search documentation..."
+          autocomplete="off"
+        />
+      </div>
+      <div class="search-modal-tabs">
+        <button class="search-tab active" data-tab="results">Results</button>
+        <button class="search-tab" data-tab="graph">Graph</button>
+      </div>
+      <div class="search-modal-content">
+        <div class="search-tab-panel active" id="search-tab-results">
+          <div class="search-modal-results" id="search-modal-results"></div>
+        </div>
+        <div class="search-tab-panel" id="search-tab-graph">
+          <div class="search-graph-container" id="search-graph-container"></div>
+        </div>
+      </div>
+      <div class="search-modal-footer">
+        <div class="search-hint">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
+          <span><kbd>↵</kbd> Select</span>
+          <span><kbd>ESC</kbd> Close</span>
+        </div>
+        <div class="search-count"></div>
+      </div>
+    </div>
+  </div>
+
+  
+    <script id="page-source-data" type="application/json">"# Context Injection\n\nWhat information noface provides to agents and how.\n\n## Current Design\n\nThe implementation prompt includes:\n\n1. **Issue description** — from beads\n2. **Manifest** — which files the agent can touch\n3. **Build/test commands** — from `.noface.toml`\n4. **Design docs** — fetched from monowiki if configured\n5. **Workflow instructions** — step-by-step process (implement → test → commit)\n\nContext is capped by `max_context_docs` setting (default 5).\n\n## Relation to Survey\n\nThe survey warns about **context dilution**:\n\n\u003e \"Recent studies have shown that even if all provided context is relevant, performance can degrade substantially (by 13–85%) as input length grows.\"\n\nAnd recommends **iterative context expansion**:\n\n\u003e \"The Context-Augmentation pattern described by Hugging Face highlights that context expansion should be iterative and need-based: the agent identifies what extra info it needs, the orchestrator fetches it.\"\n\n## Design Decisions\n\n### 1. Context Budget: Dynamic based on token budget and complexity\n\n**Decision:** Make context budget dynamic, not fixed.\n\n**Approach:**\n- Define a target fraction of prompt tokens for retrieved docs (e.g., 30–40%)\n- Fill that slot with as many top-ranked docs as fit\n- Complexity heuristics:\n  - More files / cross-cutting change → allow more docs\n  - Tiny, local change → maybe 0–2 docs only\n\nKeep `max_context_docs = 5` as a hard cap, but choose K ∈ [0, 5] per issue based on:\n- Issue complexity score\n- Available token budget\n- Relevance scores of candidate docs\n\n### 2. Relevance Ranking: Hybrid BM25 + embeddings\n\n**Decision:** Use hybrid ranking instead of simple wikilink fetching.\n\n**Pipeline:**\n1. **Candidate generation:**\n   - Wikilinks / explicit references from the issue\n   - BM25 search (already have `src/bm25.zig`)\n2. **Re-ranking:**\n   - Embedding similarity (doc ↔ issue description)\n3. **Final score:**\n   ```\n   score = α * BM25 + β * embedding_score + boost_if_explicitly_linked\n   ```\n\nThis will beat naive \"first N by wikilink\" in most repos.\n\n### 3. Code Context: Manifest files + relevant snippets\n\n**Decision:** Include manifest files plus targeted snippets from related code.\n\n**Always include:**\n- The files in the manifest that the agent is allowed to edit\n\n**Optionally include:**\n- Small snippets from related files:\n  - Direct callers/callees (if xref info available)\n  - BM25/embedding matches for key identifiers in the issue\n\n**Guardrails:**\n- Truncate to relevant functions rather than whole files when possible\n- If file is huge, include:\n  - Signature + docstring + 1–2 nearby functions\n- Use BM25 over code to pick relevant ranges, not entire files\n\n### 4. Context Freshness: Downrank stale docs, don\u0027t hard exclude\n\n**Decision:** Add freshness metadata + downranking, not hard exclusion.\n\n**For each doc, track:**\n- `last_updated` timestamp\n- Optionally \"tied-to-commit\" info\n\n**Heuristics:**\n- If doc references symbols that no longer exist in code → heavily downrank or mark stale\n- If `now - last_updated \u003e threshold` and code around it changed a lot → downrank\n\n**In the prompt, for borderline docs:**\n```\nNote: this doc may be outdated; prefer the current code as source of truth.\n```\n\nRelevant but slightly stale docs can still help, but the model is warned.\n\n### 5. Negative Context: Explicit exclusion list\n\n**Decision:** Define explicit exclusions + heuristics.\n\n**Path-based exclusions:**\n- `vendor/`, `node_modules/`, `dist/`, `build/`, `.cache/`\n- `*.min.js`, large generated protobufs\n\n**Size-based:**\n- Files \u003e X KB not included unless explicitly requested\n\n**Type-based:**\n- Binary blobs, lockfiles, big JSON dumps\n\nImplement in retrieval pipeline so excluded files never show up as candidates.\n\n### 6. Agent-Requested Context: Thin orchestrator layer + harness delegation\n\n**Decision:** Lean on Claude Code\u0027s native file-opening capabilities, add thin orchestrator layer for explicit requests.\n\n**If using Claude Code / similar harness:**\n- Let the harness handle intra-session context (open file, run search, etc.)\n\n**At orchestration level:**\n- Support structured \"needs more context\" signals:\n  ```\n  NEED_CODE: auth/login.zig\n  NEED_DOC: docs/auth.md\n  ```\n- When signal detected:\n  - Fetch \u0026 add context on next call, or\n  - Delegate to harness\u0027s file-opening APIs\n\n**Don\u0027t** build a whole second interactive context loop on top of Claude.\n**Do** add a thin layer to observe/log/respond when agent clearly asks for more info.\n\n## Implementation Notes\n\nSee `src/loop.zig:buildImplementationPrompt` and `src/monowiki.zig`.\n\n### TODO\n- [ ] Implement dynamic context budget based on issue complexity\n- [ ] Add hybrid ranking (BM25 + embeddings)\n- [ ] Add freshness tracking to monowiki docs\n- [ ] Implement exclusion list in retrieval pipeline\n- [ ] Parse `NEED_CODE` / `NEED_DOC` signals from agent output\n"</script>
+    
+
+</body>
+</html>
