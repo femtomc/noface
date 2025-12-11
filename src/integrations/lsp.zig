@@ -4,7 +4,7 @@
 //! agents with semantic understanding: definitions, references, call graphs.
 
 const std = @import("std");
-const process = @import("process.zig");
+const process = @import("../util/process.zig");
 
 /// LSP message ID counter
 var next_id: i64 = 1;

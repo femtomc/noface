@@ -1,5 +1,5 @@
 const std = @import("std");
-const process = @import("process.zig");
+const process = @import("../util/process.zig");
 const assets = @import("web_assets.zig");
 
 const SESSION_DIR = "/tmp";

@@ -3,8 +3,8 @@
 //! Supports loading from TOML files or using defaults.
 
 const std = @import("std");
-const monowiki = @import("monowiki.zig");
-const process = @import("process.zig");
+const monowiki = @import("../integrations/monowiki.zig");
+const process = @import("../util/process.zig");
 
 /// Validation warning for config issues
 pub const ValidationWarning = struct {

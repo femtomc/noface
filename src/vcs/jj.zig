@@ -4,7 +4,7 @@
 //! jj is a Git-compatible VCS with better support for parallel workspaces.
 
 const std = @import("std");
-const process = @import("process.zig");
+const process = @import("../util/process.zig");
 
 /// Result of getting all changed files
 /// Note: jj doesn't distinguish between staged/unstaged - all changes are tracked

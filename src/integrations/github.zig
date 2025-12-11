@@ -5,7 +5,7 @@
 //! which beads issues have corresponding GitHub issues.
 
 const std = @import("std");
-const process = @import("process.zig");
+const process = @import("../util/process.zig");
 
 /// Colors for terminal output
 const Color = struct {

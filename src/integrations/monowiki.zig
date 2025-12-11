@@ -4,7 +4,7 @@
 //! and querying the document graph from a monowiki vault.
 
 const std = @import("std");
-const process = @import("process.zig");
+const process = @import("../util/process.zig");
 
 /// Configuration for context exclusions
 pub const ExclusionConfig = struct {

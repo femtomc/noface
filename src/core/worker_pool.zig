@@ -5,18 +5,18 @@
 
 const std = @import("std");
 const state_mod = @import("state.zig");
-const process = @import("process.zig");
 const config_mod = @import("config.zig");
-const signals = @import("signals.zig");
-const jj = @import("jj.zig");
 const prompts = @import("prompts.zig");
+const process = @import("../util/process.zig");
+const signals = @import("../util/signals.zig");
+const transcript_mod = @import("../util/transcript.zig");
+const jj = @import("../vcs/jj.zig");
 
 const OrchestratorState = state_mod.OrchestratorState;
 const IssueCompletionHandler = state_mod.IssueCompletionHandler;
 const WorkerState = state_mod.WorkerState;
 const Batch = state_mod.Batch;
 const Config = config_mod.Config;
-const transcript_mod = @import("transcript.zig");
 
 /// Worker execution result
 pub const WorkerResult = struct {

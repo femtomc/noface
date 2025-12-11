@@ -4,7 +4,7 @@
 //! State is persisted to .noface/state.json for durability.
 
 const std = @import("std");
-const process = @import("process.zig");
+const process = @import("../util/process.zig");
 
 /// Maximum number of parallel workers
 pub const MAX_WORKERS = 8;
