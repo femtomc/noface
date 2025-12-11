@@ -1045,7 +1045,9 @@ const WorkerProcess = struct {
         return extractJsonString(json, "\"name\"");
     }
 
-    /// Check output buffer for BLOCKED_BY_FILE: signal
+    /// Check output buffer for BLOCKED_BY_FILE: signal.
+    /// The signal may appear inside JSON content (e.g., {"content":"BLOCKED_BY_FILE: src/foo.zig"})
+    /// so we need to handle both raw text and JSON-embedded signals.
     fn checkForBlockedSignal(self: *WorkerProcess) void {
         if (self.blocked_on_file != null) return; // Already detected
 
@@ -1058,18 +1060,48 @@ const WorkerProcess = struct {
             while (start < after_signal.len and (after_signal[start] == ' ' or after_signal[start] == '\t')) {
                 start += 1;
             }
-            // Find end of file path (newline or end of buffer)
+            // Find end of file path - stop at newline, carriage return, or JSON string terminator
+            // The signal might be embedded in JSON like: "BLOCKED_BY_FILE: src/foo.zig"
+            // So we also need to stop at quotes or backslashes (escape sequences)
             var end = start;
-            while (end < after_signal.len and after_signal[end] != '\n' and after_signal[end] != '\r') {
+            while (end < after_signal.len) {
+                const c = after_signal[end];
+                if (c == '\n' or c == '\r') break;
+                // Stop at quotes or backslashes (JSON escape sequences)
+                if (c == '"' or c == '\\') break;
                 end += 1;
             }
             if (end > start) {
                 const file_path = std.mem.trim(u8, after_signal[start..end], " \t\r\n");
-                if (file_path.len > 0) {
+                if (file_path.len > 0 and isValidFilePath(file_path)) {
                     self.blocked_on_file = self.allocator.dupe(u8, file_path) catch null;
                 }
             }
         }
+    }
+
+    /// Validate that a string looks like a reasonable file path.
+    /// This helps filter out garbage that might slip through if parsing fails.
+    fn isValidFilePath(path: []const u8) bool {
+        if (path.len == 0 or path.len > 512) return false;
+
+        // File paths shouldn't contain JSON syntax characters or escape sequences
+        for (path) |c| {
+            switch (c) {
+                '{', '}', '[', ']', ':', ',', '"', '\\' => return false,
+                else => {},
+            }
+        }
+
+        // Should contain at least some alphanumeric characters
+        var has_alnum = false;
+        for (path) |c| {
+            if (std.ascii.isAlphanumeric(c)) {
+                has_alnum = true;
+                break;
+            }
+        }
+        return has_alnum;
     }
 
     /// Check if this worker has signaled it's blocked on a file
@@ -1301,4 +1333,91 @@ test "idle timeout triggers only on idle workers" {
 
     // Process should have completed, no timeout triggered
     try std.testing.expect(pool.worker_processes[0] == null);
+}
+
+test "isValidFilePath accepts valid paths" {
+    try std.testing.expect(WorkerProcess.isValidFilePath("src/foo.zig"));
+    try std.testing.expect(WorkerProcess.isValidFilePath("src/worker_pool.zig"));
+    try std.testing.expect(WorkerProcess.isValidFilePath("file.txt"));
+    try std.testing.expect(WorkerProcess.isValidFilePath("path/to/deep/file.rs"));
+    try std.testing.expect(WorkerProcess.isValidFilePath("./relative/path.go"));
+    try std.testing.expect(WorkerProcess.isValidFilePath("/absolute/path.py"));
+}
+
+test "isValidFilePath rejects JSON garbage" {
+    // These contain JSON syntax characters that should be rejected
+    try std.testing.expect(!WorkerProcess.isValidFilePath("src/loop.zig\"}]"));
+    try std.testing.expect(!WorkerProcess.isValidFilePath("file.zig\",\"stop_reason\":null"));
+    try std.testing.expect(!WorkerProcess.isValidFilePath("{\"content\":\"foo\"}"));
+    try std.testing.expect(!WorkerProcess.isValidFilePath("path[0]"));
+    try std.testing.expect(!WorkerProcess.isValidFilePath(""));
+}
+
+test "checkForBlockedSignal extracts path from JSON content" {
+    // Simulate the problematic case: signal embedded in JSON
+    var worker = try WorkerProcess.spawn(
+        std.testing.allocator,
+        &[_][]const u8{ "echo", "test" },
+        0,
+        "test-issue",
+    );
+    defer worker.deinit();
+
+    // Wait for echo to finish
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    _ = worker.tryWait();
+
+    // Simulate JSON-embedded signal (the bug scenario)
+    const json_output = "{\"content\":\"BLOCKED_BY_FILE: src/loop.zig\"}],\"stop_reason\":null";
+    try worker.output_buffer.appendSlice(std.testing.allocator, json_output);
+
+    worker.checkForBlockedSignal();
+
+    // Should extract just "src/loop.zig", not the JSON garbage
+    try std.testing.expect(worker.blocked_on_file != null);
+    try std.testing.expectEqualStrings("src/loop.zig", worker.blocked_on_file.?);
+}
+
+test "checkForBlockedSignal handles plain text signal" {
+    var worker = try WorkerProcess.spawn(
+        std.testing.allocator,
+        &[_][]const u8{ "echo", "test" },
+        0,
+        "test-issue",
+    );
+    defer worker.deinit();
+
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    _ = worker.tryWait();
+
+    // Plain text signal (newline terminated)
+    const plain_output = "Some output\nBLOCKED_BY_FILE: src/other.zig\nMore output";
+    try worker.output_buffer.appendSlice(std.testing.allocator, plain_output);
+
+    worker.checkForBlockedSignal();
+
+    try std.testing.expect(worker.blocked_on_file != null);
+    try std.testing.expectEqualStrings("src/other.zig", worker.blocked_on_file.?);
+}
+
+test "checkForBlockedSignal rejects malformed paths" {
+    var worker = try WorkerProcess.spawn(
+        std.testing.allocator,
+        &[_][]const u8{ "echo", "test" },
+        0,
+        "test-issue",
+    );
+    defer worker.deinit();
+
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    _ = worker.tryWait();
+
+    // Signal followed directly by JSON garbage without proper file path
+    const bad_output = "BLOCKED_BY_FILE: {\"some\":\"json\"}";
+    try worker.output_buffer.appendSlice(std.testing.allocator, bad_output);
+
+    worker.checkForBlockedSignal();
+
+    // Should not set blocked_on_file since the extracted content contains JSON chars
+    try std.testing.expect(worker.blocked_on_file == null);
 }
