@@ -6,6 +6,48 @@
 const std = @import("std");
 const process = @import("process.zig");
 
+/// Configuration for context exclusions
+pub const ExclusionConfig = struct {
+    /// Directory patterns to exclude (e.g., "vendor/", "node_modules/")
+    excluded_dirs: []const []const u8 = &default_excluded_dirs,
+
+    /// File extension patterns to exclude (e.g., ".min.js", ".proto")
+    excluded_extensions: []const []const u8 = &default_excluded_extensions,
+
+    /// Files to exclude by name (e.g., "package-lock.json")
+    excluded_files: []const []const u8 = &default_excluded_files,
+
+    /// Maximum file size in KB (files larger are excluded unless explicitly requested)
+    max_file_size_kb: u32 = 100,
+
+    /// Whether exclusions are user-customized (affects memory ownership)
+    is_customized: bool = false,
+
+    pub const default_excluded_dirs: [5][]const u8 = .{
+        "vendor/",
+        "node_modules/",
+        "dist/",
+        "build/",
+        ".cache/",
+    };
+
+    pub const default_excluded_extensions: [4][]const u8 = .{
+        ".min.js",
+        ".min.css",
+        ".pb.go",
+        ".pb.zig",
+    };
+
+    pub const default_excluded_files: [6][]const u8 = .{
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "Cargo.lock",
+        "go.sum",
+        "composer.lock",
+    };
+};
+
 /// Configuration for monowiki integration
 pub const MonowikiConfig = struct {
     /// Path to the monowiki vault
@@ -31,6 +73,9 @@ pub const MonowikiConfig = struct {
 
     /// Maximum documents to inject into prompt context
     max_context_docs: u8 = 5,
+
+    /// Exclusion configuration for context retrieval
+    exclusions: ExclusionConfig = .{},
 };
 
 /// A search result from monowiki
@@ -88,6 +133,12 @@ pub const Monowiki = struct {
     /// Check if monowiki CLI is available
     pub fn isAvailable(self: *Monowiki) bool {
         return process.commandExists(self.allocator, "monowiki");
+    }
+
+    /// Check if a path should be excluded from context retrieval.
+    /// Returns true if the path matches any exclusion pattern.
+    pub fn shouldExclude(self: *const Monowiki, path: []const u8) bool {
+        return shouldExcludePath(path, &self.config.exclusions);
     }
 
     /// Search for documents matching a query
@@ -464,6 +515,103 @@ pub const Monowiki = struct {
     }
 };
 
+/// Check if a path should be excluded from context retrieval based on exclusion rules.
+/// This is a standalone function that can be used outside of Monowiki context.
+pub fn shouldExcludePath(path: []const u8, exclusions: *const ExclusionConfig) bool {
+    // Check excluded directories
+    for (exclusions.excluded_dirs) |dir| {
+        if (pathContainsDir(path, dir)) {
+            return true;
+        }
+    }
+
+    // Check excluded extensions
+    for (exclusions.excluded_extensions) |ext| {
+        if (std.mem.endsWith(u8, path, ext)) {
+            return true;
+        }
+    }
+
+    // Check excluded files by name
+    const basename = getBasename(path);
+    for (exclusions.excluded_files) |file| {
+        if (std.mem.eql(u8, basename, file)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/// Check if a path contains a directory component matching the pattern.
+/// Pattern should end with '/' (e.g., "node_modules/").
+fn pathContainsDir(path: []const u8, dir_pattern: []const u8) bool {
+    // Handle patterns without trailing slash gracefully
+    const pattern = if (dir_pattern.len > 0 and dir_pattern[dir_pattern.len - 1] == '/')
+        dir_pattern[0 .. dir_pattern.len - 1]
+    else
+        dir_pattern;
+
+    if (pattern.len == 0) return false;
+
+    // Check if path starts with the pattern
+    if (path.len >= pattern.len) {
+        if (std.mem.startsWith(u8, path, pattern)) {
+            // Either exact match or followed by '/'
+            if (path.len == pattern.len or path[pattern.len] == '/') {
+                return true;
+            }
+        }
+    }
+
+    // Check for pattern as a directory component within the path
+    var i: usize = 0;
+    while (i < path.len) {
+        // Skip to next '/'
+        while (i < path.len and path[i] != '/') {
+            i += 1;
+        }
+        if (i >= path.len) break;
+        i += 1; // Skip the '/'
+
+        // Check if the remaining path starts with the pattern
+        const remaining = path[i..];
+        if (remaining.len >= pattern.len) {
+            if (std.mem.startsWith(u8, remaining, pattern)) {
+                // Either at end or followed by '/'
+                if (remaining.len == pattern.len or remaining[pattern.len] == '/') {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+/// Extract the basename (filename) from a path.
+fn getBasename(path: []const u8) []const u8 {
+    var last_sep: usize = 0;
+    var found_sep = false;
+    for (path, 0..) |c, i| {
+        if (c == '/') {
+            last_sep = i;
+            found_sep = true;
+        }
+    }
+    if (found_sep) {
+        return path[last_sep + 1 ..];
+    }
+    return path;
+}
+
+/// Check if a file size exceeds the configured maximum.
+/// size_bytes is the file size in bytes, max_kb is the limit in kilobytes.
+pub fn exceedsMaxSize(size_bytes: u64, max_kb: u32) bool {
+    const max_bytes: u64 = @as(u64, max_kb) * 1024;
+    return size_bytes > max_bytes;
+}
+
 // Tests
 
 test "extract wikilinks" {
@@ -510,4 +658,85 @@ test "extract keywords from multiline" {
     defer allocator.free(keywords);
 
     try std.testing.expectEqualStrings("Implement feature With multiple lines", keywords);
+}
+
+test "exclude paths with node_modules" {
+    const exclusions = ExclusionConfig{};
+    try std.testing.expect(shouldExcludePath("node_modules/lodash/index.js", &exclusions));
+    try std.testing.expect(shouldExcludePath("src/node_modules/foo/bar.js", &exclusions));
+    try std.testing.expect(shouldExcludePath("web/node_modules/react/index.js", &exclusions));
+}
+
+test "exclude paths with vendor" {
+    const exclusions = ExclusionConfig{};
+    try std.testing.expect(shouldExcludePath("vendor/package/file.go", &exclusions));
+    try std.testing.expect(shouldExcludePath("src/vendor/lib/module.rs", &exclusions));
+}
+
+test "exclude paths with build directories" {
+    const exclusions = ExclusionConfig{};
+    try std.testing.expect(shouldExcludePath("dist/bundle.js", &exclusions));
+    try std.testing.expect(shouldExcludePath("build/output/main.o", &exclusions));
+    try std.testing.expect(shouldExcludePath(".cache/babel/file.json", &exclusions));
+}
+
+test "exclude minified files" {
+    const exclusions = ExclusionConfig{};
+    try std.testing.expect(shouldExcludePath("assets/app.min.js", &exclusions));
+    try std.testing.expect(shouldExcludePath("styles/main.min.css", &exclusions));
+}
+
+test "exclude protobuf generated files" {
+    const exclusions = ExclusionConfig{};
+    try std.testing.expect(shouldExcludePath("proto/message.pb.go", &exclusions));
+    try std.testing.expect(shouldExcludePath("src/gen/types.pb.zig", &exclusions));
+}
+
+test "exclude lockfiles" {
+    const exclusions = ExclusionConfig{};
+    try std.testing.expect(shouldExcludePath("package-lock.json", &exclusions));
+    try std.testing.expect(shouldExcludePath("project/yarn.lock", &exclusions));
+    try std.testing.expect(shouldExcludePath("nested/path/pnpm-lock.yaml", &exclusions));
+    try std.testing.expect(shouldExcludePath("Cargo.lock", &exclusions));
+    try std.testing.expect(shouldExcludePath("go.sum", &exclusions));
+    try std.testing.expect(shouldExcludePath("vendor/composer.lock", &exclusions));
+}
+
+test "allow normal source files" {
+    const exclusions = ExclusionConfig{};
+    try std.testing.expect(!shouldExcludePath("src/main.zig", &exclusions));
+    try std.testing.expect(!shouldExcludePath("lib/utils.js", &exclusions));
+    try std.testing.expect(!shouldExcludePath("app/models/user.go", &exclusions));
+    try std.testing.expect(!shouldExcludePath("package.json", &exclusions));
+}
+
+test "allow files with similar names to excluded dirs" {
+    const exclusions = ExclusionConfig{};
+    // "node_modules_backup" should NOT be excluded
+    try std.testing.expect(!shouldExcludePath("node_modules_backup/file.js", &exclusions));
+    // "vendorlib" should NOT be excluded
+    try std.testing.expect(!shouldExcludePath("vendorlib/code.rs", &exclusions));
+    // "buildscript.sh" should NOT be excluded
+    try std.testing.expect(!shouldExcludePath("buildscript.sh", &exclusions));
+}
+
+test "exceeds max size" {
+    // 100 KB limit (default)
+    try std.testing.expect(!exceedsMaxSize(50 * 1024, 100)); // 50 KB - allowed
+    try std.testing.expect(!exceedsMaxSize(100 * 1024, 100)); // exactly 100 KB - allowed
+    try std.testing.expect(exceedsMaxSize(101 * 1024, 100)); // 101 KB - excluded
+    try std.testing.expect(exceedsMaxSize(1024 * 1024, 100)); // 1 MB - excluded
+}
+
+test "getBasename" {
+    try std.testing.expectEqualStrings("file.txt", getBasename("path/to/file.txt"));
+    try std.testing.expectEqualStrings("file.txt", getBasename("file.txt"));
+    try std.testing.expectEqualStrings("", getBasename("path/to/dir/"));
+}
+
+test "pathContainsDir" {
+    try std.testing.expect(pathContainsDir("node_modules/foo/bar.js", "node_modules/"));
+    try std.testing.expect(pathContainsDir("src/node_modules/foo.js", "node_modules/"));
+    try std.testing.expect(!pathContainsDir("node_modules_backup/foo.js", "node_modules/"));
+    try std.testing.expect(!pathContainsDir("src/mynode_modules/foo.js", "node_modules/"));
 }

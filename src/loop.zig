@@ -6,6 +6,7 @@
 const std = @import("std");
 const config_mod = @import("config.zig");
 const process = @import("process.zig");
+const git = @import("git.zig");
 const streaming = @import("streaming.zig");
 const signals = @import("signals.zig");
 const markdown = @import("markdown.zig");
@@ -1459,89 +1460,54 @@ pub const AgentLoop = struct {
     /// Special exit code indicating manifest violation
     pub const EXIT_CODE_MANIFEST_VIOLATION: u8 = 125;
 
-    /// Result of manifest compliance check
-    pub const ManifestComplianceResult = struct {
-        compliant: bool,
-        unauthorized_files: []const []const u8 = &.{},
-        forbidden_files_touched: []const []const u8 = &.{},
-        /// Instrumentation data for tracking manifest prediction accuracy
-        instrumentation: ?state_mod.ManifestInstrumentation = null,
-
-        pub fn deinit(self: *ManifestComplianceResult, allocator: std.mem.Allocator) void {
-            for (self.unauthorized_files) |f| allocator.free(f);
-            if (self.unauthorized_files.len > 0) allocator.free(self.unauthorized_files);
-            for (self.forbidden_files_touched) |f| allocator.free(f);
-            if (self.forbidden_files_touched.len > 0) allocator.free(self.forbidden_files_touched);
-            if (self.instrumentation) |*inst| inst.deinit(allocator);
-        }
-    };
+    /// Result of manifest compliance check - use shared type from state module
+    /// This ensures batch (worker_pool) and sequential (loop) paths use identical verification
+    const ManifestComplianceResult = state_mod.ManifestComplianceResult;
 
     /// Capture baseline of changed files before agent runs
     /// Returns list of file paths that were already modified or untracked
+    /// Caller must free the returned list with freeBaseline
     fn captureChangedFilesBaseline(self: *AgentLoop) ![]const []const u8 {
+        var repo = git.GitRepo.init(self.allocator);
+        var changed = try repo.getAllChangedFiles();
+        // Don't defer deinit - we need to copy the strings first before freeing
+
+        // Build list with duplicated strings so we own them
         var baseline = std.ArrayListUnmanaged([]const u8){};
         errdefer {
             for (baseline.items) |f| self.allocator.free(f);
             baseline.deinit(self.allocator);
         }
 
-        // Helper to check if already in baseline
-        const isInBaseline = struct {
-            fn check(bl: []const []const u8, file: []const u8) bool {
-                for (bl) |b| {
+        // Helper to check if already in list
+        const isInList = struct {
+            fn check(list: []const []const u8, file: []const u8) bool {
+                for (list) |b| {
                     if (std.mem.eql(u8, b, file)) return true;
                 }
                 return false;
             }
         }.check;
 
-        // Get unstaged changes
-        var diff_result = try process.shell(self.allocator, "git diff --name-only HEAD");
-        defer diff_result.deinit();
-
-        if (diff_result.success()) {
-            var lines = std.mem.tokenizeScalar(u8, diff_result.stdout, '\n');
-            while (lines.next()) |file| {
-                const trimmed = std.mem.trim(u8, file, " \t\r");
-                if (trimmed.len > 0) {
-                    try baseline.append(self.allocator, try self.allocator.dupe(u8, trimmed));
-                }
+        // Copy all unique files
+        for (changed.modified) |f| {
+            try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
+        }
+        for (changed.staged) |f| {
+            if (!isInList(baseline.items, f)) {
+                try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
+            }
+        }
+        for (changed.untracked) |f| {
+            if (!isInList(baseline.items, f)) {
+                try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
             }
         }
 
-        // Get staged changes
-        var staged_result = try process.shell(self.allocator, "git diff --name-only --cached");
-        defer staged_result.deinit();
+        // Now safe to free the original changed files
+        changed.deinit();
 
-        if (staged_result.success()) {
-            var lines = std.mem.tokenizeScalar(u8, staged_result.stdout, '\n');
-            while (lines.next()) |file| {
-                const trimmed = std.mem.trim(u8, file, " \t\r");
-                if (trimmed.len == 0) continue;
-                // Avoid duplicates
-                if (!isInBaseline(baseline.items, trimmed)) {
-                    try baseline.append(self.allocator, try self.allocator.dupe(u8, trimmed));
-                }
-            }
-        }
-
-        // Get untracked files (so we can distinguish pre-existing from agent-created)
-        var untracked_result = try process.shell(self.allocator, "git ls-files --others --exclude-standard");
-        defer untracked_result.deinit();
-
-        if (untracked_result.success()) {
-            var lines = std.mem.tokenizeScalar(u8, untracked_result.stdout, '\n');
-            while (lines.next()) |file| {
-                const trimmed = std.mem.trim(u8, file, " \t\r");
-                if (trimmed.len == 0) continue;
-                // Avoid duplicates
-                if (!isInBaseline(baseline.items, trimmed)) {
-                    try baseline.append(self.allocator, try self.allocator.dupe(u8, trimmed));
-                }
-            }
-        }
-
-        return try baseline.toOwnedSlice(self.allocator);
+        return baseline.toOwnedSlice(self.allocator);
     }
 
     /// Free baseline file list
@@ -1563,23 +1529,10 @@ pub const AgentLoop = struct {
         }
         const m = manifest.?;
 
-        // Get list of changed files from git diff
-        var diff_result = try process.shell(self.allocator, "git diff --name-only HEAD");
-        defer diff_result.deinit();
-
-        if (!diff_result.success()) {
-            // If git diff fails, assume compliant (could be not in a git repo)
-            self.logWarn("git diff failed, skipping manifest check", .{});
-            return .{ .compliant = true };
-        }
-
-        // Also check staged changes
-        var staged_result = try process.shell(self.allocator, "git diff --name-only --cached");
-        defer staged_result.deinit();
-
-        // Also check untracked files (new files created by agent)
-        var untracked_result = try process.shell(self.allocator, "git ls-files --others --exclude-standard");
-        defer untracked_result.deinit();
+        // Get all changed files using git module
+        var repo = git.GitRepo.init(self.allocator);
+        var changed = try repo.getAllChangedFiles();
+        defer changed.deinit();
 
         // Parse changed files
         var unauthorized = std.ArrayListUnmanaged([]const u8){};
@@ -1621,85 +1574,51 @@ pub const AgentLoop = struct {
             }
         }.check;
 
-        // Check unstaged changes
-        var lines = std.mem.tokenizeScalar(u8, diff_result.stdout, '\n');
-        while (lines.next()) |file| {
-            const trimmed = std.mem.trim(u8, file, " \t\r");
-            if (trimmed.len == 0) continue;
-
-            // Skip files that were already modified before agent ran
-            if (isInBaseline(baseline, trimmed)) continue;
-
-            // Track all touched files for instrumentation
-            if (!isInList(all_touched.items, trimmed)) {
-                try all_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
-            }
-
-            // Check if file is forbidden
-            if (m.isForbidden(trimmed)) {
-                try forbidden_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
-            } else if (!m.allowsWrite(trimmed)) {
-                // Check if file is outside allowed primary_files
-                try unauthorized.append(self.allocator, try self.allocator.dupe(u8, trimmed));
-            }
-        }
-
-        // Check staged changes
-        var staged_lines = std.mem.tokenizeScalar(u8, staged_result.stdout, '\n');
-        while (staged_lines.next()) |file| {
-            const trimmed = std.mem.trim(u8, file, " \t\r");
-            if (trimmed.len == 0) continue;
-
-            // Skip files that were already modified before agent ran
-            if (isInBaseline(baseline, trimmed)) continue;
-
-            // Track all touched files for instrumentation
-            if (!isInList(all_touched.items, trimmed)) {
-                try all_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
-            }
-
-            // Check if file is forbidden
-            if (m.isForbidden(trimmed)) {
-                // Avoid duplicates
-                if (!isInList(forbidden_touched.items, trimmed)) {
-                    try forbidden_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
-                }
-            } else if (!m.allowsWrite(trimmed)) {
-                // Avoid duplicates
-                if (!isInList(unauthorized.items, trimmed)) {
-                    try unauthorized.append(self.allocator, try self.allocator.dupe(u8, trimmed));
-                }
-            }
-        }
-
-        // Check untracked files (new files created by agent)
-        if (untracked_result.success()) {
-            var untracked_lines = std.mem.tokenizeScalar(u8, untracked_result.stdout, '\n');
-            while (untracked_lines.next()) |file| {
-                const trimmed = std.mem.trim(u8, file, " \t\r");
-                if (trimmed.len == 0) continue;
-
-                // Skip files that were already untracked before agent ran
-                if (isInBaseline(baseline, trimmed)) continue;
+        // Helper to process a file and check compliance
+        const processFile = struct {
+            fn process(
+                allocator: std.mem.Allocator,
+                file: []const u8,
+                bl: []const []const u8,
+                man: @TypeOf(m),
+                touched: *std.ArrayListUnmanaged([]const u8),
+                unauth: *std.ArrayListUnmanaged([]const u8),
+                forbidden: *std.ArrayListUnmanaged([]const u8),
+            ) !void {
+                // Skip files that were already modified before agent ran
+                if (isInBaseline(bl, file)) return;
 
                 // Track all touched files for instrumentation
-                if (!isInList(all_touched.items, trimmed)) {
-                    try all_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                if (!isInList(touched.items, file)) {
+                    try touched.append(allocator, try allocator.dupe(u8, file));
                 }
 
                 // Check if file is forbidden
-                if (m.isForbidden(trimmed)) {
-                    // Avoid duplicates
-                    if (!isInList(forbidden_touched.items, trimmed)) {
-                        try forbidden_touched.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                if (man.isForbidden(file)) {
+                    if (!isInList(forbidden.items, file)) {
+                        try forbidden.append(allocator, try allocator.dupe(u8, file));
                     }
-                } else if (!m.allowsWrite(trimmed)) {
-                    // Avoid duplicates
-                    if (!isInList(unauthorized.items, trimmed)) {
-                        try unauthorized.append(self.allocator, try self.allocator.dupe(u8, trimmed));
+                } else if (!man.allowsWrite(file)) {
+                    if (!isInList(unauth.items, file)) {
+                        try unauth.append(allocator, try allocator.dupe(u8, file));
                     }
                 }
             }
+        }.process;
+
+        // Check modified files
+        for (changed.modified) |file| {
+            try processFile(self.allocator, file, baseline, m, &all_touched, &unauthorized, &forbidden_touched);
+        }
+
+        // Check staged files
+        for (changed.staged) |file| {
+            try processFile(self.allocator, file, baseline, m, &all_touched, &unauthorized, &forbidden_touched);
+        }
+
+        // Check untracked files
+        for (changed.untracked) |file| {
+            try processFile(self.allocator, file, baseline, m, &all_touched, &unauthorized, &forbidden_touched);
         }
 
         const has_violations = unauthorized.items.len > 0 or forbidden_touched.items.len > 0;
@@ -1746,26 +1665,10 @@ pub const AgentLoop = struct {
             return;
         }
 
-        // Rollback each file individually
+        // Rollback each file individually using git module
+        var repo = git.GitRepo.init(self.allocator);
         for (files_to_rollback.items) |file| {
-            // Unstage if staged
-            const unstage_cmd = try std.fmt.allocPrint(self.allocator, "git reset HEAD -- \"{s}\"", .{file});
-            defer self.allocator.free(unstage_cmd);
-            var unstage_result = try process.shell(self.allocator, unstage_cmd);
-            defer unstage_result.deinit();
-
-            // Restore file to HEAD state (for tracked files)
-            const checkout_cmd = try std.fmt.allocPrint(self.allocator, "git checkout HEAD -- \"{s}\" 2>/dev/null || true", .{file});
-            defer self.allocator.free(checkout_cmd);
-            var checkout_result = try process.shell(self.allocator, checkout_cmd);
-            defer checkout_result.deinit();
-
-            // For new untracked files, just remove them
-            const rm_cmd = try std.fmt.allocPrint(self.allocator, "git clean -f -- \"{s}\" 2>/dev/null || true", .{file});
-            defer self.allocator.free(rm_cmd);
-            var rm_result = try process.shell(self.allocator, rm_cmd);
-            defer rm_result.deinit();
-
+            try repo.rollbackFile(file);
             self.logInfo("  Rolled back: {s}", .{file});
         }
 

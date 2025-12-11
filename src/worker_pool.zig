@@ -8,8 +8,10 @@ const state_mod = @import("state.zig");
 const process = @import("process.zig");
 const config_mod = @import("config.zig");
 const signals = @import("signals.zig");
+const git = @import("git.zig");
 
 const OrchestratorState = state_mod.OrchestratorState;
+const IssueCompletionHandler = state_mod.IssueCompletionHandler;
 const WorkerState = state_mod.WorkerState;
 const Batch = state_mod.Batch;
 const Config = config_mod.Config;
@@ -22,6 +24,8 @@ pub const WorkerResult = struct {
     success: bool,
     exit_code: u8,
     duration_seconds: i64,
+    /// Baseline files that existed before worker started (for manifest compliance)
+    baseline: []const []const u8 = &.{},
 };
 
 /// WorkerPool manages parallel worker processes for executing issues
@@ -44,6 +48,13 @@ pub const WorkerPool = struct {
     /// Transcript database for logging worker sessions
     transcript_db: ?transcript_mod.TranscriptDb = null,
 
+    /// Completion handler for manifest verification and progress logging
+    completion_handler: ?IssueCompletionHandler = null,
+
+    /// Baseline files per worker (captured before worker starts)
+    /// These are the files that were already modified before the worker began.
+    worker_baselines: [state_mod.MAX_WORKERS][]const []const u8 = [_][]const []const u8{&.{}} ** state_mod.MAX_WORKERS,
+
     /// Info about a waiting worker
     const WaitingWorker = struct {
         issue_id: []const u8,
@@ -63,6 +74,7 @@ pub const WorkerPool = struct {
             .config = cfg,
             .state = orchestrator_state,
             .transcript_db = transcript_db,
+            .completion_handler = IssueCompletionHandler.init(allocator, orchestrator_state),
         };
     }
 
@@ -84,8 +96,15 @@ pub const WorkerPool = struct {
         // Free pending results
         for (self.pending_results.items) |result| {
             self.allocator.free(result.issue_id);
+            self.freeBaseline(result.baseline);
         }
         self.pending_results.deinit(self.allocator);
+
+        // Free worker baselines
+        for (&self.worker_baselines) |*baseline| {
+            self.freeBaseline(baseline.*);
+            baseline.* = &.{};
+        }
 
         // Free waiting workers
         var it = self.waiting_workers.iterator();
@@ -151,7 +170,10 @@ pub const WorkerPool = struct {
             var locks_released = false;
             while (self.pending_results.items.len > 0) {
                 const result = self.pending_results.orderedRemove(0);
-                defer self.allocator.free(result.issue_id);
+                defer {
+                    self.allocator.free(result.issue_id);
+                    self.freeBaseline(result.baseline);
+                }
 
                 // Find the issue index in the batch
                 for (batch.issue_ids, 0..) |issue_id, i| {
@@ -159,13 +181,46 @@ pub const WorkerPool = struct {
                         completed[i] = true;
                         issues_remaining -= 1;
 
-                        if (result.success) {
+                        // === Manifest compliance verification ===
+                        // Verify the worker didn't touch forbidden/unauthorized files.
+                        // We filter the global changed files to exclude:
+                        // 1. Files in the baseline (existed before this worker started)
+                        // 2. Files in OTHER issues' manifests (modified by concurrent workers)
+                        var is_compliant = true;
+                        if (self.completion_handler) |*handler| {
+                            // Get current changed files, filtering out those owned by other issues
+                            var all_changed = self.buildChangedFilesListExcludingOtherManifests(result.issue_id) catch null;
+                            defer if (all_changed) |*list| {
+                                for (list.*) |f| self.allocator.free(f);
+                                if (list.len > 0) self.allocator.free(list.*);
+                            };
+
+                            if (all_changed) |list| {
+                                is_compliant = handler.handleCompletion(
+                                    result.issue_id,
+                                    result.success,
+                                    result.baseline,
+                                    list,
+                                ) catch true; // On error, assume compliant to not block
+                            }
+                        }
+
+                        // Determine final success: agent success AND manifest compliance
+                        const final_success = result.success and is_compliant;
+
+                        if (final_success) {
                             successful += 1;
                             logSuccess("Worker {d} completed issue {s} in {d}s", .{
                                 result.worker_id,
                                 result.issue_id,
                                 result.duration_seconds,
                             });
+                        } else if (!is_compliant) {
+                            logError("Worker {d} issue {s} failed manifest compliance check", .{
+                                result.worker_id,
+                                result.issue_id,
+                            });
+                            // TODO: rollback violating files using git
                         } else {
                             logError("Worker {d} failed issue {s} (exit code {d})", .{
                                 result.worker_id,
@@ -174,8 +229,8 @@ pub const WorkerPool = struct {
                             });
                         }
 
-                        // Update issue state
-                        const status: state_mod.IssueStatus = if (result.success) .completed else .failed;
+                        // Update issue state based on final result
+                        const status: state_mod.IssueStatus = if (final_success) .completed else .failed;
                         _ = self.state.updateIssue(result.issue_id, status) catch {};
 
                         // Release locks for this issue
@@ -183,7 +238,7 @@ pub const WorkerPool = struct {
                         locks_released = true;
 
                         // Mark worker as idle
-                        self.state.workers[result.worker_id].status = if (result.success) .completed else .failed;
+                        self.state.workers[result.worker_id].status = if (final_success) .completed else .failed;
                         if (self.state.workers[result.worker_id].current_issue) |issue| {
                             self.allocator.free(issue);
                             self.state.workers[result.worker_id].current_issue = null;
@@ -266,6 +321,128 @@ pub const WorkerPool = struct {
         return null;
     }
 
+    /// Capture baseline of changed files before a worker starts.
+    /// Returns list of file paths that were already modified or untracked.
+    /// Caller must free with freeBaseline.
+    fn captureBaseline(self: *WorkerPool) ![]const []const u8 {
+        var repo = git.GitRepo.init(self.allocator);
+        var changed = try repo.getAllChangedFiles();
+        // Don't defer deinit - we need to copy strings first before freeing
+
+        // Build list with duplicated strings so we own them
+        var baseline = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (baseline.items) |f| self.allocator.free(f);
+            baseline.deinit(self.allocator);
+        }
+
+        // Helper to check if already in list
+        const isInList = struct {
+            fn check(list: []const []const u8, file: []const u8) bool {
+                for (list) |b| {
+                    if (std.mem.eql(u8, b, file)) return true;
+                }
+                return false;
+            }
+        }.check;
+
+        // Copy all unique files
+        for (changed.modified) |f| {
+            try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
+        }
+        for (changed.staged) |f| {
+            if (!isInList(baseline.items, f)) {
+                try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
+            }
+        }
+        for (changed.untracked) |f| {
+            if (!isInList(baseline.items, f)) {
+                try baseline.append(self.allocator, try self.allocator.dupe(u8, f));
+            }
+        }
+
+        // Now safe to free the original changed files
+        changed.deinit();
+
+        return baseline.toOwnedSlice(self.allocator);
+    }
+
+    /// Free a baseline file list
+    fn freeBaseline(self: *WorkerPool, baseline: []const []const u8) void {
+        for (baseline) |f| self.allocator.free(f);
+        if (baseline.len > 0) self.allocator.free(baseline);
+    }
+
+    /// Build a list of all currently changed files, excluding files owned by other issues.
+    /// This prevents false manifest violations from concurrent worker modifications.
+    /// We exclude files that are in ANY other issue's manifest (not just currently locked).
+    /// Caller must free each string and the list.
+    fn buildChangedFilesListExcludingOtherManifests(self: *WorkerPool, this_issue_id: []const u8) ![]const []const u8 {
+        var repo = git.GitRepo.init(self.allocator);
+        var changed = try repo.getAllChangedFiles();
+        // Don't defer deinit - we need to copy strings first
+
+        var result = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (result.items) |f| self.allocator.free(f);
+            result.deinit(self.allocator);
+        }
+
+        // Helper to check if already in list
+        const isInList = struct {
+            fn check(list: []const []const u8, file: []const u8) bool {
+                for (list) |b| {
+                    if (std.mem.eql(u8, b, file)) return true;
+                }
+                return false;
+            }
+        }.check;
+
+        // Helper to check if file is in another issue's manifest
+        // This is more robust than checking locks, which can be released
+        const isInOtherManifest = struct {
+            fn check(state: *state_mod.OrchestratorState, file: []const u8, our_issue: []const u8) bool {
+                // Check all issues to see if any OTHER issue owns this file
+                var it = state.issues.iterator();
+                while (it.next()) |entry| {
+                    const issue_id = entry.key_ptr.*;
+                    // Skip our own issue
+                    if (std.mem.eql(u8, issue_id, our_issue)) continue;
+
+                    const issue_state = entry.value_ptr.*;
+                    if (issue_state.manifest) |manifest| {
+                        if (manifest.allowsWrite(file)) {
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
+        }.check;
+
+        // Copy all unique files, excluding those owned by other issues
+        for (changed.modified) |f| {
+            if (!isInOtherManifest(self.state, f, this_issue_id)) {
+                try result.append(self.allocator, try self.allocator.dupe(u8, f));
+            }
+        }
+        for (changed.staged) |f| {
+            if (!isInList(result.items, f) and !isInOtherManifest(self.state, f, this_issue_id)) {
+                try result.append(self.allocator, try self.allocator.dupe(u8, f));
+            }
+        }
+        for (changed.untracked) |f| {
+            if (!isInList(result.items, f) and !isInOtherManifest(self.state, f, this_issue_id)) {
+                try result.append(self.allocator, try self.allocator.dupe(u8, f));
+            }
+        }
+
+        // Now safe to free the original changed files
+        changed.deinit();
+
+        return result.toOwnedSlice(self.allocator);
+    }
+
     /// Start a worker process for an issue
     /// If `resuming` is true, the worker was previously blocked and is being restarted
     fn startWorker(self: *WorkerPool, worker_id: u32, issue_id: []const u8) !void {
@@ -274,6 +451,14 @@ pub const WorkerPool = struct {
 
     /// Start a worker process, optionally as a resume from a blocked state
     fn startWorkerWithResume(self: *WorkerPool, worker_id: u32, issue_id: []const u8, resuming: bool) !void {
+        // Capture baseline of changed files BEFORE worker starts
+        // This allows us to verify manifest compliance on completion
+        if (!resuming) {
+            // Free any existing baseline for this worker
+            self.freeBaseline(self.worker_baselines[worker_id]);
+            self.worker_baselines[worker_id] = try self.captureBaseline();
+        }
+
         // Build the worker command
         // Each worker runs: noface --worker --issue <issue_id>
         // For now, we use claude directly with the implementation prompt
@@ -489,13 +674,18 @@ pub const WorkerPool = struct {
                         }
                     }
 
-                    // Create result
+                    // Transfer baseline ownership to the result (don't free here)
+                    const baseline = self.worker_baselines[worker_id];
+                    self.worker_baselines[worker_id] = &.{}; // Clear without freeing
+
+                    // Create result with baseline for manifest compliance check
                     const result = WorkerResult{
                         .worker_id = worker_id,
                         .issue_id = try self.allocator.dupe(u8, worker.issue_id),
                         .success = exit_code == 0,
                         .exit_code = exit_code,
                         .duration_seconds = duration,
+                        .baseline = baseline,
                     };
 
                     try self.pending_results.append(self.allocator, result);
@@ -714,6 +904,8 @@ const WorkerProcess = struct {
     last_output_time: i64,
     /// Buffer for detecting BLOCKED_BY_FILE signals in output
     output_buffer: std.ArrayListUnmanaged(u8) = .{},
+    /// Position in output_buffer up to which we've scanned for signals (avoids re-scanning)
+    output_scan_pos: usize = 0,
     /// File that this worker is blocked on (if detected)
     blocked_on_file: ?[]const u8 = null,
     /// Line buffer for JSON parsing (accumulates until newline)
@@ -1048,11 +1240,17 @@ const WorkerProcess = struct {
     /// Check output buffer for BLOCKED_BY_FILE: signal.
     /// The signal may appear inside JSON content (e.g., {"content":"BLOCKED_BY_FILE: src/foo.zig"})
     /// so we need to handle both raw text and JSON-embedded signals.
+    /// Only scans new content since last check to avoid infinite re-detection loops.
     fn checkForBlockedSignal(self: *WorkerProcess) void {
         if (self.blocked_on_file != null) return; // Already detected
 
         const output = self.output_buffer.items;
-        if (std.mem.indexOf(u8, output, BLOCKED_SIGNAL)) |pos| {
+        // Only scan new content since last check
+        if (self.output_scan_pos >= output.len) return;
+        const search_slice = output[self.output_scan_pos..];
+
+        if (std.mem.indexOf(u8, search_slice, BLOCKED_SIGNAL)) |relative_pos| {
+            const pos = self.output_scan_pos + relative_pos;
             // Found the signal - extract the file path
             const after_signal = output[pos + BLOCKED_SIGNAL.len ..];
             // Skip whitespace
@@ -1077,6 +1275,11 @@ const WorkerProcess = struct {
                     self.blocked_on_file = self.allocator.dupe(u8, file_path) catch null;
                 }
             }
+            // Move scan position past this signal to avoid re-detecting it
+            self.output_scan_pos = pos + BLOCKED_SIGNAL.len + end;
+        } else {
+            // No signal found in new content, update scan position to end
+            self.output_scan_pos = output.len;
         }
     }
 
@@ -1085,23 +1288,31 @@ const WorkerProcess = struct {
     fn isValidFilePath(path: []const u8) bool {
         if (path.len == 0 or path.len > 512) return false;
 
-        // File paths shouldn't contain JSON syntax characters or escape sequences
+        // File paths shouldn't contain JSON syntax characters, escape sequences,
+        // or placeholder markers like < >
         for (path) |c| {
             switch (c) {
-                '{', '}', '[', ']', ':', ',', '"', '\\' => return false,
+                '{', '}', '[', ']', ':', ',', '"', '\\', '<', '>' => return false,
                 else => {},
             }
         }
 
+        // Must look like a file path: contain '/' or have a file extension
+        const has_slash = std.mem.indexOf(u8, path, "/") != null;
+        const has_extension = if (std.mem.lastIndexOf(u8, path, ".")) |dot_pos|
+            dot_pos > 0 and dot_pos < path.len - 1 // dot not at start or end
+        else
+            false;
+
+        if (!has_slash and !has_extension) return false;
+
         // Should contain at least some alphanumeric characters
-        var has_alnum = false;
         for (path) |c| {
             if (std.ascii.isAlphanumeric(c)) {
-                has_alnum = true;
-                break;
+                return true;
             }
         }
-        return has_alnum;
+        return false;
     }
 
     /// Check if this worker has signaled it's blocked on a file
@@ -1351,6 +1562,12 @@ test "isValidFilePath rejects JSON garbage" {
     try std.testing.expect(!WorkerProcess.isValidFilePath("{\"content\":\"foo\"}"));
     try std.testing.expect(!WorkerProcess.isValidFilePath("path[0]"));
     try std.testing.expect(!WorkerProcess.isValidFilePath(""));
+    // Placeholder text from instructions
+    try std.testing.expect(!WorkerProcess.isValidFilePath("<path/to/file.zig>"));
+    try std.testing.expect(!WorkerProcess.isValidFilePath("<path>"));
+    // Words that aren't file paths (no / or extension)
+    try std.testing.expect(!WorkerProcess.isValidFilePath("signal"));
+    try std.testing.expect(!WorkerProcess.isValidFilePath("blocked"));
 }
 
 test "checkForBlockedSignal extracts path from JSON content" {
@@ -1419,5 +1636,35 @@ test "checkForBlockedSignal rejects malformed paths" {
     worker.checkForBlockedSignal();
 
     // Should not set blocked_on_file since the extracted content contains JSON chars
+    try std.testing.expect(worker.blocked_on_file == null);
+}
+
+test "checkForBlockedSignal does not re-detect after clearing" {
+    var worker = try WorkerProcess.spawn(
+        std.testing.allocator,
+        &[_][]const u8{ "echo", "test" },
+        0,
+        "test-issue",
+    );
+    defer worker.deinit();
+
+    std.Thread.sleep(50 * std.time.ns_per_ms);
+    _ = worker.tryWait();
+
+    // Add a valid signal
+    const output = "BLOCKED_BY_FILE: src/foo.zig\n";
+    try worker.output_buffer.appendSlice(std.testing.allocator, output);
+
+    // First detection should work
+    worker.checkForBlockedSignal();
+    try std.testing.expect(worker.blocked_on_file != null);
+    try std.testing.expectEqualStrings("src/foo.zig", worker.blocked_on_file.?);
+
+    // Simulate orchestrator clearing the blocked flag
+    std.testing.allocator.free(worker.blocked_on_file.?);
+    worker.blocked_on_file = null;
+
+    // Second call should NOT re-detect the same signal (scan position advanced)
+    worker.checkForBlockedSignal();
     try std.testing.expect(worker.blocked_on_file == null);
 }

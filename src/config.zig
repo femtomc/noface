@@ -565,6 +565,16 @@ pub const Config = struct {
                             config.monowiki_config.?.max_context_docs = @intCast(iv);
                         }
                     }
+                } else if (std.mem.eql(u8, key, "max_file_size_kb")) {
+                    if (int_value) |iv| {
+                        if (iv > 0 and iv <= std.math.maxInt(u32)) {
+                            config.monowiki_config.?.exclusions.max_file_size_kb = @intCast(iv);
+                        } else {
+                            std.debug.print("Warning: .noface.toml:{d}: max_file_size_kb must be positive\n", .{line_num});
+                        }
+                    } else {
+                        std.debug.print("Warning: .noface.toml:{d}: max_file_size_kb must be an integer\n", .{line_num});
+                    }
                 }
             }
         }
@@ -737,6 +747,28 @@ test "parse monowiki config" {
     try std.testing.expectEqualStrings("api-reference", mwc.api_docs_slug.?);
     try std.testing.expect(mwc.sync_api_docs);
     try std.testing.expectEqual(@as(u8, 3), mwc.max_context_docs);
+}
+
+test "parse monowiki max_file_size_kb config" {
+    const toml =
+        \\[monowiki]
+        \\vault = "./docs"
+        \\max_file_size_kb = 200
+    ;
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const config = try Config.parseToml(arena.allocator(), toml);
+    try std.testing.expect(config.monowiki_config != null);
+    const mwc = config.monowiki_config.?;
+    try std.testing.expectEqual(@as(u32, 200), mwc.exclusions.max_file_size_kb);
+}
+
+test "default max_file_size_kb is 100" {
+    // ExclusionConfig struct defaults are used when not customized
+    const default_exclusions = monowiki.ExclusionConfig{};
+    try std.testing.expectEqual(@as(u32, 100), default_exclusions.max_file_size_kb);
 }
 
 test "parse verbose config" {
