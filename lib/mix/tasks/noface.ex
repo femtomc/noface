@@ -154,15 +154,22 @@ defmodule Mix.Tasks.Noface.Start do
 
   ## Usage
 
-      mix noface.start [--config PATH] [--open]
+      mix noface.start [--config PATH] [--open] [--paused]
 
   Options:
     --config PATH   Path to .noface.toml config file (default: .noface.toml)
     --open          Open the dashboard in your browser automatically
+    --paused        Start in paused mode (use Loop.step() to advance)
 
   The server runs as a persistent OTP application and processes issues
   from your beads backlog. Use other `mix noface.*` commands to interact
   with the running server.
+
+  When started with --paused, the loop won't auto-advance. You can then
+  control it via IEx or the API:
+    - Noface.Core.Loop.step()        # Run one iteration
+    - Noface.Core.Loop.get_loop_state()  # Inspect state
+    - Noface.Core.Loop.resume()      # Start continuous execution
   """
   use Mix.Task
 
@@ -170,9 +177,10 @@ defmodule Mix.Tasks.Noface.Start do
 
   @impl Mix.Task
   def run(args) do
-    {opts, _, _} = OptionParser.parse(args, strict: [config: :string, open: :boolean])
+    {opts, _, _} = OptionParser.parse(args, strict: [config: :string, open: :boolean, paused: :boolean])
     config_path = opts[:config] || ".noface.toml"
     open_browser? = opts[:open] || false
+    start_paused? = opts[:paused] || false
 
     Mix.shell().info("Starting noface server...")
 
@@ -190,10 +198,22 @@ defmodule Mix.Tasks.Noface.Start do
     # Load config and start the loop
     case Noface.Core.Config.load(config_path) do
       {:ok, config} ->
-        case Noface.Core.Loop.start(config) do
+        start_fn = if start_paused?, do: &Noface.Core.Loop.start_paused/1, else: &Noface.Core.Loop.start/1
+
+        case start_fn.(config) do
           :ok ->
-            Mix.shell().info("Noface server started for #{config.project_name}")
+            mode = if start_paused?, do: "(paused)", else: ""
+            Mix.shell().info("Noface server started for #{config.project_name} #{mode}")
             Mix.shell().info("Dashboard: http://localhost:4000")
+
+            if start_paused? do
+              Mix.shell().info("")
+              Mix.shell().info("Loop is paused. Control via IEx or API:")
+              Mix.shell().info("  Noface.Core.Loop.step()           # Run one iteration")
+              Mix.shell().info("  Noface.Core.Loop.get_loop_state() # Inspect state")
+              Mix.shell().info("  Noface.Core.Loop.resume()         # Run continuously")
+            end
+
             # Keep running
             Process.sleep(:infinity)
 
