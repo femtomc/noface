@@ -364,7 +364,10 @@ defmodule Noface.Integrations.LSP do
   defp parse_location(_), do: nil
 
   defp parse_locations(nil), do: []
-  defp parse_locations(list) when is_list(list), do: Enum.map(list, &parse_location/1) |> Enum.reject(&is_nil/1)
+
+  defp parse_locations(list) when is_list(list),
+    do: Enum.map(list, &parse_location/1) |> Enum.reject(&is_nil/1)
+
   defp parse_locations(_), do: []
 
   # TODO: Implement full hover response parsing when send_request reads responses.
@@ -373,7 +376,10 @@ defmodule Noface.Integrations.LSP do
   defp parse_hover(_), do: nil
 
   defp parse_symbols(nil), do: []
-  defp parse_symbols(list) when is_list(list), do: Enum.map(list, &parse_symbol/1) |> Enum.reject(&is_nil/1)
+
+  defp parse_symbols(list) when is_list(list),
+    do: Enum.map(list, &parse_symbol/1) |> Enum.reject(&is_nil/1)
+
   defp parse_symbols(_), do: []
 
   defp parse_symbol(%{"name" => name, "kind" => kind, "location" => location}) do

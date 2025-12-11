@@ -146,12 +146,18 @@ defmodule Noface.Core.WorkerPool do
     duration = System.monotonic_time(:millisecond) - start_time
     successes = Enum.count(results, & &1.success)
 
-    Logger.info("[POOL] Batch #{batch.id} complete: #{successes}/#{length(results)} succeeded in #{duration}ms")
+    Logger.info(
+      "[POOL] Batch #{batch.id} complete: #{successes}/#{length(results)} succeeded in #{duration}ms"
+    )
 
     # Emit telemetry for batch completion
     :telemetry.execute(
       [:noface, :worker_pool, :batch, :stop],
-      %{duration_ms: duration, success_count: successes, failure_count: length(results) - successes},
+      %{
+        duration_ms: duration,
+        success_count: successes,
+        failure_count: length(results) - successes
+      },
       %{batch_id: batch.id, issue_ids: issue_ids}
     )
 
@@ -240,7 +246,14 @@ defmodule Noface.Core.WorkerPool do
     %{result | duration_ms: duration}
   end
 
-  defp run_implementation_cycle(_config, worker_id, issue_id, _workspace_path, iteration, _feedback)
+  defp run_implementation_cycle(
+         _config,
+         worker_id,
+         issue_id,
+         _workspace_path,
+         iteration,
+         _feedback
+       )
        when iteration >= @max_review_iterations do
     Logger.warning("[WORKER-#{worker_id}] Max review iterations reached for #{issue_id}")
 
@@ -262,7 +275,9 @@ defmodule Noface.Core.WorkerPool do
         # Run review agent
         case run_reviewer(config.review_agent, worker_id, issue_id, workspace_path, config) do
           {:ok, :approved} ->
-            Logger.info("[WORKER-#{worker_id}] Issue #{issue_id} approved after #{iteration + 1} iterations!")
+            Logger.info(
+              "[WORKER-#{worker_id}] Issue #{issue_id} approved after #{iteration + 1} iterations!"
+            )
 
             # Squash changes back to main (skip in dry-run)
             if config.dry_run do
@@ -311,7 +326,15 @@ defmodule Noface.Core.WorkerPool do
 
           {:ok, {:changes_requested, new_feedback}} ->
             Logger.info("[WORKER-#{worker_id}] Changes requested for #{issue_id}")
-            run_implementation_cycle(config, worker_id, issue_id, workspace_path, iteration + 1, new_feedback)
+
+            run_implementation_cycle(
+              config,
+              worker_id,
+              issue_id,
+              workspace_path,
+              iteration + 1,
+              new_feedback
+            )
 
           {:error, reason} ->
             %WorkerResult{
@@ -349,7 +372,8 @@ defmodule Noface.Core.WorkerPool do
     # Dry-run mode: simulate agent response
     if config.dry_run do
       Logger.info("[WORKER-#{worker_id}] DRY-RUN: Simulating agent for #{issue_id}")
-      Process.sleep(500)  # Simulate some work
+      # Simulate some work
+      Process.sleep(500)
       {:ok, :ready_for_review}
     else
       prompt =
@@ -385,7 +409,8 @@ defmodule Noface.Core.WorkerPool do
     # Dry-run mode: simulate reviewer response
     if config.dry_run do
       Logger.info("[WORKER-#{worker_id}] DRY-RUN: Simulating reviewer for #{issue_id}")
-      Process.sleep(300)  # Simulate some work
+      # Simulate some work
+      Process.sleep(300)
       {:ok, :approved}
     else
       prompt =
@@ -417,9 +442,14 @@ defmodule Noface.Core.WorkerPool do
 
   defp build_agent_args(agent_cmd, prompt) do
     case agent_cmd do
-      "claude" -> ["--print", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions"]
-      "codex" -> ["-q", "--full-auto", prompt]
-      _ -> ["--print", prompt, "--output-format", "stream-json"]
+      "claude" ->
+        ["--print", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions"]
+
+      "codex" ->
+        ["-q", "--full-auto", prompt]
+
+      _ ->
+        ["--print", prompt, "--output-format", "stream-json"]
     end
   end
 

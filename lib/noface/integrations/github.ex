@@ -13,7 +13,8 @@ defmodule Noface.Integrations.GitHub do
   @doc """
   Check if prerequisites are met (gh CLI authenticated).
   """
-  @spec check_prerequisites(Noface.Integrations.IssueSync.ProviderConfig.t()) :: :ok | {:error, term()}
+  @spec check_prerequisites(Noface.Integrations.IssueSync.ProviderConfig.t()) ::
+          :ok | {:error, term()}
   def check_prerequisites(_config) do
     case Proc.shell("gh auth status 2>&1") do
       {:ok, %{exit_code: 0}} ->

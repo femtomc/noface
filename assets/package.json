@@ -1,0 +1,13 @@
+{
+  "name": "noface_assets",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "deploy": "esbuild js/app.js --bundle --minify --target=es2017 --outdir=../priv/static/assets"
+  },
+  "dependencies": {
+    "phoenix": "^1.7.14",
+    "phoenix_live_view": "^1.0.0"
+  }
+}
+

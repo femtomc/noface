@@ -34,6 +34,7 @@ defmodule NofaceWeb.DashboardLiveTest do
 
   test "adds comment and updates issue", %{conn: conn} do
     issue = TestFixtures.build_issue("c", content: %{title: "Old"}, status: :pending)
+
     {:ok, view, _} =
       live_isolated(conn, NofaceWeb.DashboardLive,
         session: %{
@@ -47,13 +48,17 @@ defmodule NofaceWeb.DashboardLiveTest do
     view |> element("div.issue[phx-value-id=\"c\"]") |> render_click()
 
     view
-    |> form("form[phx-submit=add_comment][phx-value-id=\"c\"]", %{"comment" => %{"body" => "hi", "author" => "me"}})
+    |> form("form[phx-submit=add_comment][phx-value-id=\"c\"]", %{
+      "comment" => %{"body" => "hi", "author" => "me"}
+    })
     |> render_submit()
 
     assert render(view) =~ "hi"
 
     view
-    |> form("form[phx-submit=update_issue][phx-value-id=\"c\"]", %{"issue" => %{"title" => "New title", "priority" => "0"}})
+    |> form("form[phx-submit=update_issue][phx-value-id=\"c\"]", %{
+      "issue" => %{"title" => "New title", "priority" => "0"}
+    })
     |> render_submit()
 
     assert render(view) =~ "New title"
@@ -62,7 +67,12 @@ defmodule NofaceWeb.DashboardLiveTest do
   test "reacts to loop updates", %{conn: conn} do
     {:ok, view, _} = live(conn, "/")
 
-    PubSub.broadcast(Noface.PubSub, "loop", {:loop, %{running: true, paused: false, iteration: 2, current_work: :busy}})
+    PubSub.broadcast(
+      Noface.PubSub,
+      "loop",
+      {:loop, %{running: true, paused: false, iteration: 2, current_work: :busy}}
+    )
+
     html = render(view)
     assert html =~ "RUNNING"
     assert html =~ "2"
@@ -72,8 +82,23 @@ defmodule NofaceWeb.DashboardLiveTest do
     {:ok, view, _} = live(conn, "/")
 
     send(view.pid, {:session_started, "issue-x"})
-    send(view.pid, {:session_event, "issue-x", %{event_type: "tool", tool_name: "Read", raw_json: ~s({\"file_path\":\"foo.txt\"}), content: nil}})
-    send(view.pid, {:session_event, "issue-x", %{event_type: "text", tool_name: nil, raw_json: nil, content: "completed work"}})
+
+    send(
+      view.pid,
+      {:session_event, "issue-x",
+       %{
+         event_type: "tool",
+         tool_name: "Read",
+         raw_json: ~s({\"file_path\":\"foo.txt\"}),
+         content: nil
+       }}
+    )
+
+    send(
+      view.pid,
+      {:session_event, "issue-x",
+       %{event_type: "text", tool_name: nil, raw_json: nil, content: "completed work"}}
+    )
 
     html = render(view)
     assert html =~ "issue-x"

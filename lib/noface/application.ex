@@ -27,7 +27,7 @@ defmodule Noface.Application do
       # Signal handling
       Noface.Util.Signals,
       # Transcript logging (Ecto SQLite)
-      {Noface.Util.Transcript.Repo, []},
+      {Noface.Transcript.Repo, []},
       # Worker pool (Task.Supervisor-based)
       Noface.Core.WorkerPool,
       # Command server (accepts CLI commands)
@@ -36,6 +36,8 @@ defmodule Noface.Application do
       Noface.HotReload,
       # Tools updater (periodic update checker)
       Noface.Tools.Updater,
+      # Phoenix telemetry + LiveDashboard metrics
+      NofaceWeb.Telemetry,
       # PubSub for Phoenix
       {Phoenix.PubSub, name: Noface.PubSub},
       # Phoenix web endpoint
@@ -59,7 +61,7 @@ defmodule Noface.Application do
   end
 
   defp run_migrations do
-    Noface.Util.Transcript.migrate()
+    Noface.Transcript.migrate()
     Logger.debug("[APP] Transcript migrations complete")
   end
 end

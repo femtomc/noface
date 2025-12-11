@@ -9,6 +9,7 @@ defmodule NofaceElixir.MixProject do
       elixirc_paths: elixirc_paths(Mix.env()),
       start_permanent: Mix.env() == :prod,
       deps: deps(),
+      aliases: aliases(),
       escript: escript(),
       listeners: [Phoenix.CodeReloader]
     ]
@@ -62,6 +63,14 @@ defmodule NofaceElixir.MixProject do
       # LiveView testing + HTML parser
       {:floki, ">= 0.36.0", only: :test},
       {:lazy_html, ">= 0.1.0", only: :test}
+    ]
+  end
+
+  defp aliases do
+    [
+      "assets.setup": ["esbuild.install --if-missing", "cmd --cd assets npm install"],
+      "assets.build": ["esbuild noface"],
+      "assets.deploy": ["esbuild noface --minify", "phx.digest"]
     ]
   end
 end

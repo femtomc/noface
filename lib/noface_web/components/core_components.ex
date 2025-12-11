@@ -9,8 +9,8 @@ defmodule NofaceWeb.CoreComponents do
   @doc """
   Renders flash messages.
   """
-  attr :flash, :map, required: true
-  attr :kind, :atom, values: [:info, :error], doc: "used for styling and filtering"
+  attr(:flash, :map, required: true)
+  attr(:kind, :atom, values: [:info, :error], doc: "used for styling and filtering")
 
   def flash(assigns) do
     ~H"""
@@ -28,7 +28,7 @@ defmodule NofaceWeb.CoreComponents do
   @doc """
   Renders a group of flash messages.
   """
-  attr :flash, :map, required: true
+  attr(:flash, :map, required: true)
 
   def flash_group(assigns) do
     ~H"""

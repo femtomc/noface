@@ -268,7 +268,8 @@ defmodule Noface.VCS.JJ do
   @spec squash_from_workspace(String.t()) :: {:ok, boolean()} | {:error, term()}
   def squash_from_workspace(workspace_path) do
     # Get the working copy commit of the workspace
-    log_cmd = ~s(jj --repository "#{workspace_path}" log -r @ --no-graph -T 'change_id' 2>/dev/null)
+    log_cmd =
+      ~s(jj --repository "#{workspace_path}" log -r @ --no-graph -T 'change_id' 2>/dev/null)
 
     case Proc.shell(log_cmd) do
       {:ok, %{exit_code: 0, stdout: output}} ->

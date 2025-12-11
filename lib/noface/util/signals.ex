@@ -90,7 +90,10 @@ defmodule Noface.Util.Signals do
 
     if state.current_issue do
       Logger.info("\e[1;33m[INTERRUPTED]\e[0m Issue #{state.current_issue} was NOT completed")
-      Logger.info("\e[1;33m[INTERRUPTED]\e[0m Issue status left as-is (check with: bd show #{state.current_issue})")
+
+      Logger.info(
+        "\e[1;33m[INTERRUPTED]\e[0m Issue status left as-is (check with: bd show #{state.current_issue})"
+      )
     end
 
     {:noreply, %{state | interrupted: true}}

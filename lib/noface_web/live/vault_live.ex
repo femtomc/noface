@@ -5,14 +5,17 @@ defmodule NofaceWeb.VaultLive do
   Allows browsing, editing, and appending issue references to vault notes.
   Uses the configured monowiki vault path from .noface.toml.
   """
-  use Phoenix.LiveView
+  use NofaceWeb, :live_view
 
   alias Noface.Core.Config
 
   @impl true
   def mount(params, _session, socket) do
     config = load_config()
-    vault = params["vault"] || Application.get_env(:noface_elixir, :monowiki_vault) || config.monowiki_vault
+
+    vault =
+      params["vault"] || Application.get_env(:noface_elixir, :monowiki_vault) ||
+        config.monowiki_vault
 
     {:ok,
      socket
@@ -27,13 +30,18 @@ defmodule NofaceWeb.VaultLive do
 
   @impl true
   def handle_event("select", %{"slug" => slug}, socket) do
-    {:noreply, assign(socket, selected: slug, content: read_note(socket.assigns.vault, slug), status: nil)}
+    {:noreply,
+     assign(socket, selected: slug, content: read_note(socket.assigns.vault, slug), status: nil)}
   end
 
   def handle_event("save", %{"slug" => slug, "content" => content}, socket) do
     case write_note(socket.assigns.vault, slug, content) do
-      :ok -> {:noreply, assign(socket, status: {:ok, "Saved #{slug}"}, notes: list_notes(socket.assigns.vault))}
-      {:error, reason} -> {:noreply, assign(socket, status: {:error, inspect(reason)})}
+      :ok ->
+        {:noreply,
+         assign(socket, status: {:ok, "Saved #{slug}"}, notes: list_notes(socket.assigns.vault))}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, status: {:error, inspect(reason)})}
     end
   end
 
@@ -41,10 +49,15 @@ defmodule NofaceWeb.VaultLive do
     slug = String.trim(slug || "")
 
     cond do
-      slug == "" -> {:noreply, assign(socket, status: {:error, "Slug required"})}
-      note_exists?(socket.assigns.vault, slug) -> {:noreply, assign(socket, status: {:error, "Already exists"})}
+      slug == "" ->
+        {:noreply, assign(socket, status: {:error, "Slug required"})}
+
+      note_exists?(socket.assigns.vault, slug) ->
+        {:noreply, assign(socket, status: {:error, "Already exists"})}
+
       true ->
         :ok = write_note(socket.assigns.vault, slug, "# #{slug}\n")
+
         {:noreply,
          assign(socket,
            notes: list_notes(socket.assigns.vault),
@@ -55,7 +68,11 @@ defmodule NofaceWeb.VaultLive do
     end
   end
 
-  def handle_event("append_issue", %{"slug" => slug, "issue_id" => issue_id, "note" => note}, socket) do
+  def handle_event(
+        "append_issue",
+        %{"slug" => slug, "issue_id" => issue_id, "note" => note},
+        socket
+      ) do
     issue_id = String.trim(issue_id || "")
     note_text = String.trim(note || "")
     content = read_note(socket.assigns.vault, slug) || ""
@@ -63,8 +80,11 @@ defmodule NofaceWeb.VaultLive do
     addition = "\n\n## Issues\n- #{issue_id} #{note_text}\n"
 
     case write_note(socket.assigns.vault, slug, content <> addition) do
-      :ok -> {:noreply, assign(socket, content: content <> addition, status: {:ok, "Linked issue"})}
-      {:error, reason} -> {:noreply, assign(socket, status: {:error, inspect(reason)})}
+      :ok ->
+        {:noreply, assign(socket, content: content <> addition, status: {:ok, "Linked issue"})}
+
+      {:error, reason} ->
+        {:noreply, assign(socket, status: {:error, inspect(reason)})}
     end
   end
 
@@ -138,6 +158,7 @@ defmodule NofaceWeb.VaultLive do
   end
 
   defp list_notes(nil), do: []
+
   defp list_notes(vault) do
     case File.ls(vault) do
       {:ok, files} ->
@@ -147,13 +168,16 @@ defmodule NofaceWeb.VaultLive do
         |> Enum.map(&String.trim_trailing(&1, ".markdown"))
         |> Enum.sort()
 
-      _ -> []
+      _ ->
+        []
     end
   end
 
   defp read_note(nil, _slug), do: nil
+
   defp read_note(vault, slug) do
     path = Path.join(vault, ensure_extension(slug))
+
     case File.read(path) do
       {:ok, content} -> content
       _ -> nil
@@ -161,6 +185,7 @@ defmodule NofaceWeb.VaultLive do
   end
 
   defp write_note(nil, _slug, _content), do: {:error, :no_vault}
+
   defp write_note(vault, slug, content) do
     path = Path.join(vault, ensure_extension(slug))
     File.write(path, content)

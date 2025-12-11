@@ -62,8 +62,13 @@ defmodule Noface.Util.BM25 do
   @doc """
   Index a directory of source files.
   """
-  @spec index_directory(Index.t(), String.t(), [String.t()]) :: {:ok, Index.t()} | {:error, term()}
-  def index_directory(index, dir, extensions \\ [".ex", ".exs", ".zig", ".go", ".rs", ".py", ".js", ".ts"]) do
+  @spec index_directory(Index.t(), String.t(), [String.t()]) ::
+          {:ok, Index.t()} | {:error, term()}
+  def index_directory(
+        index,
+        dir,
+        extensions \\ [".ex", ".exs", ".zig", ".go", ".rs", ".py", ".js", ".ts"]
+      ) do
     pattern = "**/*{#{Enum.join(extensions, ",")}}"
 
     files =
@@ -116,7 +121,9 @@ defmodule Noface.Util.BM25 do
 
     # Update inverted index
     new_inverted =
-      Enum.reduce(Enum.with_index(chunks, length(index.documents)), index.inverted, fn {doc, doc_idx}, inv ->
+      Enum.reduce(Enum.with_index(chunks, length(index.documents)), index.inverted, fn {doc,
+                                                                                        doc_idx},
+                                                                                       inv ->
         terms = tokenize(doc.content)
         term_freqs = Enum.frequencies(terms)
 

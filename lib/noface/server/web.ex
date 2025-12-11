@@ -30,11 +30,14 @@ defmodule Noface.Server.Web do
   get "/" do
     conn
     |> put_resp_content_type("application/json")
-    |> send_resp(200, Jason.encode!(%{
-      message: "noface API server",
-      dashboard: "http://localhost:4000",
-      endpoints: ["/api/status", "/api/issues", "/api/workers"]
-    }))
+    |> send_resp(
+      200,
+      Jason.encode!(%{
+        message: "noface API server",
+        dashboard: "http://localhost:4000",
+        endpoints: ["/api/status", "/api/issues", "/api/workers"]
+      })
+    )
   end
 
   get "/api/status" do

@@ -226,11 +226,14 @@ defmodule Noface.CLI do
     |> maybe_override(:enable_quality, not opts[:no_quality])
     |> maybe_override(:quality_interval, opts[:quality_interval])
     |> maybe_override(:monowiki_vault, opts[:monowiki_vault])
-    |> maybe_override(:output_format, cond do
-      opts[:stream_json] -> :stream_json
-      opts[:raw] -> :raw
-      true -> nil
-    end)
+    |> maybe_override(
+      :output_format,
+      cond do
+        opts[:stream_json] -> :stream_json
+        opts[:raw] -> :raw
+        true -> nil
+      end
+    )
     |> maybe_override(:verbose, opts[:verbose])
     |> maybe_override(:agent_timeout_seconds, opts[:agent_timeout])
   end

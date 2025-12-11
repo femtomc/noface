@@ -116,11 +116,16 @@ defmodule Noface.Telemetry do
 
   def handle_event([:noface, :worker, :stop], measurements, metadata, _config) do
     status = if measurements.success, do: "succeeded", else: "failed"
-    Logger.debug("[TELEMETRY] Worker #{metadata.worker_id} #{status} in #{measurements.duration_ms}ms")
+
+    Logger.debug(
+      "[TELEMETRY] Worker #{metadata.worker_id} #{status} in #{measurements.duration_ms}ms"
+    )
   end
 
   def handle_event([:noface, :worker_pool, :batch, :start], measurements, metadata, _config) do
-    Logger.info("[TELEMETRY] Batch #{metadata.batch_id} starting with #{measurements.count} issues")
+    Logger.info(
+      "[TELEMETRY] Batch #{metadata.batch_id} starting with #{measurements.count} issues"
+    )
   end
 
   def handle_event([:noface, :worker_pool, :batch, :stop], measurements, metadata, _config) do
@@ -131,7 +136,9 @@ defmodule Noface.Telemetry do
   end
 
   def handle_event([:noface, :state, :loaded], measurements, metadata, _config) do
-    Logger.info("[TELEMETRY] State loaded for #{metadata.project_name}: #{measurements.issue_count} issues")
+    Logger.info(
+      "[TELEMETRY] State loaded for #{metadata.project_name}: #{measurements.issue_count} issues"
+    )
   end
 
   def handle_event([:noface, :agent, :start], _measurements, metadata, _config) do
@@ -139,7 +146,9 @@ defmodule Noface.Telemetry do
   end
 
   def handle_event([:noface, :agent, :stop], measurements, metadata, _config) do
-    Logger.debug("[TELEMETRY] Agent #{metadata.agent_type} completed in #{measurements.duration_ms}ms")
+    Logger.debug(
+      "[TELEMETRY] Agent #{metadata.agent_type} completed in #{measurements.duration_ms}ms"
+    )
   end
 
   def handle_event([:noface, :loop, :iteration, :start], measurements, _metadata, _config) do

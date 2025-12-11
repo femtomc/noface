@@ -2,7 +2,7 @@ defmodule NofaceWeb.IssuesLive do
   @moduledoc """
   LiveView for browsing and managing issues.
   """
-  use Phoenix.LiveView
+  use NofaceWeb, :live_view
 
   alias Noface.Core.State
   alias Phoenix.PubSub

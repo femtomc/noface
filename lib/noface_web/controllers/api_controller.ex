@@ -2,7 +2,7 @@ defmodule NofaceWeb.ApiController do
   @moduledoc """
   JSON API endpoints for noface orchestrator.
   """
-  use Phoenix.Controller, formats: [:json]
+  use NofaceWeb, :controller
 
   alias Noface.Server.Command
 

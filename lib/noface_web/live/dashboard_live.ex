@@ -3,11 +3,11 @@ defmodule NofaceWeb.DashboardLive do
   Real-time dashboard for noface orchestrator.
   Redesigned to match the React viewer's two-panel layout.
   """
-  use Phoenix.LiveView
+  use NofaceWeb, :live_view
 
   alias Noface.Server.Command
   alias Noface.Core.State
-  alias Noface.Util.Transcript
+  alias Noface.Transcript
   alias Phoenix.PubSub
 
   @impl true
@@ -53,7 +53,12 @@ defmodule NofaceWeb.DashboardLive do
     {:noreply, assign(socket, selected_session: id)}
   end
 
-  def handle_event("add_comment", %{"id" => id, "comment" => %{"body" => body} = params}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+  def handle_event(
+        "add_comment",
+        %{"id" => id, "comment" => %{"body" => body} = params},
+        %{assigns: %{test_state: test_state}} = socket
+      )
+      when is_map(test_state) do
     body = String.trim(body || "")
     author = String.trim(params["author"] || "user")
 
@@ -66,6 +71,7 @@ defmodule NofaceWeb.DashboardLive do
 
     {:noreply, socket |> assign(test_state: updated_state) |> assign_data()}
   end
+
   def handle_event("add_comment", %{"id" => id, "comment" => %{"body" => body} = params}, socket) do
     body = String.trim(body || "")
     author = String.trim(params["author"] || "user")
@@ -77,10 +83,16 @@ defmodule NofaceWeb.DashboardLive do
     {:noreply, assign_data(socket)}
   end
 
-  def handle_event("update_issue", %{"id" => id, "issue" => attrs}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+  def handle_event(
+        "update_issue",
+        %{"id" => id, "issue" => attrs},
+        %{assigns: %{test_state: test_state}} = socket
+      )
+      when is_map(test_state) do
     updated_state = update_test_issue_content(test_state, id, attrs)
     {:noreply, socket |> assign(test_state: updated_state) |> assign_data()}
   end
+
   def handle_event("update_issue", %{"id" => id, "issue" => attrs}, socket) do
     Command.update_issue(id, attrs)
     {:noreply, assign_data(socket)}
@@ -106,9 +118,11 @@ defmodule NofaceWeb.DashboardLive do
   end
 
   @impl true
-  def handle_info({:state, _snapshot}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+  def handle_info({:state, _snapshot}, %{assigns: %{test_state: test_state}} = socket)
+      when is_map(test_state) do
     {:noreply, socket}
   end
+
   def handle_info({:state, snapshot}, socket) do
     issues =
       snapshot[:issues]
@@ -140,29 +154,44 @@ defmodule NofaceWeb.DashboardLive do
        issues: issues,
        stats: stats,
        workers: Enum.take(workers, num_workers),
-      status: status
+       status: status
      )}
   end
 
-  def handle_info({:loop, _loop_payload}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+  def handle_info({:loop, _loop_payload}, %{assigns: %{test_state: test_state}} = socket)
+      when is_map(test_state) do
     {:noreply, socket}
   end
+
   def handle_info({:loop, loop_payload}, socket) do
     status = (socket.assigns.status || %{}) |> Map.put(:loop, loop_payload)
     {:noreply, assign(socket, status: status)}
   end
 
-  def handle_info({:session_started, _issue_id}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+  def handle_info({:session_started, _issue_id}, %{assigns: %{test_state: test_state}} = socket)
+      when is_map(test_state) do
     {:noreply, socket}
-  end
-  def handle_info({:session_started, issue_id}, socket) do
-    sessions = Map.put_new(socket.assigns.sessions || %{}, issue_id, [])
-    {:noreply, assign(socket, sessions: sessions, selected_session: pick_session(socket.assigns.selected_session, socket.assigns.issues, sessions))}
   end
 
-  def handle_info({:session_event, _issue_id, _event}, %{assigns: %{test_state: test_state}} = socket) when is_map(test_state) do
+  def handle_info({:session_started, issue_id}, socket) do
+    sessions = Map.put_new(socket.assigns.sessions || %{}, issue_id, [])
+
+    {:noreply,
+     assign(socket,
+       sessions: sessions,
+       selected_session:
+         pick_session(socket.assigns.selected_session, socket.assigns.issues, sessions)
+     )}
+  end
+
+  def handle_info(
+        {:session_event, _issue_id, _event},
+        %{assigns: %{test_state: test_state}} = socket
+      )
+      when is_map(test_state) do
     {:noreply, socket}
   end
+
   def handle_info({:session_event, issue_id, event}, socket) do
     mapped = present_event(event)
     sessions = Map.update(socket.assigns.sessions || %{}, issue_id, [mapped], &(&1 ++ [mapped]))
@@ -190,7 +219,8 @@ defmodule NofaceWeb.DashboardLive do
     stats = %{
       total: state_counts[:total_issues] || length(issues),
       open: state_counts[:pending] || Enum.count(issues, &(&1.status == :pending)),
-      in_progress: state_counts[:in_progress] || Enum.count(issues, &(&1.status in [:assigned, :running])),
+      in_progress:
+        state_counts[:in_progress] || Enum.count(issues, &(&1.status in [:assigned, :running])),
       closed: (state_counts[:completed] || 0) + (state_counts[:failed] || 0)
     }
 
@@ -252,8 +282,10 @@ defmodule NofaceWeb.DashboardLive do
     case status do
       %{workers: %{workers: workers, num_workers: n}} ->
         Enum.take(workers || [], n || 0)
+
       %{workers: workers, num_workers: n} when is_list(workers) ->
         Enum.take(workers || [], n || 0)
+
       _ ->
         []
     end
@@ -261,8 +293,13 @@ defmodule NofaceWeb.DashboardLive do
 
   defp filter_issues(issues, "all"), do: issues
   defp filter_issues(issues, "open"), do: Enum.filter(issues, &(&1.status == :pending))
-  defp filter_issues(issues, "in_progress"), do: Enum.filter(issues, &(&1.status in [:assigned, :running]))
-  defp filter_issues(issues, "closed"), do: Enum.filter(issues, &(&1.status in [:completed, :failed]))
+
+  defp filter_issues(issues, "in_progress"),
+    do: Enum.filter(issues, &(&1.status in [:assigned, :running]))
+
+  defp filter_issues(issues, "closed"),
+    do: Enum.filter(issues, &(&1.status in [:completed, :failed]))
+
   defp filter_issues(issues, _), do: issues
 
   @impl true
@@ -873,6 +910,7 @@ defmodule NofaceWeb.DashboardLive do
   defp loop_paused?(status), do: get_in(status, [:loop, :paused]) == true
 
   defp progress_bar(_done, total) when total == 0, do: String.duplicate("░", 12)
+
   defp progress_bar(done, total) do
     width = 12
     filled = round(done / total * width)
@@ -909,7 +947,10 @@ defmodule NofaceWeb.DashboardLive do
       issue_type: fetch_field(content, "issue_type"),
       status: status,
       dependencies: fetch_field(content, "dependencies") || [],
-      comments: normalize_comments(Map.get(issue, :comments, []) || fetch_field(content, "comments") || []),
+      comments:
+        normalize_comments(
+          Map.get(issue, :comments, []) || fetch_field(content, "comments") || []
+        ),
       attempt_count: issue.attempt_count,
       assigned_worker: issue.assigned_worker,
       manifest: issue.manifest,
@@ -940,6 +981,7 @@ defmodule NofaceWeb.DashboardLive do
   defp maybe_existing_atom(_), do: nil
 
   defp normalize_priority(nil), do: 2
+
   defp normalize_priority(priority) when is_binary(priority) do
     case Integer.parse(priority) do
       {int, _} -> normalize_priority(int)
@@ -1085,12 +1127,21 @@ defmodule NofaceWeb.DashboardLive do
 
   defp format_tool_params(name, input) when is_map(input) do
     case name do
-      "Read" -> Map.get(input, "file_path") || Map.get(input, :file_path)
-      "Write" -> Map.get(input, "file_path") || Map.get(input, :file_path)
-      "Edit" -> Map.get(input, "file_path") || Map.get(input, :file_path)
+      "Read" ->
+        Map.get(input, "file_path") || Map.get(input, :file_path)
+
+      "Write" ->
+        Map.get(input, "file_path") || Map.get(input, :file_path)
+
+      "Edit" ->
+        Map.get(input, "file_path") || Map.get(input, :file_path)
+
       "Bash" ->
         cmd = Map.get(input, "command") || Map.get(input, :command) || ""
-        if is_binary(cmd) and String.length(cmd) > 60, do: String.slice(cmd, 0, 60) <> "...", else: cmd
+
+        if is_binary(cmd) and String.length(cmd) > 60,
+          do: String.slice(cmd, 0, 60) <> "...",
+          else: cmd
 
       "Grep" ->
         pattern = Map.get(input, "pattern") || Map.get(input, :pattern) || ""
@@ -1183,7 +1234,13 @@ defmodule NofaceWeb.DashboardLive do
       {marker, color} = status_marker(issue && issue.status)
       connector = if is_last, do: "└─", else: "├─"
       title = if issue && issue.title, do: " #{issue.title}", else: ""
-      line = %{prefix: prefix <> connector <> " ", marker: marker, color: color, text: "#{issue_id}#{title}"}
+
+      line = %{
+        prefix: prefix <> connector <> " ",
+        marker: marker,
+        color: color,
+        text: "#{issue_id}#{title}"
+      }
 
       children = Map.get(blocks, issue_id, []) |> Enum.reverse()
       child_prefix = prefix <> if is_last, do: "   ", else: "│  "

@@ -248,7 +248,10 @@ defmodule Noface.Core.State do
 
         # Initialize counters
         unless CubDB.get(db, :total_iterations), do: CubDB.put(db, :total_iterations, 0)
-        unless CubDB.get(db, :successful_completions), do: CubDB.put(db, :successful_completions, 0)
+
+        unless CubDB.get(db, :successful_completions),
+          do: CubDB.put(db, :successful_completions, 0)
+
         unless CubDB.get(db, :failed_attempts), do: CubDB.put(db, :failed_attempts, 0)
         unless CubDB.get(db, :next_batch_id), do: CubDB.put(db, :next_batch_id, 1)
         unless CubDB.get(db, :num_workers), do: CubDB.put(db, :num_workers, 5)
@@ -342,7 +345,12 @@ defmodule Noface.Core.State do
     workers =
       Enum.map(workers, fn w ->
         if w.id == worker_id do
-          %{w | status: :starting, current_issue: issue_id, started_at: System.system_time(:second)}
+          %{
+            w
+            | status: :starting,
+              current_issue: issue_id,
+              started_at: System.system_time(:second)
+          }
         else
           w
         end
@@ -556,7 +564,11 @@ defmodule Noface.Core.State do
             issue = CubDB.get(state.db, {:issue, w.current_issue})
 
             if issue do
-              CubDB.put(state.db, {:issue, w.current_issue}, %{issue | status: :pending, assigned_worker: nil})
+              CubDB.put(state.db, {:issue, w.current_issue}, %{
+                issue
+                | status: :pending,
+                  assigned_worker: nil
+              })
             end
           end
 
@@ -629,6 +641,7 @@ defmodule Noface.Core.State do
           beads_issues
           |> Enum.filter(fn issue ->
             status = issue["status"]
+
             status in ["open", "in_progress", nil] and
               not MapSet.member?(existing_ids, issue["id"])
           end)

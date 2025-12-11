@@ -1,5 +1,5 @@
 defmodule NofaceWeb.FaviconController do
-  use Phoenix.Controller, formats: [:html]
+  use NofaceWeb, :controller
 
   def show(conn, _params) do
     conn

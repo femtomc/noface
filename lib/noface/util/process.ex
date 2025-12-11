@@ -114,7 +114,10 @@ defmodule Noface.Util.Process do
       {:eof, proc}
     end
 
-    def read_line_with_timeout(%__MODULE__{port: port, partial_buffer: buffer} = proc, timeout_seconds) do
+    def read_line_with_timeout(
+          %__MODULE__{port: port, partial_buffer: buffer} = proc,
+          timeout_seconds
+        ) do
       timeout_ms = if timeout_seconds == 0, do: :infinity, else: timeout_seconds * 1000
 
       receive do

@@ -167,12 +167,16 @@ defmodule Noface.Tools do
     package_json = Path.join(@noface_dir, "package.json")
 
     unless File.exists?(package_json) do
-      content = Jason.encode!(%{
-        "name" => "noface-tools",
-        "version" => "1.0.0",
-        "private" => true,
-        "dependencies" => %{}
-      }, pretty: true)
+      content =
+        Jason.encode!(
+          %{
+            "name" => "noface-tools",
+            "version" => "1.0.0",
+            "private" => true,
+            "dependencies" => %{}
+          },
+          pretty: true
+        )
 
       File.write!(package_json, content)
     end
@@ -309,34 +313,38 @@ defmodule Noface.Tools do
   end
 
   defp find_asset(assets, _binary) do
-    os = case :os.type() do
-      {:unix, :darwin} -> "darwin"
-      {:unix, _} -> "linux"
-      {:win32, _} -> "windows"
-    end
+    os =
+      case :os.type() do
+        {:unix, :darwin} -> "darwin"
+        {:unix, _} -> "linux"
+        {:win32, _} -> "windows"
+      end
 
-    arch = case :erlang.system_info(:system_architecture) |> to_string() do
-      "aarch64" <> _ -> "arm64"
-      "x86_64" <> _ -> "amd64"
-      "arm" <> _ -> "arm64"
-      _ -> "amd64"
-    end
+    arch =
+      case :erlang.system_info(:system_architecture) |> to_string() do
+        "aarch64" <> _ -> "arm64"
+        "x86_64" <> _ -> "amd64"
+        "arm" <> _ -> "arm64"
+        _ -> "amd64"
+      end
 
     # Try to find matching asset
+    # Fallback: just find one for this OS
     Enum.find(assets, fn asset ->
       name = String.downcase(asset["name"] || "")
+
       String.contains?(name, os) and
         (String.contains?(name, arch) or String.contains?(name, "universal")) and
         not String.contains?(name, ".sha") and
         not String.contains?(name, ".sig")
     end) ||
-    # Fallback: just find one for this OS
-    Enum.find(assets, fn asset ->
-      name = String.downcase(asset["name"] || "")
-      String.contains?(name, os) and
-        not String.contains?(name, ".sha") and
-        not String.contains?(name, ".sig")
-    end)
+      Enum.find(assets, fn asset ->
+        name = String.downcase(asset["name"] || "")
+
+        String.contains?(name, os) and
+          not String.contains?(name, ".sha") and
+          not String.contains?(name, ".sig")
+      end)
   end
 
   defp download_and_extract(url, binary, version) do
@@ -357,7 +365,7 @@ defmodule Noface.Tools do
 
   defp extract_binary(body, url, binary) do
     bin_path = Path.join(@bin_dir, binary)
-    tmp_dir = Path.join(System.tmp_dir!(), "noface-#{:rand.uniform(100000)}")
+    tmp_dir = Path.join(System.tmp_dir!(), "noface-#{:rand.uniform(100_000)}")
 
     File.mkdir_p!(tmp_dir)
 
@@ -390,6 +398,7 @@ defmodule Noface.Tools do
     case System.cmd("find", [dir, "-name", binary, "-type", "f"]) do
       {output, 0} ->
         source = output |> String.trim() |> String.split("\n") |> List.first()
+
         if source && source != "" do
           File.cp!(source, dest)
           File.chmod!(dest, 0o755)
@@ -406,6 +415,7 @@ defmodule Noface.Tools do
         case Jason.decode(output) do
           {:ok, %{"dependencies" => deps}} ->
             get_in(deps, [package, "version"]) || "unknown"
+
           _ ->
             "unknown"
         end
@@ -427,6 +437,7 @@ defmodule Noface.Tools do
     case System.cmd("npm", ["view", spec.package, "version"], stderr_to_stdout: true) do
       {latest, 0} ->
         latest = String.trim(latest)
+
         if latest != current_version do
           {:update_available, current_version, latest}
         else
@@ -445,6 +456,7 @@ defmodule Noface.Tools do
     case Req.get(api_url, headers: [{"accept", "application/vnd.github.v3+json"}]) do
       {:ok, %{status: 200, body: release}} ->
         latest = release["tag_name"]
+
         if latest != current_version do
           {:update_available, current_version, latest}
         else

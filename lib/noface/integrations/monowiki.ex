@@ -76,7 +76,9 @@ defmodule Noface.Integrations.Monowiki do
   @spec search(Config.t(), String.t(), non_neg_integer()) ::
           {:ok, [SearchResult.t()]} | {:error, term()}
   def search(config, query, limit \\ 5) do
-    case System.cmd("monowiki", ["search", "--vault", config.vault, "--limit", to_string(limit), query],
+    case System.cmd(
+           "monowiki",
+           ["search", "--vault", config.vault, "--limit", to_string(limit), query],
            stderr_to_stdout: true
          ) do
       {output, 0} ->

@@ -31,3 +31,7 @@ Thumbs.db
 
 # noface runtime state
 .noface/
+
+# Frontend assets
+assets/node_modules/
+assets/package-lock.json

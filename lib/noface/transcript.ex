@@ -1,4 +1,4 @@
-defmodule Noface.Util.Transcript do
+defmodule Noface.Transcript do
   @moduledoc """
   SQLite-based transcript logging using Ecto.
 
@@ -33,13 +33,13 @@ defmodule Noface.Util.Transcript do
     @primary_key {:id, :binary_id, autogenerate: true}
 
     schema "sessions" do
-      field :issue_id, :string
-      field :worker_id, :integer
-      field :resuming, :boolean, default: false
-      field :exit_code, :integer
-      field :completed_at, :utc_datetime
+      field(:issue_id, :string)
+      field(:worker_id, :integer)
+      field(:resuming, :boolean, default: false)
+      field(:exit_code, :integer)
+      field(:completed_at, :utc_datetime)
 
-      has_many :events, Noface.Util.Transcript.Event
+      has_many(:events, Noface.Transcript.Event)
 
       timestamps(type: :utc_datetime)
     end
@@ -57,13 +57,13 @@ defmodule Noface.Util.Transcript do
     import Ecto.Changeset
 
     schema "events" do
-      field :seq, :integer
-      field :event_type, :string
-      field :tool_name, :string
-      field :content, :string
-      field :raw_json, :string
+      field(:seq, :integer)
+      field(:event_type, :string)
+      field(:tool_name, :string)
+      field(:content, :string)
+      field(:raw_json, :string)
 
-      belongs_to :session, Noface.Util.Transcript.Session, type: :binary_id
+      belongs_to(:session, Noface.Transcript.Session, type: :binary_id)
 
       timestamps(type: :utc_datetime)
     end
@@ -81,32 +81,35 @@ defmodule Noface.Util.Transcript do
 
     def change do
       create_if_not_exists table(:sessions, primary_key: false) do
-        add :id, :binary_id, primary_key: true
-        add :issue_id, :string, null: false
-        add :worker_id, :integer, null: false
-        add :resuming, :boolean, default: false
-        add :exit_code, :integer
-        add :completed_at, :utc_datetime
+        add(:id, :binary_id, primary_key: true)
+        add(:issue_id, :string, null: false)
+        add(:worker_id, :integer, null: false)
+        add(:resuming, :boolean, default: false)
+        add(:exit_code, :integer)
+        add(:completed_at, :utc_datetime)
 
         timestamps(type: :utc_datetime)
       end
 
-      create_if_not_exists index(:sessions, [:issue_id])
-      create_if_not_exists index(:sessions, [:inserted_at])
+      create_if_not_exists(index(:sessions, [:issue_id]))
+      create_if_not_exists(index(:sessions, [:inserted_at]))
 
       create_if_not_exists table(:events) do
-        add :session_id, references(:sessions, type: :binary_id, on_delete: :delete_all), null: false
-        add :seq, :integer, null: false
-        add :event_type, :string, null: false
-        add :tool_name, :string
-        add :content, :text
-        add :raw_json, :text
+        add(:session_id, references(:sessions, type: :binary_id, on_delete: :delete_all),
+          null: false
+        )
+
+        add(:seq, :integer, null: false)
+        add(:event_type, :string, null: false)
+        add(:tool_name, :string)
+        add(:content, :text)
+        add(:raw_json, :text)
 
         timestamps(type: :utc_datetime)
       end
 
-      create_if_not_exists index(:events, [:session_id])
-      create_if_not_exists index(:events, [:session_id, :seq])
+      create_if_not_exists(index(:events, [:session_id]))
+      create_if_not_exists(index(:events, [:session_id, :seq]))
     end
   end
 
@@ -129,7 +132,8 @@ defmodule Noface.Util.Transcript do
   @doc """
   Start a new session.
   """
-  @spec start_session(String.t(), non_neg_integer(), boolean()) :: {:ok, String.t()} | {:error, term()}
+  @spec start_session(String.t(), non_neg_integer(), boolean()) ::
+          {:ok, String.t()} | {:error, term()}
   def start_session(issue_id, worker_id, resuming \\ false) do
     attrs = %{
       issue_id: issue_id,
@@ -151,7 +155,14 @@ defmodule Noface.Util.Transcript do
   @doc """
   Record an event in a session.
   """
-  @spec record_event(String.t(), non_neg_integer(), String.t(), String.t() | nil, String.t() | nil, String.t() | nil) :: :ok | {:error, term()}
+  @spec record_event(
+          String.t(),
+          non_neg_integer(),
+          String.t(),
+          String.t() | nil,
+          String.t() | nil,
+          String.t() | nil
+        ) :: :ok | {:error, term()}
   def record_event(session_id, seq, event_type, tool_name \\ nil, content \\ nil, raw_json \\ nil) do
     attrs = %{
       session_id: session_id,
@@ -166,7 +177,9 @@ defmodule Noface.Util.Transcript do
       {:ok, event} ->
         broadcast_session_event(session_id, event)
         :ok
-      {:error, changeset} -> {:error, changeset}
+
+      {:error, changeset} ->
+        {:error, changeset}
     end
   end
 
@@ -186,7 +199,12 @@ defmodule Noface.Util.Transcript do
         |> case do
           {:ok, _} ->
             Logger.debug("[TRANSCRIPT] Ended session #{session_id} with exit code #{exit_code}")
-            broadcast_session_event(session_id, %Event{event_type: "text", content: "[session ended]"})
+
+            broadcast_session_event(session_id, %Event{
+              event_type: "text",
+              content: "[session ended]"
+            })
+
             :ok
 
           {:error, changeset} ->
