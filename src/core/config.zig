@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const monowiki = @import("../integrations/monowiki.zig");
+const issue_sync = @import("../integrations/issue_sync.zig");
 const process = @import("../util/process.zig");
 
 /// Validation warning for config issues
@@ -131,8 +132,11 @@ pub const Config = struct {
     /// Issue tracker type
     issue_tracker: IssueTracker = .beads,
 
-    /// Sync issues to GitHub
+    /// Sync issues to GitHub (legacy, use sync_provider instead)
     sync_to_github: bool = true,
+
+    /// Issue sync provider configuration
+    sync_provider: issue_sync.ProviderConfig = .{},
 
     /// Implementation agent command
     impl_agent: []const u8 = "claude",
@@ -530,6 +534,25 @@ pub const Config = struct {
                         config.sync_to_github = bv;
                     }
                 }
+            } else if (std.mem.eql(u8, current_section.?, "sync")) {
+                // Issue sync provider configuration
+                if (std.mem.eql(u8, key, "provider")) {
+                    if (string_value) |sv| {
+                        config.sync_provider.provider_type = issue_sync.ProviderType.fromString(sv);
+                    }
+                } else if (std.mem.eql(u8, key, "api_url")) {
+                    if (string_value) |sv| {
+                        config.sync_provider.api_url = try allocator.dupe(u8, sv);
+                    }
+                } else if (std.mem.eql(u8, key, "repo")) {
+                    if (string_value) |sv| {
+                        config.sync_provider.repo = try allocator.dupe(u8, sv);
+                    }
+                } else if (std.mem.eql(u8, key, "token")) {
+                    if (string_value) |sv| {
+                        config.sync_provider.token = try allocator.dupe(u8, sv);
+                    }
+                }
             } else if (std.mem.eql(u8, current_section.?, "monowiki")) {
                 // Initialize monowiki config if not yet done
                 if (config.monowiki_config == null) {
@@ -612,6 +635,16 @@ pub const Config = struct {
             if (mwc.api_docs_slug) |slug| {
                 allocator.free(slug);
             }
+        }
+        // Free sync provider config strings
+        if (self.sync_provider.api_url) |url| {
+            allocator.free(url);
+        }
+        if (self.sync_provider.repo) |repo| {
+            allocator.free(repo);
+        }
+        if (self.sync_provider.token) |token| {
+            allocator.free(token);
         }
     }
 };

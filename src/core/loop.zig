@@ -16,6 +16,7 @@ const markdown = @import("../util/markdown.zig");
 const transcript_mod = @import("../util/transcript.zig");
 const bm25 = @import("../util/bm25.zig");
 const monowiki_mod = @import("../integrations/monowiki.zig");
+const issue_sync = @import("../integrations/issue_sync.zig");
 const github = @import("../integrations/github.zig");
 
 const Config = config_mod.Config;
@@ -1810,22 +1811,40 @@ pub const AgentLoop = struct {
         );
     }
 
-    /// Sync issues to GitHub
+    /// Sync issues to configured provider (GitHub, Gitea, etc.)
     fn syncGitHub(self: *AgentLoop) !void {
-        if (!self.config.sync_to_github) return;
+        // Check if sync is enabled (legacy sync_to_github or new provider config)
+        const provider_type = self.config.sync_provider.provider_type;
+        if (!self.config.sync_to_github and provider_type == .none) return;
 
-        self.logInfo("Syncing issues to GitHub...", .{});
+        // Determine which provider to use
+        const effective_provider = if (provider_type != .none)
+            provider_type
+        else if (self.config.sync_to_github)
+            issue_sync.ProviderType.github
+        else
+            issue_sync.ProviderType.none;
 
-        const sync_result = github.syncToGitHub(self.allocator, self.config.dry_run) catch |err| {
-            self.logWarn("GitHub sync failed (non-fatal): {}", .{err});
+        if (effective_provider == .none) return;
+
+        const provider_name = effective_provider.toString();
+        self.logInfo("Syncing issues to {s}...", .{provider_name});
+
+        // Use new provider abstraction
+        var sync_config = self.config.sync_provider;
+        sync_config.provider_type = effective_provider;
+
+        const sync_result = issue_sync.syncToProvider(self.allocator, sync_config, self.config.dry_run) catch |err| {
+            self.logWarn("{s} sync failed (non-fatal): {}", .{ provider_name, err });
             return;
         };
 
         if (sync_result.errors > 0 and sync_result.created == 0 and sync_result.closed == 0) {
-            // Only errors, likely a prerequisite failure (gh not installed, not authenticated, etc.)
-            self.logWarn("GitHub sync skipped (gh CLI not available or not in a GitHub repo)", .{});
+            // Only errors, likely a prerequisite failure
+            self.logWarn("{s} sync skipped (provider not available or not configured)", .{provider_name});
         } else {
-            self.logSuccess("GitHub sync: {d} created, {d} closed, {d} skipped", .{
+            self.logSuccess("{s} sync: {d} created, {d} closed, {d} skipped", .{
+                provider_name,
                 sync_result.created,
                 sync_result.closed,
                 sync_result.skipped,

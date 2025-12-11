@@ -16,7 +16,9 @@ pub const prompts = @import("core/prompts.zig");
 pub const jj = @import("vcs/jj.zig");
 
 // Integration modules
+pub const issue_sync = @import("integrations/issue_sync.zig");
 pub const github = @import("integrations/github.zig");
+pub const gitea = @import("integrations/gitea.zig");
 pub const monowiki = @import("integrations/monowiki.zig");
 pub const lsp = @import("integrations/lsp.zig");
 
@@ -38,7 +40,11 @@ pub const AgentLoop = loop.AgentLoop;
 pub const MonowikiConfig = monowiki.MonowikiConfig;
 pub const Monowiki = monowiki.Monowiki;
 pub const GitHubSync = github.GitHubSync;
-pub const SyncResult = github.SyncResult;
+pub const GiteaProvider = gitea.GiteaProvider;
+pub const IssueProvider = issue_sync.IssueProvider;
+pub const ProviderType = issue_sync.ProviderType;
+pub const ProviderConfig = issue_sync.ProviderConfig;
+pub const SyncResult = issue_sync.SyncResult;
 pub const OrchestratorState = state.OrchestratorState;
 pub const Manifest = state.Manifest;
 pub const WorkerState = state.WorkerState;
