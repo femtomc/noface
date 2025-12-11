@@ -12,6 +12,7 @@ defmodule Noface.Core.WorkerPool do
   alias Noface.VCS.JJ
   alias Noface.Util.Process, as: Proc
   alias Noface.Util.Streaming
+  alias Noface.Tools
 
   @max_review_iterations 5
 
@@ -334,12 +335,14 @@ defmodule Noface.Core.WorkerPool do
         feedback
       )
 
-    Logger.debug("[WORKER-#{worker_id}] Running #{agent_cmd} for #{issue_id}")
+    # Use local binary if available
+    agent_bin = Tools.bin_path(String.to_atom(agent_cmd))
+    Logger.debug("[WORKER-#{worker_id}] Running #{agent_bin} for #{issue_id}")
 
     args = build_agent_args(agent_cmd, prompt)
     env = [{"NOFACE_WORKSPACE", workspace_path}, {"NOFACE_ISSUE_ID", issue_id}]
 
-    case Proc.StreamingProcess.spawn([agent_cmd | args], env: env, cd: workspace_path) do
+    case Proc.StreamingProcess.spawn([agent_bin | args], env: env, cd: workspace_path) do
       {:ok, proc} ->
         result = stream_agent_output(proc, config.agent_timeout_seconds || 900)
         Proc.StreamingProcess.kill(proc)
@@ -359,12 +362,14 @@ defmodule Noface.Core.WorkerPool do
         config.test_command
       )
 
-    Logger.debug("[WORKER-#{worker_id}] Running reviewer for #{issue_id}")
+    # Use local binary if available
+    review_bin = Tools.bin_path(String.to_atom(review_cmd))
+    Logger.debug("[WORKER-#{worker_id}] Running reviewer #{review_bin} for #{issue_id}")
 
     args = build_agent_args(review_cmd, prompt)
     env = [{"NOFACE_WORKSPACE", workspace_path}, {"NOFACE_ISSUE_ID", issue_id}]
 
-    case Proc.StreamingProcess.spawn([review_cmd | args], env: env, cd: workspace_path) do
+    case Proc.StreamingProcess.spawn([review_bin | args], env: env, cd: workspace_path) do
       {:ok, proc} ->
         result = stream_reviewer_output(proc, config.agent_timeout_seconds || 900)
         Proc.StreamingProcess.kill(proc)

@@ -34,6 +34,8 @@ defmodule Noface.Application do
       Noface.Server.Command,
       # Hot reload watcher (for self-improvement)
       Noface.HotReload,
+      # Tools updater (periodic update checker)
+      Noface.Tools.Updater,
       # PubSub for Phoenix
       {Phoenix.PubSub, name: Noface.PubSub},
       # Phoenix web endpoint

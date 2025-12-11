@@ -4,12 +4,14 @@ defmodule Mix.Tasks.Noface do
 
   ## Available commands
 
+      mix noface.init        # Initialize noface in current directory
       mix noface.start       # Start the persistent server
       mix noface.status      # Show server status
       mix noface.pause       # Pause the loop
       mix noface.resume      # Resume the loop
       mix noface.interrupt   # Interrupt current work
       mix noface.issue       # File a new issue
+      mix noface.update      # Update CLI tools
 
   The noface server runs as a persistent OTP application.
   These commands send messages to the running server.
@@ -24,15 +26,125 @@ defmodule Mix.Tasks.Noface do
     Noface - Autonomous Agent Orchestrator
 
     Available commands:
+      mix noface.init        Initialize noface and install tools
       mix noface.start       Start the persistent server
       mix noface.status      Show server status
       mix noface.pause       Pause the loop (finish current work)
       mix noface.resume      Resume after pause
       mix noface.interrupt   Cancel current work
       mix noface.issue       File a new issue
+      mix noface.update      Update CLI tools
 
     Run `mix help noface.<command>` for details.
     """)
+  end
+end
+
+defmodule Mix.Tasks.Noface.Init do
+  @moduledoc """
+  Initialize noface in the current directory.
+
+  ## Usage
+
+      mix noface.init [--force]
+
+  Options:
+    --force   Reinstall tools even if already installed
+
+  This will:
+  1. Create `.noface/` directory structure
+  2. Install local CLI tools (claude, codex, bd, gh, jj)
+  3. Create default `.noface.toml` config if not present
+
+  Tools are installed to `.noface/bin/` and `.noface/node_modules/`.
+  This gives noface control over tool versions and enables auto-updates.
+  """
+  use Mix.Task
+
+  @shortdoc "Initialize noface and install tools"
+
+  @impl Mix.Task
+  def run(args) do
+    {opts, _, _} = OptionParser.parse(args, strict: [force: :boolean])
+    force = opts[:force] || false
+
+    Mix.shell().info("Initializing noface...")
+
+    # Ensure application dependencies are available
+    Mix.Task.run("app.config")
+    Application.ensure_all_started(:req)
+
+    # Initialize tools
+    case Noface.Tools.init(force: force) do
+      :ok ->
+        Mix.shell().info("")
+        Mix.shell().info("Tools installed to .noface/bin/")
+
+        # Show installed versions
+        versions = Noface.Tools.versions()
+
+        if map_size(versions) > 0 do
+          Mix.shell().info("")
+          Mix.shell().info("Installed versions:")
+
+          Enum.each(versions, fn {tool, version} ->
+            Mix.shell().info("  #{tool}: #{version}")
+          end)
+        end
+
+        # Create default config if not present
+        create_default_config()
+
+        Mix.shell().info("")
+        Mix.shell().info("Done! Run `mix noface.start --open` to start the server.")
+
+      {:error, reason} ->
+        Mix.shell().error("Initialization failed: #{inspect(reason)}")
+    end
+  end
+
+  defp create_default_config do
+    config_path = ".noface.toml"
+
+    unless File.exists?(config_path) do
+      project_name =
+        File.cwd!()
+        |> Path.basename()
+        |> String.replace(~r/[^a-zA-Z0-9_-]/, "_")
+
+      config = """
+      # Noface configuration
+      # See: https://github.com/femtomc/noface
+
+      [project]
+      name = "#{project_name}"
+      build = "mix compile"
+      test = "mix test"
+
+      [agents]
+      implementer = "claude"
+      reviewer = "codex"
+      timeout_seconds = 900
+      num_workers = 3
+
+      [passes]
+      planner_enabled = true
+      planner_interval = 5
+      planner_mode = "event_driven"
+      quality_enabled = true
+      quality_interval = 10
+
+      [tracker]
+      type = "beads"
+      sync_to_github = false
+
+      # [monowiki]
+      # vault = "wiki/vault"
+      """
+
+      File.write!(config_path, config)
+      Mix.shell().info("Created #{config_path}")
+    end
   end
 end
 
@@ -42,10 +154,11 @@ defmodule Mix.Tasks.Noface.Start do
 
   ## Usage
 
-      mix noface.start [--config PATH]
+      mix noface.start [--config PATH] [--open]
 
   Options:
     --config PATH   Path to .noface.toml config file (default: .noface.toml)
+    --open          Open the dashboard in your browser automatically
 
   The server runs as a persistent OTP application and processes issues
   from your beads backlog. Use other `mix noface.*` commands to interact
@@ -57,13 +170,22 @@ defmodule Mix.Tasks.Noface.Start do
 
   @impl Mix.Task
   def run(args) do
-    {opts, _, _} = OptionParser.parse(args, strict: [config: :string])
+    {opts, _, _} = OptionParser.parse(args, strict: [config: :string, open: :boolean])
     config_path = opts[:config] || ".noface.toml"
+    open_browser? = opts[:open] || false
 
     Mix.shell().info("Starting noface server...")
 
     # Start the application
     {:ok, _} = Application.ensure_all_started(:noface_elixir)
+
+    # Open browser if requested (after small delay for server to be ready)
+    if open_browser? do
+      Task.start(fn ->
+        Process.sleep(1000)
+        open_browser("http://localhost:4000")
+      end)
+    end
 
     # Load config and start the loop
     case Noface.Core.Config.load(config_path) do
@@ -71,7 +193,7 @@ defmodule Mix.Tasks.Noface.Start do
         case Noface.Core.Loop.start(config) do
           :ok ->
             Mix.shell().info("Noface server started for #{config.project_name}")
-            Mix.shell().info("Use `mix noface.status` to check status")
+            Mix.shell().info("Dashboard: http://localhost:4000")
             # Keep running
             Process.sleep(:infinity)
 
@@ -81,6 +203,14 @@ defmodule Mix.Tasks.Noface.Start do
 
       {:error, reason} ->
         Mix.shell().error("Failed to load config: #{inspect(reason)}")
+    end
+  end
+
+  defp open_browser(url) do
+    case :os.type() do
+      {:unix, :darwin} -> System.cmd("open", [url])
+      {:unix, _} -> System.cmd("xdg-open", [url])
+      {:win32, _} -> System.cmd("cmd", ["/c", "start", url])
     end
   end
 end
@@ -315,6 +445,95 @@ defmodule Mix.Tasks.Noface.Inspect do
 
       {:error, :not_found} ->
         Mix.shell().error("Issue not found: #{issue_id}")
+    end
+  end
+end
+
+defmodule Mix.Tasks.Noface.Update do
+  @moduledoc """
+  Update CLI tools to their latest versions.
+
+  ## Usage
+
+      mix noface.update [TOOL]
+
+  Examples:
+      mix noface.update         # Check and update all tools
+      mix noface.update claude  # Update only claude
+      mix noface.update --check # Just check, don't update
+
+  Options:
+    --check   Only check for updates, don't install them
+  """
+  use Mix.Task
+
+  @shortdoc "Update CLI tools"
+
+  @impl Mix.Task
+  def run(args) do
+    {opts, rest, _} = OptionParser.parse(args, strict: [check: :boolean])
+    check_only = opts[:check] || false
+
+    Mix.Task.run("app.config")
+    Application.ensure_all_started(:req)
+
+    case rest do
+      [] ->
+        # Update all
+        Mix.shell().info("Checking for updates...")
+
+        case Noface.Tools.check_updates() do
+          {:ok, updates} when map_size(updates) == 0 ->
+            Mix.shell().info("All tools are up to date!")
+
+          {:ok, updates} ->
+            Mix.shell().info("Updates available:")
+
+            Enum.each(updates, fn {tool, info} ->
+              Mix.shell().info("  #{tool}: #{info.current} -> #{info.latest}")
+            end)
+
+            unless check_only do
+              Mix.shell().info("")
+              Mix.shell().info("Installing updates...")
+              Noface.Tools.update_all()
+              Mix.shell().info("Done!")
+            end
+
+          {:error, reason} ->
+            Mix.shell().error("Failed to check updates: #{inspect(reason)}")
+        end
+
+      [tool | _] ->
+        tool_atom = String.to_atom(tool)
+
+        if check_only do
+          Mix.shell().info("Checking #{tool}...")
+
+          case Noface.Tools.check_updates() do
+            {:ok, updates} ->
+              case Map.get(updates, tool_atom) || Map.get(updates, tool) do
+                nil ->
+                  Mix.shell().info("#{tool} is up to date")
+
+                info ->
+                  Mix.shell().info("#{tool}: #{info.current} -> #{info.latest}")
+              end
+
+            {:error, reason} ->
+              Mix.shell().error("Failed: #{inspect(reason)}")
+          end
+        else
+          Mix.shell().info("Updating #{tool}...")
+
+          case Noface.Tools.update(tool_atom) do
+            :ok ->
+              Mix.shell().info("#{tool} updated!")
+
+            {:error, reason} ->
+              Mix.shell().error("Failed: #{inspect(reason)}")
+          end
+        end
     end
   end
 end
