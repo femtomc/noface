@@ -198,28 +198,34 @@ defmodule Noface.Core.WorkerPool do
       %{issue_id: issue_id, worker_id: worker_id}
     )
 
-    # Create workspace for this worker
-    workspace_name = "noface-worker-#{worker_id}"
-
     result =
-      case JJ.create_workspace(workspace_name) do
-        {:ok, workspace_path} ->
-          try do
-            run_implementation_cycle(config, worker_id, issue_id, workspace_path, 0, nil)
-          after
-            JJ.remove_workspace(workspace_path)
-          end
+      if config.dry_run do
+        # Dry-run: skip workspace creation, just run the cycle with a fake path
+        Logger.info("[WORKER-#{worker_id}] DRY-RUN: Skipping workspace creation")
+        run_implementation_cycle(config, worker_id, issue_id, "/tmp/dry-run", 0, nil)
+      else
+        # Create workspace for this worker
+        workspace_name = "noface-worker-#{worker_id}"
 
-        {:error, reason} ->
-          Logger.error("[WORKER-#{worker_id}] Failed to create workspace: #{inspect(reason)}")
+        case JJ.create_workspace(workspace_name) do
+          {:ok, workspace_path} ->
+            try do
+              run_implementation_cycle(config, worker_id, issue_id, workspace_path, 0, nil)
+            after
+              JJ.remove_workspace(workspace_path)
+            end
 
-          %WorkerResult{
-            issue_id: issue_id,
-            worker_id: worker_id,
-            success: false,
-            exit_code: 1,
-            output: "Failed to create workspace: #{inspect(reason)}"
-          }
+          {:error, reason} ->
+            Logger.error("[WORKER-#{worker_id}] Failed to create workspace: #{inspect(reason)}")
+
+            %WorkerResult{
+              issue_id: issue_id,
+              worker_id: worker_id,
+              success: false,
+              exit_code: 1,
+              output: "Failed to create workspace: #{inspect(reason)}"
+            }
+        end
       end
 
     duration = System.monotonic_time(:millisecond) - start_time
@@ -258,36 +264,49 @@ defmodule Noface.Core.WorkerPool do
           {:ok, :approved} ->
             Logger.info("[WORKER-#{worker_id}] Issue #{issue_id} approved after #{iteration + 1} iterations!")
 
-            # Squash changes back to main
-            case JJ.squash_from_workspace(workspace_path) do
-              {:ok, true} ->
-                State.mark_issue_completed(issue_id)
+            # Squash changes back to main (skip in dry-run)
+            if config.dry_run do
+              Logger.info("[WORKER-#{worker_id}] DRY-RUN: Skipping squash, marking complete")
+              State.mark_issue_completed(issue_id)
 
-                %WorkerResult{
-                  issue_id: issue_id,
-                  worker_id: worker_id,
-                  success: true,
-                  exit_code: 0,
-                  output: "Completed after #{iteration + 1} review iterations"
-                }
+              %WorkerResult{
+                issue_id: issue_id,
+                worker_id: worker_id,
+                success: true,
+                exit_code: 0,
+                output: "DRY-RUN: Completed after #{iteration + 1} review iterations"
+              }
+            else
+              case JJ.squash_from_workspace(workspace_path) do
+                {:ok, true} ->
+                  State.mark_issue_completed(issue_id)
 
-              {:ok, false} ->
-                %WorkerResult{
-                  issue_id: issue_id,
-                  worker_id: worker_id,
-                  success: false,
-                  exit_code: 1,
-                  output: "Squash had conflicts"
-                }
+                  %WorkerResult{
+                    issue_id: issue_id,
+                    worker_id: worker_id,
+                    success: true,
+                    exit_code: 0,
+                    output: "Completed after #{iteration + 1} review iterations"
+                  }
 
-              {:error, reason} ->
-                %WorkerResult{
-                  issue_id: issue_id,
-                  worker_id: worker_id,
-                  success: false,
-                  exit_code: 1,
-                  output: "Failed to squash: #{inspect(reason)}"
-                }
+                {:ok, false} ->
+                  %WorkerResult{
+                    issue_id: issue_id,
+                    worker_id: worker_id,
+                    success: false,
+                    exit_code: 1,
+                    output: "Squash had conflicts"
+                  }
+
+                {:error, reason} ->
+                  %WorkerResult{
+                    issue_id: issue_id,
+                    worker_id: worker_id,
+                    success: false,
+                    exit_code: 1,
+                    output: "Failed to squash: #{inspect(reason)}"
+                  }
+              end
             end
 
           {:ok, {:changes_requested, new_feedback}} ->
@@ -327,58 +346,72 @@ defmodule Noface.Core.WorkerPool do
   end
 
   defp run_agent(agent_cmd, worker_id, issue_id, workspace_path, config, feedback) do
-    prompt =
-      Prompts.build_worker_prompt(
-        issue_id,
-        config.project_name,
-        config.test_command,
-        false,
-        feedback
-      )
+    # Dry-run mode: simulate agent response
+    if config.dry_run do
+      Logger.info("[WORKER-#{worker_id}] DRY-RUN: Simulating agent for #{issue_id}")
+      Process.sleep(500)  # Simulate some work
+      {:ok, :ready_for_review}
+    else
+      prompt =
+        Prompts.build_worker_prompt(
+          issue_id,
+          config.project_name,
+          config.test_command,
+          false,
+          feedback
+        )
 
-    # Use local binary if available
-    agent_bin = Tools.bin_path(String.to_atom(agent_cmd))
-    Logger.debug("[WORKER-#{worker_id}] Running #{agent_bin} for #{issue_id}")
+      # Use local binary if available
+      agent_bin = Tools.bin_path(String.to_atom(agent_cmd))
+      Logger.debug("[WORKER-#{worker_id}] Running #{agent_bin} for #{issue_id}")
 
-    args = build_agent_args(agent_cmd, prompt)
-    env = [{"NOFACE_WORKSPACE", workspace_path}, {"NOFACE_ISSUE_ID", issue_id}]
+      args = build_agent_args(agent_cmd, prompt)
+      env = [{"NOFACE_WORKSPACE", workspace_path}, {"NOFACE_ISSUE_ID", issue_id}]
 
-    case Proc.StreamingProcess.spawn([agent_bin | args], env: env, cd: workspace_path) do
-      {:ok, proc} ->
-        result = stream_agent_output(proc, config.agent_timeout_seconds || 900)
-        Proc.StreamingProcess.kill(proc)
-        result
+      case Proc.StreamingProcess.spawn([agent_bin | args], env: env, cd: workspace_path) do
+        {:ok, proc} ->
+          result = stream_agent_output(proc, config.agent_timeout_seconds || 900)
+          Proc.StreamingProcess.kill(proc)
+          result
 
-      {:error, reason} ->
-        Logger.error("[WORKER-#{worker_id}] Failed to spawn agent: #{inspect(reason)}")
-        {:error, reason}
+        {:error, reason} ->
+          Logger.error("[WORKER-#{worker_id}] Failed to spawn agent: #{inspect(reason)}")
+          {:error, reason}
+      end
     end
   end
 
   defp run_reviewer(review_cmd, worker_id, issue_id, workspace_path, config) do
-    prompt =
-      Prompts.build_reviewer_prompt(
-        issue_id,
-        config.project_name,
-        config.test_command
-      )
+    # Dry-run mode: simulate reviewer response
+    if config.dry_run do
+      Logger.info("[WORKER-#{worker_id}] DRY-RUN: Simulating reviewer for #{issue_id}")
+      Process.sleep(300)  # Simulate some work
+      {:ok, :approved}
+    else
+      prompt =
+        Prompts.build_reviewer_prompt(
+          issue_id,
+          config.project_name,
+          config.test_command
+        )
 
-    # Use local binary if available
-    review_bin = Tools.bin_path(String.to_atom(review_cmd))
-    Logger.debug("[WORKER-#{worker_id}] Running reviewer #{review_bin} for #{issue_id}")
+      # Use local binary if available
+      review_bin = Tools.bin_path(String.to_atom(review_cmd))
+      Logger.debug("[WORKER-#{worker_id}] Running reviewer #{review_bin} for #{issue_id}")
 
-    args = build_agent_args(review_cmd, prompt)
-    env = [{"NOFACE_WORKSPACE", workspace_path}, {"NOFACE_ISSUE_ID", issue_id}]
+      args = build_agent_args(review_cmd, prompt)
+      env = [{"NOFACE_WORKSPACE", workspace_path}, {"NOFACE_ISSUE_ID", issue_id}]
 
-    case Proc.StreamingProcess.spawn([review_bin | args], env: env, cd: workspace_path) do
-      {:ok, proc} ->
-        result = stream_reviewer_output(proc, config.agent_timeout_seconds || 900)
-        Proc.StreamingProcess.kill(proc)
-        result
+      case Proc.StreamingProcess.spawn([review_bin | args], env: env, cd: workspace_path) do
+        {:ok, proc} ->
+          result = stream_reviewer_output(proc, config.agent_timeout_seconds || 900)
+          Proc.StreamingProcess.kill(proc)
+          result
 
-      {:error, reason} ->
-        Logger.error("[WORKER-#{worker_id}] Failed to spawn reviewer: #{inspect(reason)}")
-        {:error, reason}
+        {:error, reason} ->
+          Logger.error("[WORKER-#{worker_id}] Failed to spawn reviewer: #{inspect(reason)}")
+          {:error, reason}
+      end
     end
   end
 
