@@ -28,23 +28,13 @@ defmodule Noface.Server.Web do
   # Routes
 
   get "/" do
-    send_file(conn, 200, static_path("index.html"))
-  end
-
-  get "/index.html" do
-    send_file(conn, 200, static_path("index.html"))
-  end
-
-  get "/assets/:file" do
-    file_path = static_path("assets/#{file}")
-
-    if File.exists?(file_path) do
-      content_type = get_content_type(file)
-      conn = put_resp_content_type(conn, content_type)
-      send_file(conn, 200, file_path)
-    else
-      send_resp(conn, 404, "Not Found")
-    end
+    conn
+    |> put_resp_content_type("application/json")
+    |> send_resp(200, Jason.encode!(%{
+      message: "noface API server",
+      dashboard: "http://localhost:4000",
+      endpoints: ["/api/status", "/api/issues", "/api/workers"]
+    }))
   end
 
   get "/api/status" do
@@ -95,20 +85,6 @@ defmodule Noface.Server.Web do
   end
 
   # Private functions
-
-  defp static_path(file) do
-    Path.join(:code.priv_dir(:noface_elixir), "static/#{file}")
-  end
-
-  defp get_content_type(file) do
-    case Path.extname(file) do
-      ".js" -> "application/javascript"
-      ".css" -> "text/css"
-      ".html" -> "text/html"
-      ".json" -> "application/json"
-      _ -> "application/octet-stream"
-    end
-  end
 
   defp get_orchestrator_status do
     case Noface.Core.State.get_state() do

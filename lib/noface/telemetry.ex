@@ -48,7 +48,7 @@ defmodule Noface.Telemetry do
     :telemetry.attach_many(
       "noface-default-logger",
       @events,
-      &handle_event/4,
+      &__MODULE__.handle_event/4,
       nil
     )
   end
@@ -107,49 +107,50 @@ defmodule Noface.Telemetry do
     ]
   end
 
-  # Event handlers
+  # Event handlers (must be public for telemetry to call them)
 
-  defp handle_event([:noface, :worker, :start], _measurements, metadata, _config) do
+  @doc false
+  def handle_event([:noface, :worker, :start], _measurements, metadata, _config) do
     Logger.debug("[TELEMETRY] Worker #{metadata.worker_id} starting issue #{metadata.issue_id}")
   end
 
-  defp handle_event([:noface, :worker, :stop], measurements, metadata, _config) do
+  def handle_event([:noface, :worker, :stop], measurements, metadata, _config) do
     status = if measurements.success, do: "succeeded", else: "failed"
     Logger.debug("[TELEMETRY] Worker #{metadata.worker_id} #{status} in #{measurements.duration_ms}ms")
   end
 
-  defp handle_event([:noface, :worker_pool, :batch, :start], measurements, metadata, _config) do
+  def handle_event([:noface, :worker_pool, :batch, :start], measurements, metadata, _config) do
     Logger.info("[TELEMETRY] Batch #{metadata.batch_id} starting with #{measurements.count} issues")
   end
 
-  defp handle_event([:noface, :worker_pool, :batch, :stop], measurements, metadata, _config) do
+  def handle_event([:noface, :worker_pool, :batch, :stop], measurements, metadata, _config) do
     Logger.info(
       "[TELEMETRY] Batch #{metadata.batch_id} completed in #{measurements.duration_ms}ms: " <>
         "#{measurements.success_count} succeeded, #{measurements.failure_count} failed"
     )
   end
 
-  defp handle_event([:noface, :state, :loaded], measurements, metadata, _config) do
+  def handle_event([:noface, :state, :loaded], measurements, metadata, _config) do
     Logger.info("[TELEMETRY] State loaded for #{metadata.project_name}: #{measurements.issue_count} issues")
   end
 
-  defp handle_event([:noface, :agent, :start], _measurements, metadata, _config) do
+  def handle_event([:noface, :agent, :start], _measurements, metadata, _config) do
     Logger.debug("[TELEMETRY] Agent #{metadata.agent_type} starting for #{metadata.issue_id}")
   end
 
-  defp handle_event([:noface, :agent, :stop], measurements, metadata, _config) do
+  def handle_event([:noface, :agent, :stop], measurements, metadata, _config) do
     Logger.debug("[TELEMETRY] Agent #{metadata.agent_type} completed in #{measurements.duration_ms}ms")
   end
 
-  defp handle_event([:noface, :loop, :iteration, :start], measurements, _metadata, _config) do
+  def handle_event([:noface, :loop, :iteration, :start], measurements, _metadata, _config) do
     Logger.debug("[TELEMETRY] Loop iteration #{measurements.iteration} starting")
   end
 
-  defp handle_event([:noface, :loop, :iteration, :stop], measurements, _metadata, _config) do
+  def handle_event([:noface, :loop, :iteration, :stop], measurements, _metadata, _config) do
     Logger.debug("[TELEMETRY] Loop iteration completed in #{measurements.duration_ms}ms")
   end
 
-  defp handle_event(event, measurements, metadata, _config) do
+  def handle_event(event, measurements, metadata, _config) do
     Logger.debug("[TELEMETRY] #{inspect(event)}: #{inspect(measurements)} #{inspect(metadata)}")
   end
 end

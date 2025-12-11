@@ -23,7 +23,6 @@ defmodule Noface.Core.Loop do
   alias Noface.Core.{Config, State, WorkerPool, Prompts}
   alias Noface.Util.Process, as: Proc
   alias Noface.Integrations.IssueSync
-  alias Noface.VCS.JJ
 
   @loop_interval_ms 5_000
 

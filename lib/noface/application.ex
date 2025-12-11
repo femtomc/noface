@@ -59,12 +59,7 @@ defmodule Noface.Application do
   end
 
   defp run_migrations do
-    try do
-      Noface.Util.Transcript.migrate()
-      Logger.debug("[APP] Transcript migrations complete")
-    rescue
-      e ->
-        Logger.warning("[APP] Transcript migration failed: #{Exception.message(e)}")
-    end
+    Noface.Util.Transcript.migrate()
+    Logger.debug("[APP] Transcript migrations complete")
   end
 end

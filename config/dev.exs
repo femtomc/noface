@@ -4,6 +4,7 @@ import Config
 # debugging and code reloading.
 config :noface_elixir, NofaceWeb.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4000],
+  server: true,
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

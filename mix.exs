@@ -8,7 +8,8 @@ defmodule NofaceElixir.MixProject do
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
-      escript: escript()
+      escript: escript(),
+      listeners: [Phoenix.CodeReloader]
     ]
   end
 
@@ -51,9 +52,7 @@ defmodule NofaceElixir.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},
       # File system watcher for hot reload
-      {:file_system, "~> 1.0"},
-      # Asset bundler (for LiveView JS)
-      {:esbuild, "~> 0.8", runtime: Mix.env() == :dev}
+      {:file_system, "~> 1.0"}
     ]
   end
 end

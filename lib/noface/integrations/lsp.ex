@@ -320,11 +320,16 @@ defmodule Noface.Integrations.LSP do
     message = Jason.encode!(%{jsonrpc: "2.0", id: id, method: method, params: params})
     header = "Content-Length: #{byte_size(message)}\r\n\r\n"
 
-    Port.command(state.port, header <> message)
+    try do
+      Port.command(state.port, header <> message)
 
-    # For now, return a simple acknowledgment
-    # A full implementation would read and parse the response
-    {:ok, nil, %{state | next_id: id + 1}}
+      # TODO: Implement proper response reading from the port.
+      # For now, return nil as the response - callers handle this gracefully.
+      {:ok, nil, %{state | next_id: id + 1}}
+    rescue
+      ArgumentError ->
+        {:error, :port_closed}
+    end
   end
 
   defp send_notification(state, method, params) do
@@ -362,10 +367,9 @@ defmodule Noface.Integrations.LSP do
   defp parse_locations(list) when is_list(list), do: Enum.map(list, &parse_location/1) |> Enum.reject(&is_nil/1)
   defp parse_locations(_), do: []
 
+  # TODO: Implement full hover response parsing when send_request reads responses.
+  # LSP hover responses have formats: MarkupContent, plain string, MarkedString array.
   defp parse_hover(nil), do: nil
-
-  defp parse_hover(%{"contents" => %{"value" => value}}), do: value
-  defp parse_hover(%{"contents" => value}) when is_binary(value), do: value
   defp parse_hover(_), do: nil
 
   defp parse_symbols(nil), do: []

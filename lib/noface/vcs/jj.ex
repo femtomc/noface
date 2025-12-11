@@ -198,8 +198,11 @@ defmodule Noface.VCS.JJ do
 
         {:ok, paths}
 
-      _ ->
-        {:ok, []}
+      {:ok, %{exit_code: code, stdout: output}} ->
+        {:error, {:jj_command_failed, code, output}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -227,8 +230,11 @@ defmodule Noface.VCS.JJ do
       {:ok, %{exit_code: 0, stdout: output}} ->
         {:ok, parse_all_changes(output)}
 
-      _ ->
-        {:ok, []}
+      {:ok, %{exit_code: code, stdout: output}} ->
+        {:error, {:jj_command_failed, code, output}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

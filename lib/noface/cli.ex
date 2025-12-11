@@ -145,13 +145,14 @@ defmodule Noface.CLI do
   end
 
   defp run_command(:serve, opts) do
-    port = opts[:port] || 3000
-    IO.puts("\e[1;34m[NOFACE]\e[0m Starting web dashboard on port #{port}...")
+    api_port = opts[:port] || 3000
+    IO.puts("\e[1;34m[NOFACE]\e[0m Starting servers...")
 
     {:ok, _} = Application.ensure_all_started(:noface_elixir)
-    {:ok, _} = Web.start(port: port)
+    {:ok, _} = Web.start(port: api_port)
 
-    IO.puts("\e[1;32m[NOFACE]\e[0m Dashboard running at http://localhost:#{port}")
+    IO.puts("\e[1;32m[NOFACE]\e[0m Dashboard running at http://localhost:4000")
+    IO.puts("\e[1;32m[NOFACE]\e[0m API server running at http://localhost:#{api_port}")
     IO.puts("Press Ctrl+C to stop")
 
     # Keep running
@@ -273,7 +274,7 @@ defmodule Noface.CLI do
     USAGE:
       noface [OPTIONS]            Run the agent loop
       noface init [OPTIONS]       Initialize a new project
-      noface serve [OPTIONS]      Start the web dashboard
+      noface serve [OPTIONS]      Start dashboard + API servers
       noface doctor               Check system health
       noface sync [OPTIONS]       Sync issues to external tracker
 
@@ -293,7 +294,7 @@ defmodule Noface.CLI do
       --raw                       Plain text output without formatting
       -v, --verbose               Enable verbose logging
       --agent-timeout N           Agent timeout in seconds (default: 900)
-      -p, --port N                Web server port (default: 3000)
+      -p, --port N                API server port (default: 3000)
       --force                     Overwrite existing files
       --skip-deps                 Skip dependency checks
       -h, --help                  Show this help message
@@ -301,7 +302,7 @@ defmodule Noface.CLI do
     EXAMPLES:
       noface                      Run orchestrator with default settings
       noface init                 Initialize a new noface project
-      noface serve -p 8080        Start dashboard on port 8080
+      noface serve                Start dashboard (4000) + API server (3000)
       noface --issue BUG-123      Work on specific issue
       noface --max-iterations 10  Run 10 iterations then stop
 

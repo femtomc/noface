@@ -104,15 +104,16 @@ defmodule Noface.Server.Command do
 
   @impl true
   def handle_call(:status, _from, state) do
-    status = %{
-      server: %{
-        started_at: state.started_at,
-        uptime_seconds: DateTime.diff(DateTime.utc_now(), state.started_at)
-      },
-      loop: get_loop_status(),
-      state: get_state_summary(),
-      workers: get_worker_status()
-    }
+    status =
+      %{
+        server: %{
+          started_at: state.started_at,
+          uptime_seconds: DateTime.diff(DateTime.utc_now(), state.started_at)
+        },
+        loop: get_loop_status(),
+        state: get_state_summary()
+      }
+      |> Map.put(:workers, get_worker_status())
 
     state = record_command(state, :status, nil)
     {:reply, status, state}
@@ -187,15 +188,18 @@ defmodule Noface.Server.Command do
   end
 
   defp get_loop_status do
+    # Use short timeout since Loop may be blocked running agents
     try do
       %{
-        running: Loop.running?(),
-        paused: Loop.paused?(),
-        iteration: Loop.current_iteration(),
-        current_work: Loop.current_work()
+        running: GenServer.call(Loop, :running?, 500),
+        paused: GenServer.call(Loop, :paused?, 500),
+        iteration: GenServer.call(Loop, :current_iteration, 500),
+        current_work: GenServer.call(Loop, :current_work, 500)
       }
     rescue
       _ -> %{running: false, paused: false, iteration: 0, current_work: nil}
+    catch
+      :exit, _ -> %{running: true, paused: false, iteration: 0, current_work: :busy}
     end
   end
 
@@ -218,10 +222,32 @@ defmodule Noface.Server.Command do
   end
 
   defp get_worker_status do
-    try do
-      Noface.Core.WorkerPool.status()
-    rescue
-      _ -> %{active: 0, total: 0}
+    pool_status =
+      try do
+        Noface.Core.WorkerPool.status()
+      rescue
+        _ -> %{active_count: 0, completed_count: 0, config: nil}
+      end
+
+    state_workers =
+      try do
+        case State.get_state() do
+          %{workers: workers, num_workers: num_workers} ->
+            %{
+              workers: Enum.take(workers || [], num_workers || length(workers || [])),
+              num_workers: num_workers
+            }
+
+          _ ->
+            nil
+        end
+      rescue
+        _ -> nil
+      end
+
+    case state_workers do
+      nil -> pool_status
+      worker_map -> Map.merge(pool_status, worker_map)
     end
   end
 

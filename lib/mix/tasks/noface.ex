@@ -154,22 +154,21 @@ defmodule Mix.Tasks.Noface.Start do
 
   ## Usage
 
-      mix noface.start [--config PATH] [--open] [--paused]
+      mix noface.start [--config PATH] [--open] [--run]
 
   Options:
     --config PATH   Path to .noface.toml config file (default: .noface.toml)
     --open          Open the dashboard in your browser automatically
-    --paused        Start in paused mode (use Loop.step() to advance)
+    --run           Start in running mode (default is paused)
 
-  The server runs as a persistent OTP application and processes issues
-  from your beads backlog. Use other `mix noface.*` commands to interact
-  with the running server.
+  The server starts PAUSED by default. Use the dashboard or API to resume.
+  This gives you control over when the agents start working.
 
-  When started with --paused, the loop won't auto-advance. You can then
-  control it via IEx or the API:
-    - Noface.Core.Loop.step()        # Run one iteration
-    - Noface.Core.Loop.get_loop_state()  # Inspect state
-    - Noface.Core.Loop.resume()      # Start continuous execution
+  Control the loop via dashboard buttons or API:
+    - Noface.Core.Loop.step()           # Run one iteration
+    - Noface.Core.Loop.get_loop_state() # Inspect state
+    - Noface.Core.Loop.resume()         # Run continuously
+    - Noface.Core.Loop.pause()          # Pause execution
   """
   use Mix.Task
 
@@ -177,10 +176,11 @@ defmodule Mix.Tasks.Noface.Start do
 
   @impl Mix.Task
   def run(args) do
-    {opts, _, _} = OptionParser.parse(args, strict: [config: :string, open: :boolean, paused: :boolean])
+    {opts, _, _} = OptionParser.parse(args, strict: [config: :string, open: :boolean, run: :boolean])
     config_path = opts[:config] || ".noface.toml"
     open_browser? = opts[:open] || false
-    start_paused? = opts[:paused] || false
+    # Default to paused mode - user must explicitly use --run to start running
+    start_paused? = not (opts[:run] || false)
 
     Mix.shell().info("Starting noface server...")
 
@@ -202,16 +202,18 @@ defmodule Mix.Tasks.Noface.Start do
 
         case start_fn.(config) do
           :ok ->
-            mode = if start_paused?, do: "(paused)", else: ""
-            Mix.shell().info("Noface server started for #{config.project_name} #{mode}")
+            Mix.shell().info("")
+            Mix.shell().info("Noface server started for #{config.project_name}")
             Mix.shell().info("Dashboard: http://localhost:4000")
 
             if start_paused? do
               Mix.shell().info("")
-              Mix.shell().info("Loop is paused. Control via IEx or API:")
-              Mix.shell().info("  Noface.Core.Loop.step()           # Run one iteration")
-              Mix.shell().info("  Noface.Core.Loop.get_loop_state() # Inspect state")
-              Mix.shell().info("  Noface.Core.Loop.resume()         # Run continuously")
+              Mix.shell().info("Loop is PAUSED. Click Resume in dashboard or use API:")
+              Mix.shell().info("  Noface.Core.Loop.resume()  # Run continuously")
+              Mix.shell().info("  Noface.Core.Loop.step()    # Run one iteration")
+            else
+              Mix.shell().info("")
+              Mix.shell().info("Loop is RUNNING.")
             end
 
             # Keep running
@@ -520,8 +522,28 @@ defmodule Mix.Tasks.Noface.Update do
               Mix.shell().info("Done!")
             end
 
-          {:error, reason} ->
-            Mix.shell().error("Failed to check updates: #{inspect(reason)}")
+          {:ok, updates, errors} ->
+            # Partial success - show updates and warn about errors
+            Enum.each(errors, fn {tool, reason} ->
+              Mix.shell().error("Warning: Failed to check #{tool}: #{inspect(reason)}")
+            end)
+
+            if map_size(updates) == 0 do
+              Mix.shell().info("No updates found (some checks failed)")
+            else
+              Mix.shell().info("Updates available:")
+
+              Enum.each(updates, fn {tool, info} ->
+                Mix.shell().info("  #{tool}: #{info.current} -> #{info.latest}")
+              end)
+
+              unless check_only do
+                Mix.shell().info("")
+                Mix.shell().info("Installing updates...")
+                Noface.Tools.update_all()
+                Mix.shell().info("Done!")
+              end
+            end
         end
 
       [tool | _] ->
@@ -540,8 +562,21 @@ defmodule Mix.Tasks.Noface.Update do
                   Mix.shell().info("#{tool}: #{info.current} -> #{info.latest}")
               end
 
-            {:error, reason} ->
-              Mix.shell().error("Failed: #{inspect(reason)}")
+            {:ok, updates, errors} ->
+              # Check if this specific tool had an error
+              case Enum.find(errors, fn {t, _} -> t == tool_atom end) do
+                {_, reason} ->
+                  Mix.shell().error("Failed to check #{tool}: #{inspect(reason)}")
+
+                nil ->
+                  case Map.get(updates, tool_atom) || Map.get(updates, tool) do
+                    nil ->
+                      Mix.shell().info("#{tool} is up to date")
+
+                    info ->
+                      Mix.shell().info("#{tool}: #{info.current} -> #{info.latest}")
+                  end
+              end
           end
         else
           Mix.shell().info("Updating #{tool}...")

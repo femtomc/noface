@@ -79,7 +79,7 @@ defmodule Noface.Util.Transcript do
     use Ecto.Migration
 
     def change do
-      create table(:sessions, primary_key: false) do
+      create_if_not_exists table(:sessions, primary_key: false) do
         add :id, :binary_id, primary_key: true
         add :issue_id, :string, null: false
         add :worker_id, :integer, null: false
@@ -90,10 +90,10 @@ defmodule Noface.Util.Transcript do
         timestamps(type: :utc_datetime)
       end
 
-      create index(:sessions, [:issue_id])
-      create index(:sessions, [:inserted_at])
+      create_if_not_exists index(:sessions, [:issue_id])
+      create_if_not_exists index(:sessions, [:inserted_at])
 
-      create table(:events) do
+      create_if_not_exists table(:events) do
         add :session_id, references(:sessions, type: :binary_id, on_delete: :delete_all), null: false
         add :seq, :integer, null: false
         add :event_type, :string, null: false
@@ -104,8 +104,8 @@ defmodule Noface.Util.Transcript do
         timestamps(type: :utc_datetime)
       end
 
-      create index(:events, [:session_id])
-      create index(:events, [:session_id, :seq])
+      create_if_not_exists index(:events, [:session_id])
+      create_if_not_exists index(:events, [:session_id, :seq])
     end
   end
 

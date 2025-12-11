@@ -170,9 +170,16 @@ defmodule Noface.Tools.Updater do
         new_state = %{state | last_check: DateTime.utc_now(), available_updates: updates}
         {{:ok, updates}, new_state}
 
-      {:error, reason} ->
-        Logger.warning("[UPDATER] Failed to check updates: #{inspect(reason)}")
-        {{:error, reason}, state}
+      {:ok, updates, errors} ->
+        # Some checks succeeded, some failed
+        Logger.warning("[UPDATER] Partial update check - errors: #{inspect(errors)}")
+
+        if map_size(updates) > 0 do
+          Logger.info("[UPDATER] Updates available: #{inspect(Map.keys(updates))}")
+        end
+
+        new_state = %{state | last_check: DateTime.utc_now(), available_updates: updates}
+        {{:ok, updates}, new_state}
     end
   end
 end

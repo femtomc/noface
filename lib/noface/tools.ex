@@ -100,24 +100,31 @@ defmodule Noface.Tools do
 
   @doc """
   Check for updates to installed tools.
+  Returns updates found and any errors encountered during checks.
   """
-  @spec check_updates() :: {:ok, map()} | {:error, term()}
+  @spec check_updates() :: {:ok, map()} | {:ok, map(), [{atom(), term()}]} | {:error, term()}
   def check_updates do
     current = versions()
 
-    updates =
+    {updates, errors} =
       @tools
-      |> Enum.reduce(%{}, fn {name, spec}, acc ->
+      |> Enum.reduce({%{}, []}, fn {name, spec}, {updates, errors} ->
         case check_tool_update(name, spec, current) do
           {:update_available, current_ver, latest_ver} ->
-            Map.put(acc, name, %{current: current_ver, latest: latest_ver})
+            {Map.put(updates, name, %{current: current_ver, latest: latest_ver}), errors}
 
-          _ ->
-            acc
+          :up_to_date ->
+            {updates, errors}
+
+          {:error, reason} ->
+            {updates, [{name, reason} | errors]}
         end
       end)
 
-    {:ok, updates}
+    case errors do
+      [] -> {:ok, updates}
+      _ -> {:ok, updates, Enum.reverse(errors)}
+    end
   end
 
   @doc """
@@ -301,7 +308,7 @@ defmodule Noface.Tools do
     end
   end
 
-  defp find_asset(assets, binary) do
+  defp find_asset(assets, _binary) do
     os = case :os.type() do
       {:unix, :darwin} -> "darwin"
       {:unix, _} -> "linux"
@@ -426,8 +433,8 @@ defmodule Noface.Tools do
           :up_to_date
         end
 
-      _ ->
-        :check_failed
+      {output, code} ->
+        {:error, {:npm_check_failed, code, output}}
     end
   end
 
@@ -444,8 +451,11 @@ defmodule Noface.Tools do
           :up_to_date
         end
 
-      _ ->
-        :check_failed
+      {:ok, %{status: status}} ->
+        {:error, {:github_api_error, status}}
+
+      {:error, reason} ->
+        {:error, {:http_error, reason}}
     end
   end
 end
