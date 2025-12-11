@@ -175,6 +175,205 @@ pub const GitRepo = struct {
         for (files) |f| self.allocator.free(f);
         if (files.len > 0) self.allocator.free(files);
     }
+
+    // === Worktree Operations ===
+
+    /// Create a new worktree for a worker
+    /// Returns the absolute path to the created worktree
+    /// The worktree is created in detached HEAD state from the current HEAD
+    pub fn createWorktree(self: *GitRepo, worker_id: u32) ![]const u8 {
+        const worktree_path = try std.fmt.allocPrint(self.allocator, ".noface-worker-{d}", .{worker_id});
+        errdefer self.allocator.free(worktree_path);
+
+        // Create worktree in detached HEAD state (no branch)
+        // Using --detach avoids branch name conflicts between workers
+        const cmd = try std.fmt.allocPrint(self.allocator, "git worktree add \"{s}\" --detach 2>&1", .{worktree_path});
+        defer self.allocator.free(cmd);
+
+        var result = try process.shell(self.allocator, cmd);
+        defer result.deinit();
+
+        if (!result.success()) {
+            // Check if worktree already exists (from crash recovery)
+            if (std.mem.indexOf(u8, result.stderr, "already exists") != null or
+                std.mem.indexOf(u8, result.stdout, "already exists") != null)
+            {
+                // Worktree exists, try to reuse it by resetting to HEAD
+                const reset_cmd = try std.fmt.allocPrint(self.allocator, "git -C \"{s}\" reset --hard HEAD 2>&1", .{worktree_path});
+                defer self.allocator.free(reset_cmd);
+                var reset_result = try process.shell(self.allocator, reset_cmd);
+                defer reset_result.deinit();
+                // Return path even if reset fails - we'll try to use it
+                return worktree_path;
+            }
+            self.allocator.free(worktree_path);
+            return error.WorktreeCreationFailed;
+        }
+
+        return worktree_path;
+    }
+
+    /// Remove a worktree
+    pub fn removeWorktree(self: *GitRepo, worktree_path: []const u8) !void {
+        // First, try to remove cleanly
+        const cmd = try std.fmt.allocPrint(self.allocator, "git worktree remove \"{s}\" --force 2>&1", .{worktree_path});
+        defer self.allocator.free(cmd);
+
+        var result = try process.shell(self.allocator, cmd);
+        defer result.deinit();
+
+        // If that fails, try manual cleanup
+        if (!result.success()) {
+            // Remove directory manually
+            const rm_cmd = try std.fmt.allocPrint(self.allocator, "rm -rf \"{s}\" 2>&1", .{worktree_path});
+            defer self.allocator.free(rm_cmd);
+            var rm_result = try process.shell(self.allocator, rm_cmd);
+            defer rm_result.deinit();
+
+            // Prune worktree references
+            var prune_result = try process.shell(self.allocator, "git worktree prune 2>&1");
+            defer prune_result.deinit();
+        }
+    }
+
+    /// List all worktrees (for cleanup/recovery)
+    /// Returns list of worktree paths (excluding main worktree)
+    pub fn listWorktrees(self: *GitRepo) ![]const []const u8 {
+        var result = try process.shell(self.allocator, "git worktree list --porcelain");
+        defer result.deinit();
+
+        if (!result.success()) {
+            return &[_][]const u8{};
+        }
+
+        var paths = std.ArrayListUnmanaged([]const u8){};
+        errdefer {
+            for (paths.items) |p| self.allocator.free(p);
+            paths.deinit(self.allocator);
+        }
+
+        // Parse porcelain output: "worktree <path>" lines
+        var lines = std.mem.tokenizeScalar(u8, result.stdout, '\n');
+        var is_first = true;
+        while (lines.next()) |line| {
+            if (std.mem.startsWith(u8, line, "worktree ")) {
+                const path = line["worktree ".len..];
+                // Skip the main worktree (first one listed)
+                if (is_first) {
+                    is_first = false;
+                    continue;
+                }
+                try paths.append(self.allocator, try self.allocator.dupe(u8, path));
+            }
+        }
+
+        return paths.toOwnedSlice(self.allocator);
+    }
+
+    /// Clean up orphaned noface worktrees (from crashes)
+    /// Removes any worktrees matching .noface-worker-* pattern
+    pub fn cleanupOrphanedWorktrees(self: *GitRepo) !u32 {
+        const worktrees = try self.listWorktrees();
+        defer {
+            for (worktrees) |w| self.allocator.free(w);
+            if (worktrees.len > 0) self.allocator.free(worktrees);
+        }
+
+        var cleaned: u32 = 0;
+        for (worktrees) |worktree| {
+            // Check if this is a noface worker worktree
+            if (std.mem.indexOf(u8, worktree, ".noface-worker-") != null) {
+                self.removeWorktree(worktree) catch {};
+                cleaned += 1;
+            }
+        }
+
+        return cleaned;
+    }
+
+    /// Get changes in a worktree relative to main
+    /// Returns list of modified files
+    pub fn getWorktreeChanges(self: *GitRepo, worktree_path: []const u8) ![]const []const u8 {
+        // Get diff between worktree HEAD and main HEAD
+        const cmd = try std.fmt.allocPrint(self.allocator, "git -C \"{s}\" diff --name-only HEAD", .{worktree_path});
+        defer self.allocator.free(cmd);
+
+        var result = try process.shell(self.allocator, cmd);
+        defer result.deinit();
+
+        if (!result.success()) {
+            return &[_][]const u8{};
+        }
+
+        return try parseFileList(self.allocator, result.stdout);
+    }
+
+    /// Stage all changes in a worktree
+    pub fn stageAllInWorktree(self: *GitRepo, worktree_path: []const u8) !void {
+        const cmd = try std.fmt.allocPrint(self.allocator, "git -C \"{s}\" add -A", .{worktree_path});
+        defer self.allocator.free(cmd);
+
+        var result = try process.shell(self.allocator, cmd);
+        defer result.deinit();
+    }
+
+    /// Commit changes in a worktree
+    pub fn commitInWorktree(self: *GitRepo, worktree_path: []const u8, message: []const u8) !bool {
+        // Stage all changes first
+        try self.stageAllInWorktree(worktree_path);
+
+        const cmd = try std.fmt.allocPrint(self.allocator, "git -C \"{s}\" commit -m \"{s}\" 2>&1", .{ worktree_path, message });
+        defer self.allocator.free(cmd);
+
+        var result = try process.shell(self.allocator, cmd);
+        defer result.deinit();
+
+        // Check if there was nothing to commit
+        if (std.mem.indexOf(u8, result.stdout, "nothing to commit") != null) {
+            return false;
+        }
+
+        return result.success();
+    }
+
+    /// Cherry-pick commits from worktree into main working directory
+    /// Returns true if successful, false if there were conflicts
+    pub fn cherryPickFromWorktree(self: *GitRepo, worktree_path: []const u8) !bool {
+        // Get the HEAD commit of the worktree
+        const head_cmd = try std.fmt.allocPrint(self.allocator, "git -C \"{s}\" rev-parse HEAD", .{worktree_path});
+        defer self.allocator.free(head_cmd);
+
+        var head_result = try process.shell(self.allocator, head_cmd);
+        defer head_result.deinit();
+
+        if (!head_result.success()) {
+            return error.WorktreeHeadNotFound;
+        }
+
+        const commit_sha = std.mem.trim(u8, head_result.stdout, " \t\r\n");
+        if (commit_sha.len == 0) {
+            return error.WorktreeHeadNotFound;
+        }
+
+        // Cherry-pick the commit into main worktree
+        const pick_cmd = try std.fmt.allocPrint(self.allocator, "git cherry-pick {s} --no-commit 2>&1", .{commit_sha});
+        defer self.allocator.free(pick_cmd);
+
+        var pick_result = try process.shell(self.allocator, pick_cmd);
+        defer pick_result.deinit();
+
+        // Check for conflicts
+        if (std.mem.indexOf(u8, pick_result.stdout, "CONFLICT") != null or
+            std.mem.indexOf(u8, pick_result.stderr, "CONFLICT") != null)
+        {
+            // Abort the cherry-pick
+            var abort_result = try process.shell(self.allocator, "git cherry-pick --abort 2>&1");
+            defer abort_result.deinit();
+            return false;
+        }
+
+        return pick_result.success();
+    }
 };
 
 /// Parse newline-separated file list from git output

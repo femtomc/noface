@@ -55,6 +55,9 @@ pub const WorkerPool = struct {
     /// These are the files that were already modified before the worker began.
     worker_baselines: [state_mod.MAX_WORKERS][]const []const u8 = [_][]const []const u8{&.{}} ** state_mod.MAX_WORKERS,
 
+    /// Worktree paths per worker (null if not using worktrees or worker not running)
+    worker_worktrees: [state_mod.MAX_WORKERS]?[]const u8 = [_]?[]const u8{null} ** state_mod.MAX_WORKERS,
+
     /// Info about a waiting worker
     const WaitingWorker = struct {
         issue_id: []const u8,
@@ -68,6 +71,13 @@ pub const WorkerPool = struct {
             logWarn("Failed to open transcript DB: {}, worker sessions will not be logged", .{err});
             break :blk null;
         };
+
+        // Clean up any orphaned worktrees from previous crashes
+        var repo = git.GitRepo.init(allocator);
+        const cleaned = repo.cleanupOrphanedWorktrees() catch 0;
+        if (cleaned > 0) {
+            logInfo("Cleaned up {d} orphaned worker worktrees from previous run", .{cleaned});
+        }
 
         return .{
             .allocator = allocator,
@@ -104,6 +114,16 @@ pub const WorkerPool = struct {
         for (&self.worker_baselines) |*baseline| {
             self.freeBaseline(baseline.*);
             baseline.* = &.{};
+        }
+
+        // Cleanup worker worktrees
+        var repo = git.GitRepo.init(self.allocator);
+        for (&self.worker_worktrees) |*worktree| {
+            if (worktree.*) |path| {
+                repo.removeWorktree(path) catch {};
+                self.allocator.free(path);
+                worktree.* = null;
+            }
         }
 
         // Free waiting workers
@@ -459,6 +479,28 @@ pub const WorkerPool = struct {
             self.worker_baselines[worker_id] = try self.captureBaseline();
         }
 
+        // Create worktree for this worker (if not resuming with existing worktree)
+        var worktree_path: ?[]const u8 = null;
+        if (!resuming or self.worker_worktrees[worker_id] == null) {
+            var repo = git.GitRepo.init(self.allocator);
+            worktree_path = repo.createWorktree(worker_id) catch |err| blk: {
+                logWarn("Failed to create worktree for worker {d}: {}, running in main directory", .{ worker_id, err });
+                break :blk null;
+            };
+
+            // Free old worktree path if exists and store new one
+            if (self.worker_worktrees[worker_id]) |old_path| {
+                self.allocator.free(old_path);
+            }
+            self.worker_worktrees[worker_id] = worktree_path;
+
+            if (worktree_path != null) {
+                logInfo("Worker {d} using worktree: {s}", .{ worker_id, worktree_path.? });
+            }
+        } else {
+            worktree_path = self.worker_worktrees[worker_id];
+        }
+
         // Build the worker command
         // Each worker runs: noface --worker --issue <issue_id>
         // For now, we use claude directly with the implementation prompt
@@ -471,13 +513,14 @@ pub const WorkerPool = struct {
             "--dangerously-skip-permissions",
             "--verbose",
             "--max-turns",
-            "100",  // Allow more iterations for complex issues
+            "100", // Allow more iterations for complex issues
             "--output-format",
             "stream-json",
             prompt,
         };
 
-        var worker = try WorkerProcess.spawn(self.allocator, &argv, worker_id, issue_id);
+        // Spawn worker in worktree directory (or main dir if worktree creation failed)
+        var worker = try WorkerProcess.spawnInDir(self.allocator, &argv, worker_id, issue_id, worktree_path);
 
         // Start transcript session for this worker
         if (self.transcript_db) |*db| {
@@ -678,11 +721,44 @@ pub const WorkerPool = struct {
                     const baseline = self.worker_baselines[worker_id];
                     self.worker_baselines[worker_id] = &.{}; // Clear without freeing
 
+                    // If worker was using a worktree, merge changes back and cleanup
+                    var merge_success = true;
+                    if (self.worker_worktrees[worker_id]) |worktree_path| {
+                        var repo = git.GitRepo.init(self.allocator);
+
+                        // Only merge if worker succeeded
+                        if (exit_code == 0) {
+                            // First commit changes in the worktree
+                            const commit_msg = try std.fmt.allocPrint(self.allocator, "Worker {d} changes for {s}", .{ worker_id, worker.issue_id });
+                            defer self.allocator.free(commit_msg);
+
+                            const committed = repo.commitInWorktree(worktree_path, commit_msg) catch false;
+                            if (committed) {
+                                // Cherry-pick the commit into main
+                                merge_success = repo.cherryPickFromWorktree(worktree_path) catch false;
+                                if (merge_success) {
+                                    logInfo("Worker {d} changes merged from worktree", .{worker_id});
+                                } else {
+                                    logWarn("Worker {d} merge conflict, changes remain in worktree: {s}", .{ worker_id, worktree_path });
+                                }
+                            }
+                        }
+
+                        // Cleanup worktree (only if merge succeeded or worker failed)
+                        if (merge_success or exit_code != 0) {
+                            repo.removeWorktree(worktree_path) catch |err| {
+                                logWarn("Failed to remove worktree {s}: {}", .{ worktree_path, err });
+                            };
+                            self.allocator.free(worktree_path);
+                            self.worker_worktrees[worker_id] = null;
+                        }
+                    }
+
                     // Create result with baseline for manifest compliance check
                     const result = WorkerResult{
                         .worker_id = worker_id,
                         .issue_id = try self.allocator.dupe(u8, worker.issue_id),
-                        .success = exit_code == 0,
+                        .success = exit_code == 0 and merge_success,
                         .exit_code = exit_code,
                         .duration_seconds = duration,
                         .baseline = baseline,
@@ -935,10 +1011,19 @@ const WorkerProcess = struct {
     const reset_color = "\x1b[0m";
 
     pub fn spawn(allocator: std.mem.Allocator, argv: []const []const u8, worker_id: u32, issue_id: []const u8) !WorkerProcess {
+        return spawnInDir(allocator, argv, worker_id, issue_id, null);
+    }
+
+    pub fn spawnInDir(allocator: std.mem.Allocator, argv: []const []const u8, worker_id: u32, issue_id: []const u8, cwd: ?[]const u8) !WorkerProcess {
         var child = std.process.Child.init(argv, allocator);
         // Pipe stdout so we can track output for idle timeout detection
         child.stdout_behavior = .Pipe;
         child.stderr_behavior = .Pipe;
+
+        // Set working directory if specified (for worktree isolation)
+        if (cwd) |dir| {
+            child.cwd = dir;
+        }
 
         try child.spawn();
 
