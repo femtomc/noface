@@ -13,9 +13,9 @@ How noface handles agent failures.
 noface handles several failure modes:
 
 1. **Transient failures** (429, 5xx, network) — retry up to 3x with exponential backoff
-2. **Manifest violations** — rollback offending files, retry with stricter prompt
+2. **Review rejections** — re-run worker with reviewer feedback (up to 5 iterations)
 3. **Timeouts** (no output for N seconds) — break down issue into smaller tasks
-4. **Crash recovery** — on startup, detect in-progress work from previous run, reset stale locks, restore state
+4. **Crash recovery** — on startup, detect in-progress work from previous run, restore state
 
 Each attempt is recorded in state with outcome (success/failed/timeout/violation).
 
@@ -65,7 +65,7 @@ The survey describes several recovery patterns:
 - Turn these into child issues, mark parent as an "epic"
 
 **First version (simple):**
-- Split by file: if manifest has 5 files, create 5 issues, each scoped to one file
+- Split by file: analyze the diff, create issues scoped to individual files or modules
 
 Iterate toward more semantic breakdowns later.
 
@@ -112,7 +112,7 @@ max_total_attempts = 5
 | `TEST_FAILURE` | Include test output, ask to fix |
 | `NO_DIFF` | "You must change code; your previous attempt changed nothing" |
 | `TIMEOUT` | Break down task / reduce scope |
-| `MANIFEST_VIOLATION` | Replan + retry with expanded manifest |
+| `REVIEW_REJECTED` | Re-run worker with reviewer feedback |
 | `AGENT_CONFUSION` | Involve planner or human for clarification |
 
 ### 6. Human Escalation: Clear threshold + summary
