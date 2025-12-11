@@ -345,38 +345,10 @@ pub const WorkerPool = struct {
 
     /// Build the implementation prompt for a worker
     fn buildWorkerPrompt(self: *WorkerPool, issue_id: []const u8, resuming: bool, review_feedback: ?[]const u8) ![]const u8 {
-        // Get manifest for this issue to include in prompt
-        const manifest = self.state.getManifest(issue_id);
-
-        // Build the list of files this worker owns
-        var owned_files_buf: [4096]u8 = undefined;
-        var owned_files_len: usize = 0;
-
-        if (manifest) |m| {
-            for (m.primary_files) |file| {
-                if (owned_files_len > 0) {
-                    if (owned_files_len + 2 < owned_files_buf.len) {
-                        owned_files_buf[owned_files_len] = ',';
-                        owned_files_buf[owned_files_len + 1] = ' ';
-                        owned_files_len += 2;
-                    }
-                }
-                const to_copy = @min(file.len, owned_files_buf.len - owned_files_len);
-                @memcpy(owned_files_buf[owned_files_len..][0..to_copy], file[0..to_copy]);
-                owned_files_len += to_copy;
-            }
-        }
-
-        const owned_files = if (owned_files_len > 0)
-            owned_files_buf[0..owned_files_len]
-        else
-            "(no manifest - you may modify any file)";
-
         return prompts.buildWorkerPrompt(
             self.allocator,
             issue_id,
             self.config.project_name,
-            owned_files,
             self.config.test_command,
             resuming,
             review_feedback,

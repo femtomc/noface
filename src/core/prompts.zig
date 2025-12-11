@@ -76,74 +76,12 @@ pub const IMPLEMENTATION_CONSTRAINTS =
     \\
 ;
 
-/// Manifest generation instructions for planner
-pub const MANIFEST_GENERATION =
-    \\
-    \\FILE MANIFEST GENERATION:
-    \\For each issue that will be worked on, predict which files will be modified.
-    \\This is CRITICAL for enabling parallel execution without file conflicts.
-    \\
-    \\After analyzing each issue, output a MANIFEST block:
-    \\
-    \\```manifest
-    \\ISSUE: <issue-id>
-    \\PRIMARY_FILES:
-    \\- src/path/to/file.zig
-    \\- src/another/file.zig
-    \\READ_FILES:
-    \\- src/shared/types.zig
-    \\FORBIDDEN_FILES:
-    \\- src/main.zig
-    \\```
-    \\
-    \\Guidelines for manifest generation:
-    \\- PRIMARY_FILES: Files this issue will modify (exclusive access needed)
-    \\- READ_FILES: Files that will be read but not modified (shared access OK)
-    \\- FORBIDDEN_FILES: Files that must NOT be touched (e.g., unrelated modules)
-    \\- Analyze the issue description and acceptance criteria carefully
-    \\- Consider which modules/files are relevant based on the codebase structure
-    \\- If unsure, include more files in PRIMARY_FILES (safer for conflict detection)
-    \\- Use glob patterns sparingly: prefer explicit file paths
-    \\
-    \\After outputting a manifest, store it as a comment on the issue:
-    \\  bd comment <issue-id> "MANIFEST: primary=[file1,file2] read=[file3] forbidden=[file4]"
-    \\
-    \\PARALLEL BATCH GROUPING:
-    \\After generating manifests for all ready issues, group them into parallel batches.
-    \\Issues in the same batch can be worked on simultaneously by multiple workers.
-    \\
-    \\Rules for batch grouping:
-    \\1. Issues with OVERLAPPING PRIMARY_FILES must be in DIFFERENT batches (file conflict)
-    \\2. If issue A depends on issue B (A is blocked by B), they must be in DIFFERENT batches
-    \\   - B's batch must come BEFORE A's batch (respect dependency ordering)
-    \\3. Maximize parallelism: put as many non-conflicting issues in each batch as possible
-    \\4. Earlier batches should contain foundation/blocking work
-    \\
-    \\Output batch groupings as PARALLEL_BATCH blocks:
-    \\
-    \\```batch
-    \\PARALLEL_BATCH: 1
-    \\ISSUES:
-    \\- issue-abc
-    \\- issue-xyz
-    \\REASON: No file conflicts, independent changes
-    \\```
-    \\
-    \\```batch
-    \\PARALLEL_BATCH: 2
-    \\ISSUES:
-    \\- issue-def
-    \\REASON: Depends on issue-abc from batch 1
-    \\```
-    \\
-;
 
 /// Build the worker prompt for parallel execution
 pub fn buildWorkerPrompt(
     allocator: std.mem.Allocator,
     issue_id: []const u8,
     project_name: []const u8,
-    owned_files: []const u8,
     test_command: []const u8,
     resuming: bool,
     review_feedback: ?[]const u8,
@@ -164,9 +102,6 @@ pub fn buildWorkerPrompt(
 
     return std.fmt.allocPrint(allocator,
         \\You are a senior software engineer working autonomously on issue {s} in the {s} project.
-        \\
-        \\MANIFEST - FILES YOU OWN:
-        \\{s}
         \\
         \\You are working in an ISOLATED jj workspace. Your changes won't conflict with other engineers.
         \\{s}
@@ -190,7 +125,6 @@ pub fn buildWorkerPrompt(
         \\CONSTRAINTS:
         \\- Do NOT commit - the merge agent will handle that
         \\- Do NOT close the issue - the merge agent will handle that
-        \\- Do NOT modify files outside your manifest (listed above)
         \\- Do NOT add dependencies without clear justification
         \\
         \\When implementation is complete and tests pass, output: READY_FOR_REVIEW
@@ -198,7 +132,6 @@ pub fn buildWorkerPrompt(
     , .{
         issue_id,
         project_name,
-        owned_files,
         resume_section,
         JJ_KNOWLEDGE,
         feedback_section,
@@ -396,7 +329,6 @@ pub fn buildPlannerPromptWithMonowiki(
         \\1. Run `bd list` to see all issues
         \\2. Run `bd ready` to see the implementation queue
         \\3. Survey design documents to understand target architecture
-        \\4. For each ready issue, analyze which files will need modification
         \\
         \\PLANNING TASKS:
         \\
@@ -414,7 +346,7 @@ pub fn buildPlannerPromptWithMonowiki(
         \\Sequencing:
         \\- Ensure dependencies flow correctly (foundations before features)
         \\- Use `bd dep add <issue> <blocker>` to express dependencies
-        \\{s}{s}
+        \\{s}
         \\CONSTRAINTS:
         \\- READ-ONLY for code and design documents
         \\- Only modify beads issues (create, update, close, add deps, comment)
@@ -422,12 +354,9 @@ pub fn buildPlannerPromptWithMonowiki(
         \\- Do NOT search for design docs outside the monowiki vault
         \\
         \\OUTPUT:
-        \\1. Output MANIFEST blocks for all ready issues
-        \\2. Store each manifest as a bd comment
-        \\3. Output PARALLEL_BATCH blocks grouping non-conflicting issues
-        \\4. Summarize gaps identified, issues created, and recommended critical path
+        \\Summarize gaps identified, issues created, and recommended critical path.
         \\End with: PLANNING_COMPLETE
-    , .{ project_name, monowiki_vault, directions_section, MANIFEST_GENERATION });
+    , .{ project_name, monowiki_vault, directions_section });
 }
 
 /// Build the planner prompt without monowiki (simple backlog management)
@@ -449,7 +378,6 @@ pub fn buildPlannerPromptSimple(
         \\1. Run `bd list` to see all issues
         \\2. Run `bd ready` to see the implementation queue
         \\3. Run `bd blocked` to see what's waiting on dependencies
-        \\4. For each ready issue, analyze which files will need modification
         \\
         \\PLANNING TASKS:
         \\
@@ -467,7 +395,7 @@ pub fn buildPlannerPromptSimple(
         \\Issue Quality:
         \\- Each issue should have a clear, actionable title
         \\- Description should explain what, why, and acceptance criteria
-        \\{s}{s}
+        \\{s}
         \\CONSTRAINTS:
         \\- READ-ONLY for code files
         \\- Only modify beads issues (create, update, close, add deps, comment)
@@ -475,12 +403,9 @@ pub fn buildPlannerPromptSimple(
         \\- Do NOT search for design docs - there are none configured
         \\
         \\OUTPUT:
-        \\1. Output MANIFEST blocks for all ready issues
-        \\2. Store each manifest as a bd comment
-        \\3. Output PARALLEL_BATCH blocks grouping non-conflicting issues
-        \\4. Summarize any changes made and recommend the critical path
+        \\Summarize any changes made and recommend the critical path.
         \\End with: PLANNING_COMPLETE
-    , .{ project_name, directions_section, MANIFEST_GENERATION });
+    , .{ project_name, directions_section });
 }
 
 /// Build the quality review prompt
@@ -597,54 +522,6 @@ pub fn buildBreakdownPrompt(
     , .{ project_name, issue_id, issue_json, issue_id });
 }
 
-/// Build a stricter prompt after manifest violation
-pub fn buildStricterPrompt(
-    allocator: std.mem.Allocator,
-    base_prompt: []const u8,
-    forbidden_files: []const []const u8,
-    unauthorized_files: []const []const u8,
-) ![]const u8 {
-    var violation_details = std.ArrayListUnmanaged(u8){};
-    defer violation_details.deinit(allocator);
-
-    try violation_details.appendSlice(allocator,
-        \\
-        \\CRITICAL WARNING - PREVIOUS ATTEMPT VIOLATED FILE MANIFEST:
-        \\Your previous attempt modified files outside the allowed scope. This is NOT allowed.
-        \\
-        \\
-    );
-
-    if (forbidden_files.len > 0) {
-        try violation_details.appendSlice(allocator, "FORBIDDEN FILES TOUCHED (must NEVER modify):\n");
-        for (forbidden_files) |f| {
-            try violation_details.appendSlice(allocator, "  - ");
-            try violation_details.appendSlice(allocator, f);
-            try violation_details.appendSlice(allocator, "\n");
-        }
-    }
-
-    if (unauthorized_files.len > 0) {
-        try violation_details.appendSlice(allocator, "UNAUTHORIZED FILES MODIFIED (not in primary_files):\n");
-        for (unauthorized_files) |f| {
-            try violation_details.appendSlice(allocator, "  - ");
-            try violation_details.appendSlice(allocator, f);
-            try violation_details.appendSlice(allocator, "\n");
-        }
-    }
-
-    try violation_details.appendSlice(allocator,
-        \\
-        \\You MUST only modify the files explicitly allowed in the manifest.
-        \\Run `bd show <issue-id>` and check the MANIFEST comment for allowed files.
-        \\If you need to modify additional files, explain why in a comment and stop.
-        \\
-        \\
-    );
-
-    return std.fmt.allocPrint(allocator, "{s}{s}", .{ violation_details.items, base_prompt });
-}
-
 // === Tests ===
 
 test "JJ_KNOWLEDGE contains essential commands" {
@@ -659,7 +536,6 @@ test "buildWorkerPrompt includes jj knowledge" {
         allocator,
         "test-issue",
         "test-project",
-        "src/test.zig",
         "zig build test",
         false,
         null,
@@ -677,7 +553,6 @@ test "buildWorkerPrompt includes resume context when resuming" {
         allocator,
         "test-issue",
         "test-project",
-        "src/test.zig",
         "zig build test",
         true, // resuming
         null,
@@ -693,7 +568,6 @@ test "buildWorkerPrompt includes review feedback" {
         allocator,
         "test-issue",
         "test-project",
-        "src/test.zig",
         "zig build test",
         false,
         "Please fix the null pointer error on line 42",

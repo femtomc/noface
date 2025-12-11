@@ -748,8 +748,8 @@ test "parse agents num_workers invalid rejected" {
     defer arena.deinit();
 
     const config = try Config.parseToml(arena.allocator(), toml);
-    // 10 is too high, should keep default 3
-    try std.testing.expectEqual(@as(u32, 3), config.num_workers);
+    // 10 is too high, should keep default 5
+    try std.testing.expectEqual(@as(u32, 5), config.num_workers);
 }
 
 test "parse monowiki config" {
