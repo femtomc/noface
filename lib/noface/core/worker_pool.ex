@@ -118,11 +118,12 @@ defmodule Noface.Core.WorkerPool do
     timeout = (config.agent_timeout_seconds || 900) * 1000
 
     # Run all workers in parallel using Task.async_stream
+    enumerable = Enum.with_index(issue_ids)
+
     results =
-      issue_ids
-      |> Enum.with_index()
-      |> Task.Supervisor.async_stream_nolink(
+      Task.Supervisor.async_stream_nolink(
         state.task_supervisor,
+        enumerable,
         fn {issue_id, idx} ->
           worker_id = rem(idx, max_concurrency)
           run_worker(issue_id, worker_id, config)

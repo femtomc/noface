@@ -201,6 +201,25 @@ defmodule Noface.Core.State do
     GenServer.call(__MODULE__, :increment_iteration)
   end
 
+  @doc """
+  Load issues from beads (.beads/issues.jsonl) into State.
+  Only loads issues that aren't already in State.
+  Returns {:ok, count} where count is number of new issues loaded.
+  """
+  @spec load_beads_issues() :: {:ok, non_neg_integer()} | {:error, term()}
+  def load_beads_issues do
+    GenServer.call(__MODULE__, :load_beads_issues)
+  end
+
+  @doc """
+  Create a batch from pending issues (up to max_size).
+  Returns {:ok, batch_id} or {:ok, nil} if no pending issues.
+  """
+  @spec create_batch_from_pending(non_neg_integer()) :: {:ok, non_neg_integer() | nil}
+  def create_batch_from_pending(max_size \\ 5) do
+    GenServer.call(__MODULE__, {:create_batch_from_pending, max_size})
+  end
+
   # GenServer callbacks
 
   @impl true
@@ -507,7 +526,110 @@ defmodule Noface.Core.State do
     {:reply, :ok, state}
   end
 
+  @impl true
+  def handle_call({:create_batch_from_pending, max_size}, _from, state) do
+    issue_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
+
+    # Find pending issues
+    pending_ids =
+      issue_ids
+      |> Enum.filter(fn id ->
+        issue = CubDB.get(state.db, {:issue, id})
+        issue && issue.status == :pending
+      end)
+      |> Enum.take(max_size)
+
+    if pending_ids == [] do
+      {:reply, {:ok, nil}, state}
+    else
+      # Create batch
+      batch_id = CubDB.get(state.db, :next_batch_id) || 1
+      batch = %Batch{id: batch_id, issue_ids: pending_ids, status: :pending}
+
+      CubDB.put(state.db, {:batch, batch_id}, batch)
+      CubDB.put(state.db, :next_batch_id, batch_id + 1)
+
+      # Track pending batch
+      pending = CubDB.get(state.db, :pending_batch_ids) || []
+      CubDB.put(state.db, :pending_batch_ids, pending ++ [batch_id])
+
+      # Mark issues as assigned
+      Enum.each(pending_ids, fn id ->
+        issue = CubDB.get(state.db, {:issue, id})
+        if issue, do: CubDB.put(state.db, {:issue, id}, %{issue | status: :assigned})
+      end)
+
+      Logger.info("[STATE] Created batch #{batch_id} with #{length(pending_ids)} issues")
+      {:reply, {:ok, batch_id}, state}
+    end
+  end
+
+  @impl true
+  def handle_call(:load_beads_issues, _from, state) do
+    case read_beads_issues() do
+      {:ok, beads_issues} ->
+        existing_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
+
+        # Only load issues not already in state, and only pending/in_progress ones
+        new_count =
+          beads_issues
+          |> Enum.filter(fn issue ->
+            status = issue["status"]
+            status in ["open", "in_progress", nil] and
+              not MapSet.member?(existing_ids, issue["id"])
+          end)
+          |> Enum.reduce(0, fn issue, count ->
+            issue_id = issue["id"]
+
+            issue_state = %IssueState{
+              id: issue_id,
+              content: issue,
+              status: :pending,
+              attempt_count: 0
+            }
+
+            CubDB.put(state.db, {:issue, issue_id}, issue_state)
+
+            new_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
+            CubDB.put(state.db, :issue_ids, MapSet.put(new_ids, issue_id))
+
+            count + 1
+          end)
+
+        Logger.info("[STATE] Loaded #{new_count} new issues from beads")
+        {:reply, {:ok, new_count}, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   # Private functions
+
+  defp read_beads_issues do
+    issues_file = ".beads/issues.jsonl"
+
+    case File.read(issues_file) do
+      {:ok, content} ->
+        issues =
+          content
+          |> String.split("\n", trim: true)
+          |> Enum.flat_map(fn line ->
+            case Jason.decode(line) do
+              {:ok, issue} -> [issue]
+              {:error, _} -> []
+            end
+          end)
+
+        {:ok, issues}
+
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 
   defp init_workers do
     for i <- 0..(@max_workers - 1) do
