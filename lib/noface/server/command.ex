@@ -201,10 +201,14 @@ defmodule Noface.Server.Command do
 
   defp get_state_summary do
     try do
+      # State uses :assigned and :running for in-progress issues
+      assigned = State.count_issues(:assigned)
+      running = State.count_issues(:running)
+
       %{
         total_issues: State.count_issues(),
         pending: State.count_issues(:pending),
-        in_progress: State.count_issues(:in_progress),
+        in_progress: assigned + running,
         completed: State.count_issues(:completed),
         failed: State.count_issues(:failed)
       }

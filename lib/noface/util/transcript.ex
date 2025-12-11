@@ -17,6 +17,8 @@ defmodule Noface.Util.Transcript do
       adapter: Ecto.Adapters.SQLite3
 
     def init(_type, config) do
+      # Ensure .noface directory exists before starting SQLite
+      File.mkdir_p!(".noface")
       config = Keyword.put(config, :database, ".noface/transcripts.db")
       {:ok, config}
     end

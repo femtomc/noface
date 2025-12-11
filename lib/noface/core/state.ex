@@ -12,7 +12,11 @@ defmodule Noface.Core.State do
   require Logger
 
   @max_workers 8
-  @db_path ".noface/state.cub"
+
+  # DB path is computed at runtime to ensure it's relative to cwd, not compile-time dir
+  defp db_path do
+    Path.join(File.cwd!(), ".noface/state.cub")
+  end
 
   # Type definitions
 
@@ -201,9 +205,10 @@ defmodule Noface.Core.State do
 
   @impl true
   def init(_opts) do
-    File.mkdir_p!(Path.dirname(@db_path))
+    path = db_path()
+    File.mkdir_p!(Path.dirname(path))
 
-    case CubDB.start_link(data_dir: @db_path, auto_compact: true) do
+    case CubDB.start_link(data_dir: path, auto_compact: true) do
       {:ok, db} ->
         # Initialize workers if not present
         workers = CubDB.get(db, :workers) || init_workers()
@@ -216,7 +221,7 @@ defmodule Noface.Core.State do
         unless CubDB.get(db, :next_batch_id), do: CubDB.put(db, :next_batch_id, 1)
         unless CubDB.get(db, :num_workers), do: CubDB.put(db, :num_workers, 5)
 
-        Logger.info("[STATE] CubDB initialized at #{@db_path}")
+        Logger.info("[STATE] CubDB initialized at #{path}")
 
         {:ok, %{db: db}}
 

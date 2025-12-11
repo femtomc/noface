@@ -250,10 +250,10 @@ defmodule Noface.Core.WorkerPool do
     Logger.info("[WORKER-#{worker_id}] Implementation iteration #{iteration + 1} for #{issue_id}")
 
     # Run implementation agent
-    case run_agent(config.implementer_agent, worker_id, issue_id, workspace_path, config, feedback) do
+    case run_agent(config.impl_agent, worker_id, issue_id, workspace_path, config, feedback) do
       {:ok, :ready_for_review} ->
         # Run review agent
-        case run_reviewer(config.reviewer_agent, worker_id, issue_id, workspace_path, config) do
+        case run_reviewer(config.review_agent, worker_id, issue_id, workspace_path, config) do
           {:ok, :approved} ->
             Logger.info("[WORKER-#{worker_id}] Issue #{issue_id} approved after #{iteration + 1} iterations!")
 

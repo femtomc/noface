@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Noface Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f0f0f;
+      --fg: #e0e0e0;
+      --accent: #4a9eff;
+      --success: #4ade80;
+      --warning: #fbbf24;
+      --error: #f87171;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+      background: var(--bg);
+      color: var(--fg);
+      padding: 2rem;
+      line-height: 1.6;
+    }
+    .container { max-width: 800px; margin: 0 auto; }
+    h1 { color: var(--accent); margin-bottom: 1rem; }
+    .status { margin: 2rem 0; padding: 1rem; background: #1a1a1a; border-radius: 8px; }
+    .status-item { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid #333; }
+    .status-item:last-child { border-bottom: none; }
+    .label { color: #888; }
+    .value { font-weight: bold; }
+    .value.success { color: var(--success); }
+    .value.warning { color: var(--warning); }
+    .value.error { color: var(--error); }
+    .note { color: #666; font-size: 0.9rem; margin-top: 2rem; }
+    .note a { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>noface</h1>
+    <p>Autonomous Agent Orchestrator</p>
+
+    <div class="status" id="status">
+      <div class="status-item">
+        <span class="label">Status</span>
+        <span class="value" id="loop-status">Loading...</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Project</span>
+        <span class="value" id="project-name">-</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Iterations</span>
+        <span class="value" id="iterations">0</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Issues</span>
+        <span class="value" id="issues">0</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Completed</span>
+        <span class="value success" id="completed">0</span>
+      </div>
+      <div class="status-item">
+        <span class="label">Failed</span>
+        <span class="value error" id="failed">0</span>
+      </div>
+    </div>
+
+    <p class="note">
+      This is the legacy dashboard. For the full Phoenix LiveView dashboard,
+      run <code>mix noface.start --open</code> instead.
+    </p>
+  </div>
+
+  <script>
+    async function fetchStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+
+        document.getElementById('loop-status').textContent = data.error ? 'Not initialized' : 'Running';
+        document.getElementById('loop-status').className = 'value ' + (data.error ? 'warning' : 'success');
+        document.getElementById('project-name').textContent = data.project_name || '-';
+        document.getElementById('iterations').textContent = data.total_iterations || 0;
+        document.getElementById('issues').textContent = data.issue_count || 0;
+        document.getElementById('completed').textContent = data.successful_completions || 0;
+        document.getElementById('failed').textContent = data.failed_attempts || 0;
+      } catch (e) {
+        document.getElementById('loop-status').textContent = 'Error';
+        document.getElementById('loop-status').className = 'value error';
+      }
+    }
+
+    fetchStatus();
+    setInterval(fetchStatus, 5000);
+  </script>
+</body>
+</html>
