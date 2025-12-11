@@ -141,9 +141,9 @@ label = "migration"
 hint = "Migration issues often need schema changes first. Check schema files."
 
 [[failure_hints]]
-language = "zig"
-error_pattern = "error.OutOfMemory"
-hint = "Consider using an arena allocator for temporary allocations."
+language = "elixir"
+error_pattern = "** (MatchError)"
+hint = "Check pattern matching - ensure all cases are handled or use case/with statements."
 ```
 
 Periodically review failure logs, add new rules where patterns are obvious.
@@ -152,7 +152,7 @@ Later: mine logs to auto-discover patterns, but manual rules get 80% of value qu
 
 ## Implementation Notes
 
-See `src/loop.zig:runIteration` retry logic and `src/state.zig:IssueState`.
+See `lib/noface/core/loop.ex` retry logic and `lib/noface/core/state.ex`.
 
 ### TODO
 - [ ] Add failure context to retry prompts

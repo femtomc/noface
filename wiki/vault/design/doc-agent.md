@@ -222,9 +222,9 @@ Include reader profile in writer prompt:
 ```
 READER_PROFILE:
 - Role: Backend developer
-- Familiarity: Knows Zig basics, unfamiliar with noface internals
+- Familiarity: Knows Elixir basics, unfamiliar with noface internals
 - Goal: Integrate noface into CI pipeline
-- Skip: Basic Zig syntax, git basics
+- Skip: Basic Elixir syntax, git basics
 - Explain: noface-specific concepts, config options
 ```
 

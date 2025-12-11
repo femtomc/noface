@@ -55,7 +55,7 @@ Keep `max_context_docs = 5` as a hard cap, but choose K ∈ [0, 5] per issue bas
 **Pipeline:**
 1. **Candidate generation:**
    - Wikilinks / explicit references from the issue
-   - BM25 search (already have `src/bm25.zig`)
+   - BM25 search (already have `lib/noface/util/bm25.ex`)
 2. **Re-ranking:**
    - Embedding similarity (doc ↔ issue description)
 3. **Final score:**
@@ -128,7 +128,7 @@ Implement in retrieval pipeline so excluded files never show up as candidates.
 **At orchestration level:**
 - Support structured "needs more context" signals:
   ```
-  NEED_CODE: auth/login.zig
+  NEED_CODE: lib/auth/login.ex
   NEED_DOC: docs/auth.md
   ```
 - When signal detected:
@@ -140,7 +140,7 @@ Implement in retrieval pipeline so excluded files never show up as candidates.
 
 ## Implementation Notes
 
-See `src/loop.zig:buildImplementationPrompt` and `src/monowiki.zig`.
+See `lib/noface/core/loop.ex` and `lib/noface/integrations/monowiki.ex`.
 
 ### TODO
 - [ ] Implement dynamic context budget based on issue complexity

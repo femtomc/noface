@@ -67,8 +67,8 @@ The survey also discusses **LLM critics** as an additional layer — a second ag
 **Decision:** Integrate whatever static analysis the repo already has.
 
 **Hard gates (block on failure):**
-- Type errors (`zig build`, `tsc`, `mypy`)
-- Formatter failures (`zig fmt`, `prettier`)
+- Type errors (`mix compile`, `tsc`, `mypy`)
+- Formatter failures (`mix format --check-formatted`, `prettier`)
 
 **Soft gates (log, maybe create follow-up):**
 - New lint warnings
@@ -76,8 +76,8 @@ The survey also discusses **LLM critics** as an additional layer — a second ag
 
 ```toml
 [verification.static_analysis]
-hard_gates = ["zig build", "zig fmt --check"]
-soft_gates = ["clippy", "eslint"]
+hard_gates = ["mix compile --warnings-as-errors", "mix format --check-formatted"]
+soft_gates = ["mix credo", "eslint"]
 ```
 
 ### 4. Semantic Verification: Judge agent for complex issues
@@ -156,7 +156,7 @@ labels = ["security", "compliance"]
 
 ## Implementation Notes
 
-See `src/core/worker_pool.zig:collectCompletedWorkers` and `src/core/prompts.zig` for reviewer prompt.
+See `lib/noface/core/worker_pool.ex` and `lib/noface/core/prompts.ex` for reviewer prompt.
 
 ### TODO
 - [ ] Add test coverage checking (if coverage tool available)

@@ -60,7 +60,7 @@ num_workers = 5  # Number of parallel workers (default: 5, max: 8)
 
 ## Implementation Notes
 
-See `src/core/worker_pool.zig:WorkerPool` and `src/vcs/jj.zig:JjRepo`.
+See `lib/noface/core/worker_pool.ex` and `lib/noface/vcs/jj.ex`.
 
 ### Worker Phases
 

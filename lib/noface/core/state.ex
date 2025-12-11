@@ -1,0 +1,512 @@
+defmodule Noface.Core.State do
+  @moduledoc """
+  Orchestrator state management using CubDB.
+
+  Maintains persistent state across agent invocations and handles crash recovery.
+  Uses CubDB for durable, embedded key-value storage with ACID transactions.
+
+  This replaces JSON file storage with a proper embedded database that handles
+  concurrent writes and provides crash recovery out of the box.
+  """
+  use GenServer
+  require Logger
+
+  @max_workers 8
+  @db_path ".noface/state.cub"
+
+  # Type definitions
+
+  @type attempt_result :: :success | :failed | :timeout | :violation
+  @type issue_status :: :pending | :assigned | :running | :completed | :failed
+  @type worker_status :: :idle | :starting | :running | :completed | :failed | :timeout
+  @type batch_status :: :pending | :running | :completed
+
+  defmodule Manifest do
+    @moduledoc "File manifest for an issue - declares what files can be modified."
+    @type t :: %__MODULE__{
+            primary_files: [String.t()],
+            read_files: [String.t()],
+            forbidden_files: [String.t()]
+          }
+
+    defstruct primary_files: [],
+              read_files: [],
+              forbidden_files: []
+
+    def allows_write?(%__MODULE__{primary_files: files}, file) do
+      Enum.any?(files, fn f ->
+        f == file or (String.starts_with?(f, file) and String.at(f, String.length(file)) == ":")
+      end)
+    end
+
+    def forbidden?(%__MODULE__{forbidden_files: files}, file) do
+      file in files
+    end
+  end
+
+  defmodule AttemptRecord do
+    @moduledoc "Record of an attempt on an issue."
+    defstruct attempt_number: 0,
+              timestamp: 0,
+              result: :failed,
+              files_touched: [],
+              notes: ""
+  end
+
+  defmodule IssueState do
+    @moduledoc "State for a single issue."
+    defstruct id: "",
+              content: nil,
+              manifest: nil,
+              assigned_worker: nil,
+              attempt_count: 0,
+              last_attempt: nil,
+              status: :pending
+  end
+
+  defmodule WorkerState do
+    @moduledoc "State for a worker."
+    defstruct id: 0,
+              status: :idle,
+              current_issue: nil,
+              process_pid: nil,
+              started_at: nil
+
+    def available?(%__MODULE__{status: status}) do
+      status in [:idle, :completed, :failed]
+    end
+  end
+
+  defmodule Batch do
+    @moduledoc "A batch of issues to execute in parallel."
+    defstruct id: 0,
+              issue_ids: [],
+              status: :pending,
+              started_at: nil,
+              completed_at: nil
+
+    def complete?(%__MODULE__{status: status}), do: status == :completed
+  end
+
+  # GenServer API
+
+  def start_link(opts \\ []) do
+    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+  end
+
+  @doc "Load state from CubDB or create fresh"
+  def load(project_name) do
+    GenServer.call(__MODULE__, {:load, project_name})
+  end
+
+  @doc "Save is now a no-op since CubDB persists automatically"
+  def save, do: :ok
+
+  @doc "Get the current state as a map (for API compatibility)"
+  def get_state do
+    GenServer.call(__MODULE__, :get_state)
+  end
+
+  @doc "Get a specific issue"
+  def get_issue(issue_id) do
+    GenServer.call(__MODULE__, {:get_issue, issue_id})
+  end
+
+  @doc "Find an idle worker"
+  def find_idle_worker do
+    GenServer.call(__MODULE__, :find_idle_worker)
+  end
+
+  @doc "Assign a worker to an issue"
+  def assign_worker(worker_id, issue_id) do
+    GenServer.call(__MODULE__, {:assign_worker, worker_id, issue_id})
+  end
+
+  @doc "Complete a worker task"
+  def complete_worker(worker_id, success?) do
+    GenServer.call(__MODULE__, {:complete_worker, worker_id, success?})
+  end
+
+  @doc "Update or create issue state"
+  def update_issue(issue_id, status) do
+    GenServer.call(__MODULE__, {:update_issue, issue_id, status})
+  end
+
+  @doc "Mark an issue as completed"
+  def mark_issue_completed(issue_id) do
+    update_issue(issue_id, :completed)
+  end
+
+  @doc "Update batch status"
+  def update_batch_status(batch_id, status) do
+    GenServer.call(__MODULE__, {:update_batch_status, batch_id, status})
+  end
+
+  @doc "Record an attempt on an issue"
+  def record_attempt(issue_id, result, notes) do
+    GenServer.call(__MODULE__, {:record_attempt, issue_id, result, notes})
+  end
+
+  @doc "Set manifest for an issue"
+  def set_manifest(issue_id, manifest) do
+    GenServer.call(__MODULE__, {:set_manifest, issue_id, manifest})
+  end
+
+  @doc "Get manifest for an issue"
+  def get_manifest(issue_id) do
+    GenServer.call(__MODULE__, {:get_manifest, issue_id})
+  end
+
+  @doc "Add a batch of issues"
+  def add_batch(issue_ids) do
+    GenServer.call(__MODULE__, {:add_batch, issue_ids})
+  end
+
+  @doc "Get next pending batch"
+  def get_next_pending_batch do
+    GenServer.call(__MODULE__, :get_next_pending_batch)
+  end
+
+  @doc "Clear all pending batches"
+  def clear_pending_batches do
+    GenServer.call(__MODULE__, :clear_pending_batches)
+  end
+
+  @doc "Check if two issues conflict"
+  def issues_conflict?(issue_a, issue_b) do
+    GenServer.call(__MODULE__, {:issues_conflict, issue_a, issue_b})
+  end
+
+  @doc "Recover from crash"
+  def recover_from_crash do
+    GenServer.call(__MODULE__, :recover_from_crash)
+  end
+
+  @doc "Increment iteration counter"
+  def increment_iteration do
+    GenServer.call(__MODULE__, :increment_iteration)
+  end
+
+  # GenServer callbacks
+
+  @impl true
+  def init(_opts) do
+    File.mkdir_p!(Path.dirname(@db_path))
+
+    case CubDB.start_link(data_dir: @db_path, auto_compact: true) do
+      {:ok, db} ->
+        # Initialize workers if not present
+        workers = CubDB.get(db, :workers) || init_workers()
+        CubDB.put(db, :workers, workers)
+
+        # Initialize counters
+        unless CubDB.get(db, :total_iterations), do: CubDB.put(db, :total_iterations, 0)
+        unless CubDB.get(db, :successful_completions), do: CubDB.put(db, :successful_completions, 0)
+        unless CubDB.get(db, :failed_attempts), do: CubDB.put(db, :failed_attempts, 0)
+        unless CubDB.get(db, :next_batch_id), do: CubDB.put(db, :next_batch_id, 1)
+        unless CubDB.get(db, :num_workers), do: CubDB.put(db, :num_workers, 5)
+
+        Logger.info("[STATE] CubDB initialized at #{@db_path}")
+
+        {:ok, %{db: db}}
+
+      {:error, reason} ->
+        Logger.error("[STATE] Failed to start CubDB: #{inspect(reason)}")
+        {:stop, reason}
+    end
+  end
+
+  @impl true
+  def handle_call({:load, project_name}, _from, state) do
+    CubDB.put(state.db, :project_name, project_name)
+
+    # Emit telemetry
+    issue_count = count_issues(state.db)
+
+    :telemetry.execute(
+      [:noface, :state, :loaded],
+      %{issue_count: issue_count},
+      %{project_name: project_name}
+    )
+
+    Logger.info("[STATE] Loaded state for #{project_name}: #{issue_count} issues")
+    {:reply, {:ok, get_state_map(state.db)}, state}
+  end
+
+  @impl true
+  def handle_call(:get_state, _from, state) do
+    {:reply, get_state_map(state.db), state}
+  end
+
+  @impl true
+  def handle_call({:get_issue, issue_id}, _from, state) do
+    issue = CubDB.get(state.db, {:issue, issue_id})
+    {:reply, issue, state}
+  end
+
+  @impl true
+  def handle_call(:find_idle_worker, _from, state) do
+    workers = CubDB.get(state.db, :workers) || []
+    num_workers = CubDB.get(state.db, :num_workers) || 5
+
+    worker =
+      workers
+      |> Enum.take(num_workers)
+      |> Enum.find(&WorkerState.available?/1)
+
+    {:reply, worker, state}
+  end
+
+  @impl true
+  def handle_call({:assign_worker, worker_id, issue_id}, _from, state) do
+    workers = CubDB.get(state.db, :workers) || []
+
+    workers =
+      Enum.map(workers, fn w ->
+        if w.id == worker_id do
+          %{w | status: :starting, current_issue: issue_id, started_at: System.system_time(:second)}
+        else
+          w
+        end
+      end)
+
+    CubDB.put(state.db, :workers, workers)
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:complete_worker, worker_id, success?}, _from, state) do
+    workers = CubDB.get(state.db, :workers) || []
+    status = if success?, do: :completed, else: :failed
+
+    workers =
+      Enum.map(workers, fn w ->
+        if w.id == worker_id do
+          %{w | status: status, current_issue: nil}
+        else
+          w
+        end
+      end)
+
+    CubDB.put(state.db, :workers, workers)
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:update_issue, issue_id, status}, _from, state) do
+    issue = CubDB.get(state.db, {:issue, issue_id}) || %IssueState{id: issue_id}
+    updated = %{issue | status: status}
+    CubDB.put(state.db, {:issue, issue_id}, updated)
+
+    # Track issue ID
+    issue_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
+    CubDB.put(state.db, :issue_ids, MapSet.put(issue_ids, issue_id))
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:update_batch_status, batch_id, status}, _from, state) do
+    batch = CubDB.get(state.db, {:batch, batch_id})
+
+    if batch do
+      updated =
+        case status do
+          :running -> %{batch | status: :running, started_at: System.system_time(:second)}
+          :completed -> %{batch | status: :completed, completed_at: System.system_time(:second)}
+          _ -> %{batch | status: status}
+        end
+
+      CubDB.put(state.db, {:batch, batch_id}, updated)
+    end
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:record_attempt, issue_id, result, notes}, _from, state) do
+    issue = CubDB.get(state.db, {:issue, issue_id}) || %IssueState{id: issue_id}
+    attempt_count = issue.attempt_count + 1
+
+    attempt = %AttemptRecord{
+      attempt_number: attempt_count,
+      timestamp: System.system_time(:second),
+      result: result,
+      notes: notes
+    }
+
+    updated = %{issue | attempt_count: attempt_count, last_attempt: attempt}
+    CubDB.put(state.db, {:issue, issue_id}, updated)
+
+    # Update counters
+    case result do
+      :success ->
+        count = CubDB.get(state.db, :successful_completions) || 0
+        CubDB.put(state.db, :successful_completions, count + 1)
+
+      _ ->
+        count = CubDB.get(state.db, :failed_attempts) || 0
+        CubDB.put(state.db, :failed_attempts, count + 1)
+    end
+
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:set_manifest, issue_id, manifest}, _from, state) do
+    issue = CubDB.get(state.db, {:issue, issue_id}) || %IssueState{id: issue_id}
+    updated = %{issue | manifest: manifest}
+    CubDB.put(state.db, {:issue, issue_id}, updated)
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:get_manifest, issue_id}, _from, state) do
+    issue = CubDB.get(state.db, {:issue, issue_id})
+    manifest = if issue, do: issue.manifest, else: nil
+    {:reply, manifest, state}
+  end
+
+  @impl true
+  def handle_call({:add_batch, issue_ids}, _from, state) do
+    batch_id = CubDB.get(state.db, :next_batch_id) || 1
+    batch = %Batch{id: batch_id, issue_ids: issue_ids, status: :pending}
+
+    CubDB.put(state.db, {:batch, batch_id}, batch)
+    CubDB.put(state.db, :next_batch_id, batch_id + 1)
+
+    # Track pending batch IDs
+    pending = CubDB.get(state.db, :pending_batch_ids) || []
+    CubDB.put(state.db, :pending_batch_ids, pending ++ [batch_id])
+
+    Logger.info("[STATE] Added batch #{batch_id} with #{length(issue_ids)} issues")
+    {:reply, {:ok, batch_id}, state}
+  end
+
+  @impl true
+  def handle_call(:get_next_pending_batch, _from, state) do
+    pending_ids = CubDB.get(state.db, :pending_batch_ids) || []
+
+    batch =
+      Enum.find_value(pending_ids, fn id ->
+        batch = CubDB.get(state.db, {:batch, id})
+        if batch && batch.status == :pending, do: batch, else: nil
+      end)
+
+    {:reply, batch, state}
+  end
+
+  @impl true
+  def handle_call(:clear_pending_batches, _from, state) do
+    CubDB.put(state.db, :pending_batch_ids, [])
+    Logger.info("[STATE] Cleared pending batches")
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:issues_conflict, issue_a, issue_b}, _from, state) do
+    issue_a_state = CubDB.get(state.db, {:issue, issue_a})
+    issue_b_state = CubDB.get(state.db, {:issue, issue_b})
+
+    conflicts? =
+      case {issue_a_state, issue_b_state} do
+        {%{manifest: %Manifest{} = a}, %{manifest: %Manifest{} = b}} ->
+          Enum.any?(a.primary_files, fn file_a ->
+            base_a = extract_base_file(file_a)
+
+            Enum.any?(b.primary_files, fn file_b ->
+              extract_base_file(file_b) == base_a
+            end)
+          end)
+
+        _ ->
+          false
+      end
+
+    {:reply, conflicts?, state}
+  end
+
+  @impl true
+  def handle_call(:recover_from_crash, _from, state) do
+    workers = CubDB.get(state.db, :workers) || []
+    recovered = 0
+
+    {workers, recovered} =
+      Enum.map_reduce(workers, recovered, fn w, count ->
+        if w.status in [:running, :starting] do
+          Logger.warning("[STATE] Recovering crashed worker #{w.id}")
+
+          if w.current_issue do
+            issue = CubDB.get(state.db, {:issue, w.current_issue})
+
+            if issue do
+              CubDB.put(state.db, {:issue, w.current_issue}, %{issue | status: :pending, assigned_worker: nil})
+            end
+          end
+
+          {%{w | status: :idle, current_issue: nil, started_at: nil}, count + 1}
+        else
+          {w, count}
+        end
+      end)
+
+    CubDB.put(state.db, :workers, workers)
+    {:reply, {:ok, recovered}, state}
+  end
+
+  @impl true
+  def handle_call(:increment_iteration, _from, state) do
+    count = CubDB.get(state.db, :total_iterations) || 0
+    CubDB.put(state.db, :total_iterations, count + 1)
+    {:reply, :ok, state}
+  end
+
+  # Private functions
+
+  defp init_workers do
+    for i <- 0..(@max_workers - 1) do
+      %WorkerState{id: i, status: :idle}
+    end
+  end
+
+  defp count_issues(db) do
+    issue_ids = CubDB.get(db, :issue_ids) || MapSet.new()
+    MapSet.size(issue_ids)
+  end
+
+  defp get_state_map(db) do
+    issue_ids = CubDB.get(db, :issue_ids) || MapSet.new()
+
+    issues =
+      issue_ids
+      |> Enum.reduce(%{}, fn id, acc ->
+        issue = CubDB.get(db, {:issue, id})
+        if issue, do: Map.put(acc, id, issue), else: acc
+      end)
+
+    pending_ids = CubDB.get(db, :pending_batch_ids) || []
+
+    pending_batches =
+      pending_ids
+      |> Enum.map(fn id -> CubDB.get(db, {:batch, id}) end)
+      |> Enum.reject(&is_nil/1)
+
+    %{
+      project_name: CubDB.get(db, :project_name) || "unknown",
+      issues: issues,
+      workers: CubDB.get(db, :workers) || [],
+      num_workers: CubDB.get(db, :num_workers) || 5,
+      total_iterations: CubDB.get(db, :total_iterations) || 0,
+      successful_completions: CubDB.get(db, :successful_completions) || 0,
+      failed_attempts: CubDB.get(db, :failed_attempts) || 0,
+      pending_batches: pending_batches
+    }
+  end
+
+  defp extract_base_file(file_spec) do
+    case String.split(file_spec, ":", parts: 2) do
+      [base, _] -> base
+      _ -> file_spec
+    end
+  end
+end

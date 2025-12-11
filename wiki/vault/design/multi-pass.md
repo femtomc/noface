@@ -95,7 +95,7 @@ Make it easy to A/B test different combinations.
 
 ## Implementation Notes
 
-See `src/core/loop.zig:runPlannerPass`, `src/core/worker_pool.zig:WorkerPool`.
+See `lib/noface/core/loop.ex` and `lib/noface/core/worker_pool.ex`.
 
 ### TODO
 - [ ] Add reviewer pass with risk-based triggering (skip for low-risk)
