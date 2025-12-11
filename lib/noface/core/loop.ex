@@ -332,6 +332,27 @@ defmodule Noface.Core.Loop do
             :ok
         end
 
+        # Load issues from beads backlog
+        case State.load_beads_issues() do
+          {:ok, count} when count > 0 ->
+            Logger.info("[LOOP] Loaded #{count} issues from beads backlog")
+
+          {:ok, 0} ->
+            Logger.debug("[LOOP] No new issues in beads backlog")
+
+          {:error, reason} ->
+            Logger.warning("[LOOP] Failed to load beads issues: #{inspect(reason)}")
+        end
+
+        # Create initial batch from pending issues
+        case State.create_batch_from_pending(config.batch_size) do
+          {:ok, batch_id} when is_integer(batch_id) ->
+            Logger.info("[LOOP] Created initial batch #{batch_id}")
+
+          {:ok, nil} ->
+            Logger.debug("[LOOP] No pending issues to batch")
+        end
+
         WorkerPool.init_pool(config)
         :ok
 
@@ -349,7 +370,6 @@ defmodule Noface.Core.Loop do
   # Single iteration of the loop (non-blocking, called from :tick)
   defp run_iteration(%LoopState{config: config} = state) do
     iteration = state.iteration_count + 1
-    State.increment_iteration()
 
     Logger.debug("[LOOP] Iteration #{iteration}")
 
@@ -359,38 +379,81 @@ defmodule Noface.Core.Loop do
     # Get next batch to execute
     case State.get_next_pending_batch() do
       nil ->
-        # No batches - check if we should invoke planner (event-driven mode)
-        if config.planner_mode == :event_driven and config.enable_planner do
-          Logger.info("[LOOP] No ready batches, running planner (event-driven)")
-          run_planner_pass(config)
-        end
+        # No batches - try to create one from pending issues
+        case State.create_batch_from_pending(config.batch_size) do
+          {:ok, batch_id} when is_integer(batch_id) ->
+            Logger.info("[LOOP] Created batch #{batch_id} from pending issues")
+            # Process the new batch in the same tick (no iteration increment)
+            process_batch(state, State.get_next_pending_batch(), iteration)
 
-        %{state | iteration_count: iteration, current_work: nil}
+          {:ok, nil} ->
+            # No pending issues - check if we should load from beads
+            case State.load_beads_issues() do
+              {:ok, count} when count > 0 ->
+                Logger.info("[LOOP] Loaded #{count} new issues from beads")
+
+                # Try to batch the newly loaded issues
+                case State.create_batch_from_pending(config.batch_size) do
+                  {:ok, batch_id} when is_integer(batch_id) ->
+                    Logger.info("[LOOP] Created batch #{batch_id} from loaded issues")
+                    process_batch(state, State.get_next_pending_batch(), iteration)
+
+                  {:ok, nil} ->
+                    # No issues to batch
+                    finalize_iteration(state, iteration, nil)
+                end
+
+              _ ->
+                # No new issues - run planner if event-driven mode
+                if config.planner_mode == :event_driven and config.enable_planner do
+                  Logger.info("[LOOP] No ready batches, running planner (event-driven)")
+                  run_planner_pass(config)
+                end
+
+                finalize_iteration(state, iteration, nil)
+            end
+        end
 
       batch ->
-        # Track current work
-        state = %{state | current_work: %{type: :batch, batch: batch}}
-
-        # Execute the batch
-        case WorkerPool.execute_batch(batch) do
-          {:ok, successful} ->
-            Logger.info("[LOOP] Batch complete: #{successful} succeeded")
-
-          {:error, reason} ->
-            Logger.error("[LOOP] Batch execution failed: #{inspect(reason)}")
-        end
-
-        # Save state after batch
-        State.save()
-
-        # Maybe run quality pass
-        state = maybe_run_quality(state, iteration)
-
-        # Sync to external tracker if enabled
-        maybe_sync_issues(config)
-
-        %{state | iteration_count: iteration, current_work: nil}
+        process_batch(state, batch, iteration)
     end
+  end
+
+  # Process a batch and finalize the iteration
+  defp process_batch(state, nil, iteration) do
+    # No batch to process (shouldn't happen, but handle gracefully)
+    finalize_iteration(state, iteration, nil)
+  end
+
+  defp process_batch(%LoopState{config: config} = state, batch, iteration) do
+    # Track current work
+    state = %{state | current_work: %{type: :batch, batch: batch}}
+
+    # Execute the batch
+    case WorkerPool.execute_batch(batch) do
+      {:ok, successful} ->
+        Logger.info("[LOOP] Batch complete: #{successful} succeeded")
+
+      {:error, reason} ->
+        Logger.error("[LOOP] Batch execution failed: #{inspect(reason)}")
+    end
+
+    # Save state after batch
+    State.save()
+
+    # Maybe run quality pass
+    state = maybe_run_quality(state, iteration)
+
+    # Sync to external tracker if enabled
+    maybe_sync_issues(config)
+
+    finalize_iteration(state, iteration, nil)
+  end
+
+  # Finalize the iteration - increment counter and return updated state
+  defp finalize_iteration(state, iteration, current_work) do
+    State.increment_iteration()
+    %{state | iteration_count: iteration, current_work: current_work}
   end
 
   # Blocking loop for backwards compatibility

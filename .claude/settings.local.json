@@ -1,0 +1,6 @@
+{
+  "enableAllProjectMcpServers": false,
+  "enabledMcpjsonServers": [
+    "elixir-expert"
+  ]
+}

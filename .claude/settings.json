@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '=== noface ===' && echo 'Run /work to start autonomous issue loop' && echo '' && bd ready 2>/dev/null | head -12 || echo 'bd not available'"
+          }
+        ]
+      }
+    ]
+  }
+}

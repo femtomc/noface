@@ -30,6 +30,7 @@ defmodule Noface.Core.Config do
           quality_prompt_template: String.t() | nil,
           agent_timeout_seconds: pos_integer(),
           num_workers: 1..8,
+          batch_size: pos_integer(),
           output_format: output_format(),
           log_dir: String.t(),
           progress_file: String.t() | nil,
@@ -60,6 +61,7 @@ defmodule Noface.Core.Config do
             quality_prompt_template: nil,
             agent_timeout_seconds: 900,
             num_workers: 5,
+            batch_size: 5,
             output_format: :compact,
             log_dir: "/tmp",
             progress_file: nil,
@@ -160,12 +162,20 @@ defmodule Noface.Core.Config do
         _ -> config.num_workers
       end
 
+    batch_size =
+      case Map.get(section, "batch_size") do
+        nil -> config.batch_size
+        n when is_integer(n) and n >= 1 -> n
+        _ -> config.batch_size
+      end
+
     %{
       config
       | impl_agent: Map.get(section, "implementer", config.impl_agent),
         review_agent: Map.get(section, "reviewer", config.review_agent),
         agent_timeout_seconds: timeout,
         num_workers: num_workers,
+        batch_size: batch_size,
         verbose: Map.get(section, "verbose", config.verbose)
     }
   end
