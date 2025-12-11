@@ -592,7 +592,7 @@ pub const WorkerPool = struct {
                                     logInfo("Worker {d} conflict detected, invoking merge agent...", .{worker_id});
 
                                     const merge_config = merge_agent.MergeAgentConfig{
-                                        .impl_agent = self.config.impl_agent,
+                                        .agent = self.config.review_agent, // Use codex for merge resolution
                                         .build_cmd = if (self.config.build_command.len > 0) self.config.build_command else null,
                                         .test_cmd = if (self.config.test_command.len > 0) self.config.test_command else null,
                                         .dry_run = self.config.dry_run,

@@ -47,7 +47,8 @@ pub const ConflictInfo = struct {
 
 /// Merge agent configuration
 pub const MergeAgentConfig = struct {
-    impl_agent: []const u8 = "claude",
+    /// Agent to use for merge resolution (default: codex, which is better for focused code tasks)
+    agent: []const u8 = "codex",
     build_cmd: ?[]const u8 = null,
     test_cmd: ?[]const u8 = null,
     timeout_seconds: u32 = 300,
@@ -286,7 +287,7 @@ fn resolveFileConflict(
     const agent_cmd = try std.fmt.allocPrint(
         allocator,
         "{s} -p --dangerously-skip-permissions < {s}",
-        .{ config.impl_agent, prompt_file },
+        .{ config.agent, prompt_file },
     );
     defer allocator.free(agent_cmd);
 
