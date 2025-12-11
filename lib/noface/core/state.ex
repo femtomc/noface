@@ -112,6 +112,16 @@ defmodule Noface.Core.State do
     GenServer.call(__MODULE__, {:get_issue, issue_id})
   end
 
+  @doc "List all issues"
+  def list_issues do
+    GenServer.call(__MODULE__, :list_issues)
+  end
+
+  @doc "Count issues, optionally by status"
+  def count_issues(status \\ nil) do
+    GenServer.call(__MODULE__, {:count_issues, status})
+  end
+
   @doc "Find an idle worker"
   def find_idle_worker do
     GenServer.call(__MODULE__, :find_idle_worker)
@@ -221,7 +231,7 @@ defmodule Noface.Core.State do
     CubDB.put(state.db, :project_name, project_name)
 
     # Emit telemetry
-    issue_count = count_issues(state.db)
+    issue_count = get_issue_count(state.db)
 
     :telemetry.execute(
       [:noface, :state, :loaded],
@@ -242,6 +252,37 @@ defmodule Noface.Core.State do
   def handle_call({:get_issue, issue_id}, _from, state) do
     issue = CubDB.get(state.db, {:issue, issue_id})
     {:reply, issue, state}
+  end
+
+  @impl true
+  def handle_call(:list_issues, _from, state) do
+    issue_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
+
+    issues =
+      issue_ids
+      |> Enum.map(fn id -> CubDB.get(state.db, {:issue, id}) end)
+      |> Enum.reject(&is_nil/1)
+
+    {:reply, issues, state}
+  end
+
+  @impl true
+  def handle_call({:count_issues, nil}, _from, state) do
+    issue_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
+    {:reply, MapSet.size(issue_ids), state}
+  end
+
+  def handle_call({:count_issues, status}, _from, state) do
+    issue_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
+
+    count =
+      issue_ids
+      |> Enum.count(fn id ->
+        issue = CubDB.get(state.db, {:issue, id})
+        issue && issue.status == status
+      end)
+
+    {:reply, count, state}
   end
 
   @impl true
@@ -469,7 +510,7 @@ defmodule Noface.Core.State do
     end
   end
 
-  defp count_issues(db) do
+  defp get_issue_count(db) do
     issue_ids = CubDB.get(db, :issue_ids) || MapSet.new()
     MapSet.size(issue_ids)
   end

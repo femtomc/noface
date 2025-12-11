@@ -9,8 +9,13 @@ defmodule Noface.Core.Loop do
   - Running quality review passes
   - Syncing to external issue trackers
 
-  The loop is designed to be long-running and supports graceful shutdown.
-  Hot code reloading works because state is managed externally in GenServers.
+  The loop is designed to be long-running and never shuts down.
+  It supports:
+  - Pause/resume for inspection
+  - Interrupt to cancel current work
+  - Hot code reloading (state is managed externally)
+
+  The loop runs continuously, picking up work when available.
   """
   use GenServer
   require Logger
@@ -26,17 +31,19 @@ defmodule Noface.Core.Loop do
     @moduledoc "State for the main loop."
     defstruct [
       :config,
-      :interrupted,
-      :current_issue,
+      :status,
+      :current_work,
       :iteration_count,
       :last_planner_iteration,
       :last_quality_iteration
     ]
 
+    @type status :: :idle | :running | :paused | :interrupted
+
     @type t :: %__MODULE__{
-            config: Config.t(),
-            interrupted: boolean(),
-            current_issue: String.t() | nil,
+            config: Config.t() | nil,
+            status: status(),
+            current_work: map() | nil,
             iteration_count: non_neg_integer(),
             last_planner_iteration: non_neg_integer(),
             last_quality_iteration: non_neg_integer()
@@ -49,10 +56,10 @@ defmodule Noface.Core.Loop do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  @doc "Run the main loop with the given configuration."
-  @spec run(Config.t()) :: :ok | {:error, term()}
-  def run(config) do
-    GenServer.call(__MODULE__, {:run, config}, :infinity)
+  @doc "Start the persistent loop with the given configuration."
+  @spec start(Config.t()) :: :ok | {:error, term()}
+  def start(config) do
+    GenServer.call(__MODULE__, {:start, config}, :infinity)
   end
 
   @doc "Signal the loop to stop gracefully."
@@ -61,24 +68,72 @@ defmodule Noface.Core.Loop do
     GenServer.call(__MODULE__, :stop)
   end
 
+  @doc "Pause the loop (finish current work, then idle)."
+  @spec pause() :: :ok | {:error, :already_paused | :not_running}
+  def pause do
+    GenServer.call(__MODULE__, :pause)
+  end
+
+  @doc "Resume the loop after pause."
+  @spec resume() :: :ok | {:error, :not_paused}
+  def resume do
+    GenServer.call(__MODULE__, :resume)
+  end
+
+  @doc "Interrupt current work immediately."
+  @spec interrupt() :: :ok
+  def interrupt do
+    GenServer.call(__MODULE__, :interrupt)
+  end
+
   @doc "Check if the loop is running."
   @spec running?() :: boolean()
   def running? do
     GenServer.call(__MODULE__, :running?)
   end
 
+  @doc "Check if the loop is paused."
+  @spec paused?() :: boolean()
+  def paused? do
+    GenServer.call(__MODULE__, :paused?)
+  end
+
+  @doc "Get current iteration count."
+  @spec current_iteration() :: non_neg_integer()
+  def current_iteration do
+    GenServer.call(__MODULE__, :current_iteration)
+  end
+
+  @doc "Get current work (issue being processed)."
+  @spec current_work() :: map() | nil
+  def current_work do
+    GenServer.call(__MODULE__, :current_work)
+  end
+
+  @doc "Handle an external message (for extensibility)."
+  @spec handle_external_message(term()) :: term()
+  def handle_external_message(message) do
+    GenServer.call(__MODULE__, {:external_message, message})
+  end
+
+  @doc "Legacy: run synchronously (blocks until stopped)."
+  @spec run(Config.t()) :: :ok | {:error, term()}
+  def run(config) do
+    GenServer.call(__MODULE__, {:run, config}, :infinity)
+  end
+
   # GenServer callbacks
 
   @impl true
   def init(_opts) do
-    # Set up signal handlers
-    setup_signal_handlers()
+    # Schedule the first tick
+    schedule_tick()
 
     {:ok,
      %LoopState{
        config: nil,
-       interrupted: false,
-       current_issue: nil,
+       status: :idle,
+       current_work: nil,
        iteration_count: 0,
        last_planner_iteration: 0,
        last_quality_iteration: 0
@@ -86,13 +141,112 @@ defmodule Noface.Core.Loop do
   end
 
   @impl true
-  def handle_call({:run, config}, _from, state) do
+  def handle_call({:start, config}, _from, state) do
     Logger.info("[LOOP] Starting noface orchestrator for #{config.project_name}")
 
-    # Load or initialize state
+    case initialize_loop(config) do
+      :ok ->
+        new_state = %{state | config: config, status: :running}
+        {:reply, :ok, new_state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  # Legacy run (blocking) - for backwards compatibility
+  def handle_call({:run, config}, _from, state) do
+    Logger.info("[LOOP] Starting noface orchestrator (blocking mode)")
+
+    case initialize_loop(config) do
+      :ok ->
+        new_state = %{state | config: config, status: :running}
+        result = run_blocking_loop(new_state)
+        {:reply, result, %{new_state | status: :idle}}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(:stop, _from, state) do
+    Logger.info("[LOOP] Stopping loop")
+    {:reply, :ok, %{state | status: :idle, config: nil}}
+  end
+
+  def handle_call(:pause, _from, %{status: :running} = state) do
+    Logger.info("[LOOP] Pausing loop")
+    {:reply, :ok, %{state | status: :paused}}
+  end
+
+  def handle_call(:pause, _from, %{status: :paused} = state) do
+    {:reply, {:error, :already_paused}, state}
+  end
+
+  def handle_call(:pause, _from, state) do
+    {:reply, {:error, :not_running}, state}
+  end
+
+  def handle_call(:resume, _from, %{status: :paused} = state) do
+    Logger.info("[LOOP] Resuming loop")
+    {:reply, :ok, %{state | status: :running}}
+  end
+
+  def handle_call(:resume, _from, state) do
+    {:reply, {:error, :not_paused}, state}
+  end
+
+  def handle_call(:interrupt, _from, state) do
+    Logger.info("[LOOP] Interrupting current work")
+    # Kill any active workers
+    WorkerPool.interrupt_all()
+    {:reply, :ok, %{state | status: :running, current_work: nil}}
+  end
+
+  def handle_call(:running?, _from, state) do
+    {:reply, state.status == :running, state}
+  end
+
+  def handle_call(:paused?, _from, state) do
+    {:reply, state.status == :paused, state}
+  end
+
+  def handle_call(:current_iteration, _from, state) do
+    {:reply, state.iteration_count, state}
+  end
+
+  def handle_call(:current_work, _from, state) do
+    {:reply, state.current_work, state}
+  end
+
+  def handle_call({:external_message, message}, _from, state) do
+    Logger.debug("[LOOP] Received external message: #{inspect(message)}")
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_info(:tick, %{status: :running, config: config} = state) when config != nil do
+    # Run one iteration of the loop
+    new_state = run_iteration(state)
+    schedule_tick()
+    {:noreply, new_state}
+  end
+
+  def handle_info(:tick, state) do
+    # Not running or no config - just schedule next tick
+    schedule_tick()
+    {:noreply, state}
+  end
+
+  def handle_info({:signal, _signum}, state) do
+    Logger.info("[LOOP] Received interrupt signal")
+    {:noreply, %{state | status: :paused}}
+  end
+
+  # Private: Initialize the loop
+  defp initialize_loop(config) do
     case State.load(config.project_name) do
       {:ok, _orchestrator_state} ->
-        # Recover from any crashes
         case State.recover_from_crash() do
           {:ok, recovered} when recovered > 0 ->
             Logger.info("[LOOP] Recovered #{recovered} workers from crash")
@@ -101,97 +255,83 @@ defmodule Noface.Core.Loop do
             :ok
         end
 
-        # Initialize worker pool
         WorkerPool.init_pool(config)
-
-        # Run the main loop
-        new_state = %{state | config: config}
-        result = run_loop(new_state)
-
-        {:reply, result, %{new_state | interrupted: false}}
+        :ok
 
       {:error, reason} ->
-        {:reply, {:error, reason}, state}
+        {:error, reason}
     end
   end
 
-  def handle_call(:stop, _from, state) do
-    {:reply, :ok, %{state | interrupted: true}}
-  end
-
-  def handle_call(:running?, _from, state) do
-    {:reply, state.config != nil and not state.interrupted, state}
-  end
-
-  @impl true
-  def handle_info({:signal, _signum}, state) do
-    Logger.info("[LOOP] Received interrupt signal, shutting down gracefully...")
-    {:noreply, %{state | interrupted: true}}
+  defp schedule_tick do
+    Process.send_after(self(), :tick, @loop_interval_ms)
   end
 
   # Private functions
 
-  defp setup_signal_handlers do
-    # In production, you'd use :os.set_signal/2 or similar
-    # For now, we handle it via the stop/0 function
-    :ok
+  # Single iteration of the loop (non-blocking, called from :tick)
+  defp run_iteration(%LoopState{config: config} = state) do
+    iteration = state.iteration_count + 1
+    State.increment_iteration()
+
+    Logger.debug("[LOOP] Iteration #{iteration}")
+
+    # Check if planner pass needed
+    state = maybe_run_planner(state, iteration)
+
+    # Get next batch to execute
+    case State.get_next_pending_batch() do
+      nil ->
+        # No batches - check if we should invoke planner (event-driven mode)
+        if config.planner_mode == :event_driven and config.enable_planner do
+          Logger.info("[LOOP] No ready batches, running planner (event-driven)")
+          run_planner_pass(config)
+        end
+
+        %{state | iteration_count: iteration, current_work: nil}
+
+      batch ->
+        # Track current work
+        state = %{state | current_work: %{type: :batch, batch: batch}}
+
+        # Execute the batch
+        case WorkerPool.execute_batch(batch) do
+          {:ok, successful} ->
+            Logger.info("[LOOP] Batch complete: #{successful} succeeded")
+
+          {:error, reason} ->
+            Logger.error("[LOOP] Batch execution failed: #{inspect(reason)}")
+        end
+
+        # Save state after batch
+        State.save()
+
+        # Maybe run quality pass
+        state = maybe_run_quality(state, iteration)
+
+        # Sync to external tracker if enabled
+        maybe_sync_issues(config)
+
+        %{state | iteration_count: iteration, current_work: nil}
+    end
   end
 
-  defp run_loop(%LoopState{interrupted: true} = state) do
-    Logger.info("[LOOP] Loop interrupted, cleaning up...")
+  # Blocking loop for backwards compatibility
+  defp run_blocking_loop(%LoopState{status: status} = state) when status != :running do
+    Logger.info("[LOOP] Loop stopped")
     cleanup(state)
     :ok
   end
 
-  defp run_loop(%LoopState{config: config} = state) do
+  defp run_blocking_loop(%LoopState{config: config} = state) do
     # Check max iterations
     if config.max_iterations > 0 and state.iteration_count >= config.max_iterations do
       Logger.info("[LOOP] Reached max iterations (#{config.max_iterations})")
       :ok
     else
-      # Increment iteration
-      State.increment_iteration()
-      iteration = state.iteration_count + 1
-
-      Logger.debug("[LOOP] Iteration #{iteration}")
-
-      # Check if planner pass needed
-      state = maybe_run_planner(state, iteration)
-
-      # Get next batch to execute
-      case State.get_next_pending_batch() do
-        nil ->
-          # No batches - check if we should invoke planner (event-driven mode)
-          if config.planner_mode == :event_driven and config.enable_planner do
-            Logger.info("[LOOP] No ready batches, running planner (event-driven)")
-            run_planner_pass(config)
-          end
-
-          # Wait before checking again
-          :timer.sleep(@loop_interval_ms)
-          run_loop(%{state | iteration_count: iteration})
-
-        batch ->
-          # Execute the batch
-          case WorkerPool.execute_batch(batch) do
-            {:ok, successful} ->
-              Logger.info("[LOOP] Batch complete: #{successful} succeeded")
-
-            {:error, reason} ->
-              Logger.error("[LOOP] Batch execution failed: #{inspect(reason)}")
-          end
-
-          # Save state after batch
-          State.save()
-
-          # Maybe run quality pass
-          state = maybe_run_quality(state, iteration)
-
-          # Sync to external tracker if enabled
-          maybe_sync_issues(config)
-
-          run_loop(%{state | iteration_count: iteration})
-      end
+      new_state = run_iteration(state)
+      :timer.sleep(@loop_interval_ms)
+      run_blocking_loop(new_state)
     end
   end
 

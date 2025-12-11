@@ -30,6 +30,14 @@ defmodule Noface.Application do
       {Noface.Util.Transcript.Repo, []},
       # Worker pool (Task.Supervisor-based)
       Noface.Core.WorkerPool,
+      # Command server (accepts CLI commands)
+      Noface.Server.Command,
+      # Hot reload watcher (for self-improvement)
+      Noface.HotReload,
+      # PubSub for Phoenix
+      {Phoenix.PubSub, name: Noface.PubSub},
+      # Phoenix web endpoint
+      NofaceWeb.Endpoint,
       # Main loop
       Noface.Core.Loop
     ]

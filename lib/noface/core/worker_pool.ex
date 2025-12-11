@@ -59,6 +59,12 @@ defmodule Noface.Core.WorkerPool do
     GenServer.call(__MODULE__, :get_pending_results)
   end
 
+  @doc "Interrupt all active workers."
+  @spec interrupt_all() :: :ok
+  def interrupt_all do
+    GenServer.call(__MODULE__, :interrupt_all)
+  end
+
   # GenServer callbacks
 
   @impl true
@@ -163,6 +169,17 @@ defmodule Noface.Core.WorkerPool do
   @impl true
   def handle_call(:get_pending_results, _from, state) do
     {:reply, state.completed, %{state | completed: []}}
+  end
+
+  @impl true
+  def handle_call(:interrupt_all, _from, state) do
+    # Kill all active tasks
+    Enum.each(state.active_tasks, fn {_id, task} ->
+      Task.Supervisor.terminate_child(state.task_supervisor, task.pid)
+    end)
+
+    Logger.info("[POOL] Interrupted all active workers")
+    {:reply, :ok, %{state | active_tasks: %{}}}
   end
 
   # Private functions

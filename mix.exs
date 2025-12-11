@@ -36,7 +36,11 @@ defmodule NofaceElixir.MixProject do
       {:ecto_sqlite3, "~> 0.17"},
       # Embedded key-value store for state
       {:cubdb, "~> 2.0"},
-      # Web server
+      # Phoenix web framework
+      {:phoenix, "~> 1.7"},
+      {:phoenix_html, "~> 4.1"},
+      {:phoenix_live_view, "~> 1.0"},
+      {:phoenix_live_dashboard, "~> 0.8"},
       {:plug_cowboy, "~> 2.7"},
       # HTTP client for GitHub/Gitea APIs
       {:req, "~> 0.5"},
@@ -45,7 +49,11 @@ defmodule NofaceElixir.MixProject do
       # Telemetry for observability
       {:telemetry, "~> 1.3"},
       {:telemetry_metrics, "~> 1.0"},
-      {:telemetry_poller, "~> 1.1"}
+      {:telemetry_poller, "~> 1.1"},
+      # File system watcher for hot reload
+      {:file_system, "~> 1.0"},
+      # Asset bundler (for LiveView JS)
+      {:esbuild, "~> 0.8", runtime: Mix.env() == :dev}
     ]
   end
 end

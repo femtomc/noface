@@ -76,6 +76,13 @@ defmodule Noface.Core.Config do
 
   @doc """
   Load configuration from a TOML file.
+  Alias for load_from_file/1.
+  """
+  @spec load(String.t()) :: {:ok, t()} | {:error, term()}
+  def load(path), do: load_from_file(path)
+
+  @doc """
+  Load configuration from a TOML file.
   """
   @spec load_from_file(String.t()) :: {:ok, t()} | {:error, term()}
   def load_from_file(path) do
