@@ -81,6 +81,7 @@ pub const ValidationResult = struct {
 /// Output format for agent sessions
 pub const OutputFormat = enum {
     text, // Human-readable text with markdown rendering
+    compact, // Concise status updates (like workers)
     stream_json, // Raw JSON streaming for programmatic use
     raw, // Plain text without markdown rendering
 };
@@ -163,7 +164,7 @@ pub const Config = struct {
     num_workers: u32 = 5,
 
     /// Output format
-    output_format: OutputFormat = .text,
+    output_format: OutputFormat = .compact,
 
     /// Directory to store JSON session logs
     log_dir: []const u8 = "/tmp",

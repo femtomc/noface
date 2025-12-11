@@ -1148,6 +1148,20 @@ pub const AgentLoop = struct {
     /// Special exit code indicating agent timeout
     pub const EXIT_CODE_TIMEOUT: u8 = 124; // Same as GNU timeout
 
+    /// Convert tool name to compact action verb
+    fn compactToolAction(tool_name: []const u8) []const u8 {
+        if (std.mem.eql(u8, tool_name, "Read")) return "Reading";
+        if (std.mem.eql(u8, tool_name, "Edit")) return "Editing";
+        if (std.mem.eql(u8, tool_name, "Write")) return "Writing";
+        if (std.mem.eql(u8, tool_name, "Bash")) return "Running";
+        if (std.mem.eql(u8, tool_name, "Grep")) return "Searching";
+        if (std.mem.eql(u8, tool_name, "Glob")) return "Finding";
+        if (std.mem.eql(u8, tool_name, "Task")) return "Spawning";
+        if (std.mem.eql(u8, tool_name, "WebFetch")) return "Fetching";
+        if (std.mem.eql(u8, tool_name, "WebSearch")) return "Searching";
+        return tool_name;
+    }
+
     /// Run an agent with streaming output and SQLite transcript logging
     fn runAgentStreaming(self: *AgentLoop, agent: []const u8, prompt: []const u8, issue_id: []const u8) !u8 {
         // Build argv to avoid shell quoting pitfalls
@@ -1245,22 +1259,37 @@ pub const AgentLoop = struct {
                     switch (self.config.output_format) {
                         .stream_json => {
                             // Output raw JSON
-                            const stdout = std.fs.File.stdout();
-                            _ = stdout.write(line) catch {};
-                            _ = stdout.write("\n") catch {};
+                            _ = std.fs.File.stdout().write(line) catch {};
+                            _ = std.fs.File.stdout().write("\n") catch {};
                         },
                         .text => {
                             // Stream text deltas and collect for final render
                             if (event.text) |text| {
                                 try full_response.appendSlice(self.allocator, text);
-                                const stdout = std.fs.File.stdout();
-                                _ = stdout.write(text) catch {};
+                                _ = std.fs.File.stdout().write(text) catch {};
                             }
                             if (event.tool_name) |name| {
                                 if (event.tool_input_summary) |summary| {
                                     std.debug.print("\n{s}[TOOL]{s} {s}: {s}\n", .{ Color.cyan, Color.reset, name, summary });
                                 } else {
                                     std.debug.print("\n{s}[TOOL]{s} {s}\n", .{ Color.cyan, Color.reset, name });
+                                }
+                            }
+                        },
+                        .compact => {
+                            // Concise status updates (worker-style)
+                            if (event.text) |text| {
+                                try full_response.appendSlice(self.allocator, text);
+                            }
+                            if (event.tool_name) |name| {
+                                const action = compactToolAction(name);
+                                if (event.tool_input_summary) |summary| {
+                                    // Truncate long summaries
+                                    const max_len: usize = 50;
+                                    const display = if (summary.len > max_len) summary[0..max_len] else summary;
+                                    std.debug.print("{s}[AGENT]{s} {s} {s}\n", .{ Color.cyan, Color.reset, action, display });
+                                } else {
+                                    std.debug.print("{s}[AGENT]{s} {s}\n", .{ Color.cyan, Color.reset, action });
                                 }
                             }
                         },
