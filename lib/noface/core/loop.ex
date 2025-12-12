@@ -674,24 +674,5 @@ defmodule Noface.Core.Loop do
     end
   end
 
-  defp broadcast_loop_status(%LoopState{} = state) do
-    # Get in-flight issues for status
-    in_flight = State.get_in_flight_issues()
-    available_workers = WorkerPool.available_worker_count()
-
-    payload = %{
-      running: state.status == :running,
-      paused: state.status == :paused,
-      iteration: state.iteration_count,
-      current_work: state.current_work,
-      in_flight_issues: in_flight,
-      in_flight_count: length(in_flight),
-      available_workers: available_workers
-    }
-
-    Phoenix.PubSub.broadcast(Noface.PubSub, "loop", {:loop, payload})
-    :ok
-  rescue
-    _ -> :ok
-  end
+  defp broadcast_loop_status(%LoopState{}), do: :ok
 end

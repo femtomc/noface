@@ -36,12 +36,6 @@ defmodule Noface.Application do
       Noface.HotReload,
       # Tools updater (periodic update checker)
       Noface.Tools.Updater,
-      # Phoenix telemetry + LiveDashboard metrics
-      NofaceWeb.Telemetry,
-      # PubSub for Phoenix
-      {Phoenix.PubSub, name: Noface.PubSub},
-      # Phoenix web endpoint
-      NofaceWeb.Endpoint,
       # Main loop
       Noface.Core.Loop
     ]

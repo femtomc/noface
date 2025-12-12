@@ -9,7 +9,6 @@ defmodule Noface.Transcript do
   use Ecto.Schema
   import Ecto.Query
   require Logger
-  alias Phoenix.PubSub
 
   # Repo module
   defmodule Repo do
@@ -311,31 +310,6 @@ defmodule Noface.Transcript do
     {:ok, deleted}
   end
 
-  # Broadcast helpers to push session updates to LiveView dashboard
-  defp broadcast_session_started(issue_id) do
-    PubSub.broadcast(Noface.PubSub, "session", {:session_started, issue_id})
-    :ok
-  rescue
-    _ -> :ok
-  end
-
-  defp broadcast_session_event(session_id, %Event{} = event) do
-    case Repo.get(Session, session_id) do
-      nil ->
-        :ok
-
-      %Session{issue_id: issue_id} ->
-        payload = %{
-          event_type: event.event_type,
-          tool_name: event.tool_name,
-          content: event.content,
-          raw_json: event.raw_json
-        }
-
-        PubSub.broadcast(Noface.PubSub, "session", {:session_event, issue_id, payload})
-        :ok
-    end
-  rescue
-    _ -> :ok
-  end
+  defp broadcast_session_started(_issue_id), do: :ok
+  defp broadcast_session_event(_session_id, _event), do: :ok
 end

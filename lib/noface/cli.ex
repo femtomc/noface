@@ -6,7 +6,6 @@ defmodule Noface.CLI do
   """
 
   alias Noface.Core.{Config, Loop}
-  alias Noface.Server.Web
 
   @doc """
   Main entry point for the escript.
@@ -51,7 +50,6 @@ defmodule Noface.CLI do
       case args do
         [] -> run_command(:run, opts)
         ["init" | _] -> run_command(:init, opts)
-        ["serve" | _] -> run_command(:serve, opts)
         ["doctor" | _] -> run_command(:doctor, opts)
         ["sync" | _] -> run_command(:sync, opts)
         [cmd | _] -> IO.puts("Unknown command: #{cmd}\nRun 'noface --help' for usage.")
@@ -142,21 +140,6 @@ defmodule Noface.CLI do
     end
 
     IO.puts("\e[1;32m[NOFACE]\e[0m Project initialized successfully!")
-  end
-
-  defp run_command(:serve, opts) do
-    api_port = opts[:port] || 3000
-    IO.puts("\e[1;34m[NOFACE]\e[0m Starting servers...")
-
-    {:ok, _} = Application.ensure_all_started(:noface_elixir)
-    {:ok, _} = Web.start(port: api_port)
-
-    IO.puts("\e[1;32m[NOFACE]\e[0m Dashboard running at http://localhost:4000")
-    IO.puts("\e[1;32m[NOFACE]\e[0m API server running at http://localhost:#{api_port}")
-    IO.puts("Press Ctrl+C to stop")
-
-    # Keep running
-    Process.sleep(:infinity)
   end
 
   defp run_command(:doctor, _opts) do
@@ -279,7 +262,6 @@ defmodule Noface.CLI do
     USAGE:
       noface [OPTIONS]            Run the agent loop
       noface init [OPTIONS]       Initialize a new project
-      noface serve [OPTIONS]      Start dashboard + API servers
       noface doctor               Check system health
       noface sync [OPTIONS]       Sync issues to external tracker
 
@@ -299,7 +281,6 @@ defmodule Noface.CLI do
       --raw                       Plain text output without formatting
       -v, --verbose               Enable verbose logging
       --agent-timeout N           Agent timeout in seconds (default: 900)
-      -p, --port N                API server port (default: 3000)
       --force                     Overwrite existing files
       --skip-deps                 Skip dependency checks
       -h, --help                  Show this help message
@@ -307,7 +288,6 @@ defmodule Noface.CLI do
     EXAMPLES:
       noface                      Run orchestrator with default settings
       noface init                 Initialize a new noface project
-      noface serve                Start dashboard (4000) + API server (3000)
       noface --issue BUG-123      Work on specific issue
       noface --max-iterations 10  Run 10 iterations then stop
 

@@ -61,14 +61,8 @@ lib/
       streaming.ex       # JSON stream parsing
       markdown.ex        # Markdown rendering
     transcript.ex        # Ecto SQLite session logging
-  noface_web/
-    router.ex            # Phoenix routes
-    live/
-      dashboard_live.ex  # Main dashboard
-      issues_live.ex     # Issue browser
-      vault_live.ex      # Monowiki vault browser
-    controllers/
-      api_controller.ex  # REST API endpoints
+    server/
+      command.ex         # CLI command server
   mix/tasks/
     noface.ex            # Mix task entry
     noface.start.ex      # Start server
@@ -164,50 +158,17 @@ vault = "./wiki"
 
 ## Testing
 
-Tests use ExUnit with Phoenix LiveView test helpers.
+Tests use ExUnit.
 
 ```bash
 mix test                          # Run all tests
-mix test test/noface_web/         # Run web tests only
 mix test --only integration       # Tagged tests
 ```
 
 ### Test Structure
 
-- `test/support/conn_case.ex` - LiveView/conn test case
 - `test/support/fixtures.ex` - Test data builders
-- `test/noface_web/` - LiveView tests
-
-### Writing Tests
-
-```elixir
-defmodule NofaceWeb.MyLiveTest do
-  use NofaceWeb.ConnCase, async: true
-  import Phoenix.LiveViewTest
-
-  test "renders page", %{conn: conn} do
-    {:ok, view, _html} = live(conn, "/")
-    assert render(view) =~ "expected content"
-  end
-end
-```
-
-## Web Dashboard
-
-Development server runs on `http://localhost:4000`:
-
-- `/` - Main dashboard (loop status, issues, sessions)
-- `/issues` - Issue browser
-- `/vault` - Monowiki vault browser
-- `/dev/dashboard` - Phoenix LiveDashboard (dev only)
-
-### API Endpoints
-
-- `GET /api/status` - Loop status
-- `POST /api/pause` - Pause loop
-- `POST /api/resume` - Resume loop
-- `POST /api/interrupt` - Interrupt current work
-- `POST /api/issues` - Create issue
+- `test/noface/` - Core module tests
 
 ## Architecture
 
@@ -222,9 +183,6 @@ Noface.Supervisor (one_for_one)
   ├── Noface.Server.Command     # CLI command server
   ├── Noface.HotReload          # Code reloading
   ├── Noface.Tools.Updater      # Tool update checker
-  ├── NofaceWeb.Telemetry       # Metrics
-  ├── Phoenix.PubSub            # PubSub for LiveView
-  ├── NofaceWeb.Endpoint        # Phoenix web server
   └── Noface.Core.Loop          # Main orchestration loop
 ```
 

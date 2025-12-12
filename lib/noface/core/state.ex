@@ -93,8 +93,6 @@ defmodule Noface.Core.State do
     def complete?(%__MODULE__{status: status}), do: status == :completed
   end
 
-  alias Phoenix.PubSub
-
   # GenServer API
 
   def start_link(opts \\ []) do
@@ -867,13 +865,7 @@ defmodule Noface.Core.State do
     }
   end
 
-  defp broadcast_state(db) do
-    snapshot = get_state_map(db)
-    PubSub.broadcast(Noface.PubSub, "state", {:state, snapshot})
-    :ok
-  rescue
-    _ -> :ok
-  end
+  defp broadcast_state(_db), do: :ok
 
   defp extract_base_file(file_spec) do
     case String.split(file_spec, ":", parts: 2) do

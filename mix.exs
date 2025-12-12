@@ -10,8 +10,7 @@ defmodule NofaceElixir.MixProject do
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       aliases: aliases(),
-      escript: escript(),
-      listeners: [Phoenix.CodeReloader]
+      escript: escript()
     ]
   end
 
@@ -42,12 +41,6 @@ defmodule NofaceElixir.MixProject do
       {:ecto_sqlite3, "~> 0.17"},
       # Embedded key-value store for state
       {:cubdb, "~> 2.0"},
-      # Phoenix web framework
-      {:phoenix, "~> 1.7"},
-      {:phoenix_html, "~> 4.1"},
-      {:phoenix_live_view, "~> 1.0"},
-      {:phoenix_live_dashboard, "~> 0.8"},
-      {:plug_cowboy, "~> 2.7"},
       # HTTP client for GitHub/Gitea APIs
       {:req, "~> 0.5"},
       # Terminal UI
@@ -57,20 +50,11 @@ defmodule NofaceElixir.MixProject do
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.1"},
       # File system watcher for hot reload
-      {:file_system, "~> 1.0"},
-      # Asset bundler for LiveView
-      {:esbuild, "~> 0.8", runtime: Mix.env() == :dev},
-      # LiveView testing + HTML parser
-      {:floki, ">= 0.36.0", only: :test},
-      {:lazy_html, ">= 0.1.0", only: :test}
+      {:file_system, "~> 1.0"}
     ]
   end
 
   defp aliases do
-    [
-      "assets.setup": ["esbuild.install --if-missing", "cmd --cd assets npm install"],
-      "assets.build": ["esbuild noface"],
-      "assets.deploy": ["esbuild noface --minify", "phx.digest"]
-    ]
+    []
   end
 end
