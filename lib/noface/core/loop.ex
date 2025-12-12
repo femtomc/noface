@@ -380,6 +380,9 @@ defmodule Noface.Core.Loop do
       )
     end
 
+    # Check for failed issues that need breakdown
+    maybe_run_breakdown(config)
+
     # Try to load issues from beads if we haven't recently
     case State.load_beads_issues() do
       {:ok, count} when count > 0 ->
@@ -565,6 +568,46 @@ defmodule Noface.Core.Loop do
     prompt = Prompts.build_quality_prompt(config.project_name, monowiki_section)
 
     run_agent_with_prompt(config.impl_agent, prompt, config)
+  end
+
+  defp maybe_run_breakdown(config) do
+    if config.enable_breakdown do
+      # Get failed issues that need breakdown
+      issues_to_breakdown = State.get_issues_needing_breakdown(config.breakdown_after_attempts)
+
+      if length(issues_to_breakdown) > 0 do
+        Logger.info("[LOOP] Found #{length(issues_to_breakdown)} issues needing breakdown")
+
+        # Process each issue needing breakdown
+        Enum.each(issues_to_breakdown, fn issue ->
+          run_breakdown_for_issue(issue, config)
+        end)
+      end
+    end
+  end
+
+  defp run_breakdown_for_issue(issue, config) do
+    Logger.info("[LOOP] Running breakdown agent for issue #{issue.id}")
+
+    # Convert issue content to JSON for the prompt
+    issue_json =
+      case issue.content do
+        nil -> "{}"
+        content when is_map(content) -> Jason.encode!(content)
+        content -> inspect(content)
+      end
+
+    prompt = Prompts.build_breakdown_prompt(config.project_name, issue.id, issue_json)
+
+    case run_agent_with_prompt(config.impl_agent, prompt, config) do
+      :ok ->
+        # Mark the issue as broken down to prevent re-processing
+        State.mark_issue_broken_down(issue.id)
+        Logger.info("[LOOP] Issue #{issue.id} has been broken down into sub-issues")
+
+      {:error, reason} ->
+        Logger.warning("[LOOP] Breakdown failed for issue #{issue.id}: #{inspect(reason)}")
+    end
   end
 
   defp run_agent_with_prompt(agent_cmd, prompt, config) do

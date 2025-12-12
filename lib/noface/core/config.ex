@@ -20,6 +20,8 @@ defmodule Noface.Core.Config do
           planner_mode: planner_mode(),
           enable_quality: boolean(),
           quality_interval: pos_integer(),
+          enable_breakdown: boolean(),
+          breakdown_after_attempts: pos_integer(),
           issue_tracker: issue_tracker(),
           sync_to_github: boolean(),
           sync_provider: Noface.Integrations.IssueSync.ProviderConfig.t(),
@@ -51,6 +53,8 @@ defmodule Noface.Core.Config do
             planner_mode: :interval,
             enable_quality: true,
             quality_interval: 10,
+            enable_breakdown: true,
+            breakdown_after_attempts: 2,
             issue_tracker: :beads,
             sync_to_github: true,
             sync_provider: %Noface.Integrations.IssueSync.ProviderConfig{},
@@ -212,6 +216,12 @@ defmodule Noface.Core.Config do
           validated_interval(
             Map.get(section, "quality_interval"),
             config.quality_interval
+          ),
+        enable_breakdown: Map.get(section, "breakdown_enabled", config.enable_breakdown),
+        breakdown_after_attempts:
+          validated_interval(
+            Map.get(section, "breakdown_after_attempts"),
+            config.breakdown_after_attempts
           )
     }
   end

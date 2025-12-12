@@ -28,11 +28,25 @@ defmodule NofaceWeb.IssuesLive do
 
   @impl true
   def handle_info({:state, snapshot}, socket) do
-    issues =
-      snapshot[:issues]
-      |> Map.values()
+    issues_map = snapshot[:issues]
+    issues = Map.values(issues_map)
 
-    {:noreply, assign(socket, issues: issues)}
+    socket = assign(socket, issues: issues)
+
+    # Refresh selected issue if one is being viewed
+    socket =
+      case socket.assigns[:selected_issue] do
+        nil ->
+          socket
+
+        %{id: id} ->
+          case Map.get(issues_map, id) do
+            nil -> assign(socket, selected_issue: nil)
+            updated_issue -> assign(socket, selected_issue: updated_issue)
+          end
+      end
+
+    {:noreply, socket}
   end
 
   defp assign_issues(socket) do

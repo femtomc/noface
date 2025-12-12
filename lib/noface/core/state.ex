@@ -21,7 +21,7 @@ defmodule Noface.Core.State do
   # Type definitions
 
   @type attempt_result :: :success | :failed | :timeout | :violation
-  @type issue_status :: :pending | :assigned | :running | :completed | :failed
+  @type issue_status :: :pending | :assigned | :running | :completed | :failed | :broken_down
   @type worker_status :: :idle | :starting | :running | :completed | :failed | :timeout
   @type batch_status :: :pending | :running | :completed
 
@@ -255,6 +255,27 @@ defmodule Noface.Core.State do
   @spec get_in_flight_issues() :: [String.t()]
   def get_in_flight_issues do
     GenServer.call(__MODULE__, :get_in_flight_issues)
+  end
+
+  @doc """
+  Get failed issues that have exceeded the attempt threshold and need breakdown.
+  Returns a list of IssueState structs where:
+  - status is :failed
+  - attempt_count >= threshold
+  """
+  @spec get_issues_needing_breakdown(pos_integer()) :: [IssueState.t()]
+  def get_issues_needing_breakdown(threshold \\ 2) do
+    GenServer.call(__MODULE__, {:get_issues_needing_breakdown, threshold})
+  end
+
+  @doc """
+  Mark an issue as broken down (prevents re-breakdown).
+  Sets the issue status to :broken_down so it won't be re-processed.
+  The original issue becomes a tracking issue for its sub-issues.
+  """
+  @spec mark_issue_broken_down(String.t()) :: :ok
+  def mark_issue_broken_down(issue_id) do
+    GenServer.call(__MODULE__, {:mark_issue_broken_down, issue_id})
   end
 
   # GenServer callbacks
@@ -748,6 +769,35 @@ defmodule Noface.Core.State do
   def handle_call(:get_in_flight_issues, _from, state) do
     in_flight_ids = get_in_flight_issue_ids(state.db)
     {:reply, in_flight_ids, state}
+  end
+
+  @impl true
+  def handle_call({:get_issues_needing_breakdown, threshold}, _from, state) do
+    issue_ids = CubDB.get(state.db, :issue_ids) || MapSet.new()
+
+    failed_issues =
+      issue_ids
+      |> Enum.map(fn id -> CubDB.get(state.db, {:issue, id}) end)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.filter(fn issue ->
+        issue.status == :failed and issue.attempt_count >= threshold
+      end)
+
+    {:reply, failed_issues, state}
+  end
+
+  @impl true
+  def handle_call({:mark_issue_broken_down, issue_id}, _from, state) do
+    issue = CubDB.get(state.db, {:issue, issue_id}) || %IssueState{id: issue_id}
+
+    # Mark as broken_down status (a special status to indicate decomposition)
+    # We use :broken_down instead of :pending to prevent re-processing
+    updated = %{issue | status: :broken_down}
+    CubDB.put(state.db, {:issue, issue_id}, updated)
+
+    Logger.info("[STATE] Marked issue #{issue_id} as broken down")
+    broadcast_state(state.db)
+    {:reply, :ok, state}
   end
 
   # Private functions

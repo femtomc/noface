@@ -208,11 +208,19 @@ defmodule Noface.Core.WorkerPool do
   @impl true
   def handle_call(:interrupt_all, _from, state) do
     # Kill all active tasks
-    Enum.each(state.active_tasks, fn {_id, task} ->
-      Task.Supervisor.terminate_child(state.task_supervisor, task.pid)
+    # Each entry in active_tasks is %{task: task, issue_id: ..., worker_id: ...}
+    count = map_size(state.active_tasks)
+
+    Enum.each(state.active_tasks, fn {_ref, entry} ->
+      Task.Supervisor.terminate_child(state.task_supervisor, entry.task.pid)
     end)
 
-    Logger.info("[POOL] Interrupted all active workers")
+    if count > 0 do
+      Logger.info("[POOL] Interrupted #{count} active workers")
+    else
+      Logger.debug("[POOL] No active workers to interrupt")
+    end
+
     {:reply, :ok, %{state | active_tasks: %{}}}
   end
 
