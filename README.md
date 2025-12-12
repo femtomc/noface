@@ -22,18 +22,22 @@ Autonomous agent loop for software development. Orchestrates Claude (implementat
 └──────────────┘ └──────────────┘
 ```
 
+## Requirements
+
+- Elixir 1.15+
+- Erlang/OTP 26+
+- [beads](https://github.com/steveyegge/beads) - Issue tracking
+- [claude](https://github.com/anthropics/claude-code) - Implementation agent
+- [codex](https://github.com/openai/codex) - Code review agent
+
 ## Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/femtomc/noface/main/install.sh | bash
+git clone https://github.com/femtomc/noface.git
+cd noface
+mix deps.get
+mix compile
 ```
-
-This installs noface and its dependencies:
-- **beads** - Local issue tracking
-- **claude** - Implementation agent
-- **codex** - Code review agent
-- **gh** - GitHub CLI
-- **jq** - JSON processor
 
 ## Quick Start
 
@@ -46,8 +50,8 @@ bd init
 bd create "Add user authentication" -t feature -p 1
 bd create "Fix memory leak in parser" -t bug -p 0
 
-# Run the agent loop
-noface
+# Start the orchestrator
+mix noface.start
 ```
 
 ## Configuration
@@ -63,15 +67,17 @@ test = "make test"
 [agents]
 implementer = "claude"
 reviewer = "codex"
+timeout_seconds = 900
+num_workers = 5
 
 [passes]
-scrum_enabled = true
-scrum_interval = 5      # Every 5 iterations
+planner_enabled = true
+planner_interval = 5      # Every 5 iterations
 quality_enabled = true
-quality_interval = 10   # Every 10 iterations
+quality_interval = 10     # Every 10 iterations
 
 [tracker]
-type = "beads"          # or "github"
+type = "beads"
 sync_to_github = true
 ```
 
@@ -82,25 +88,40 @@ noface [OPTIONS]
 
 Options:
   -h, --help              Show help message
-  -v, --version           Show version
   -c, --config PATH       Load configuration from file
-  --max-iterations N      Stop after N iterations (default: unlimited)
-  --issue ISSUE_ID        Work on specific issue
+  -n, --max-iterations N  Stop after N iterations (default: unlimited)
+  -i, --issue ISSUE_ID    Work on specific issue
   --dry-run               Show what would be done without executing
-  --no-scrum              Disable scrum passes
+  --no-planner            Disable planner passes
   --no-quality            Disable quality review passes
-  --scrum-interval N      Run scrum every N iterations (default: 5)
+  --planner-interval N    Run planner every N iterations (default: 5)
   --quality-interval N    Run quality review every N iterations (default: 10)
+  -v, --verbose           Enable verbose logging
 
 Output options:
   --stream-json           Output raw JSON streaming (for programmatic use)
   --raw                   Plain text output without markdown rendering
-  --log-dir PATH          Directory to store JSON session logs (default: /tmp)
-  --progress-file PATH    Path to progress markdown file to update
 
 Integrations:
   --monowiki-vault PATH   Path to monowiki vault for design documents
 ```
+
+## Mix Tasks
+
+```bash
+mix noface.start    # Start the orchestrator server
+mix noface.status   # Show server status
+mix noface.pause    # Pause the loop
+mix noface.resume   # Resume the loop
+```
+
+## Web Dashboard
+
+The Phoenix web dashboard runs on `http://localhost:4000`:
+
+- `/` - Main dashboard (loop status, issues, sessions)
+- `/issues` - Issue browser
+- `/vault` - Monowiki vault browser
 
 ## How It Works
 
@@ -116,7 +137,7 @@ Integrations:
 
 ### Periodic Passes
 
-**Scrum Pass** (every 5 iterations by default):
+**Planner Pass** (every 5 iterations by default):
 - Reviews the backlog
 - Updates priorities and dependencies
 - Closes stale issues
@@ -128,36 +149,17 @@ Integrations:
 - Identifies dead code
 - Creates issues for findings (with file:line references)
 
-## Features
-
-### Signal Handling
-noface handles SIGINT (Ctrl+C) and SIGTERM gracefully, printing cleanup messages and reporting the status of any in-progress issue.
-
-### JSON Session Logs
-Every agent session is logged to a JSON file (`/tmp/noface-session-<issue_id>.json`), useful for debugging and auditing.
-
-### Native Markdown Rendering
-Text output is rendered with ANSI styling for headers, code blocks, and lists. No external dependencies like `glow` required.
-
-### Monowiki Integration
-If you use [monowiki](https://github.com/femtomc/monowiki) for design documents, noface can provide agents with commands to search and read design docs:
+## Development
 
 ```bash
-noface --monowiki-vault ./docs/vault
-```
+# Run tests
+mix test
 
-Agents will be instructed to use:
-- `monowiki search "<query>" --json` - Search for design docs
-- `monowiki note <slug> --format json` - Read a specific document
-- `monowiki graph neighbors --slug <slug> --json` - Find related docs
+# Format code
+mix format
 
-## Building from Source
-
-```bash
-git clone https://github.com/femtomc/noface.git
-cd noface
-zig build -Doptimize=ReleaseFast
-./zig-out/bin/noface --help
+# Start IEx with the app loaded
+iex -S mix
 ```
 
 ## License
