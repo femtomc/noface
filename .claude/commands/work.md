@@ -35,7 +35,11 @@ When you believe the implementation is complete:
    - path/to/file1.ex
    - path/to/file2.ex
 
-   Check: correctness, edge cases, code quality, test coverage, Elixir conventions.'
+   Check: correctness, edge cases, code quality, test coverage, Elixir conventions.
+
+   IMPORTANT: After your review, add your findings as a comment to the issue:
+   - If no issues found: `bd comment <issue-id> "Code review passed. No issues found."`
+   - If issues found: `bd comment <issue-id> "Code review findings: <summary of issues>"`'
    ```
 
    Replace the file list with the actual files you modified.
@@ -44,11 +48,37 @@ When you believe the implementation is complete:
    - If review finds **no issues**: Proceed to Phase 4
    - If review finds **issues**: Address the feedback and repeat Phase 3
 
-## Phase 4: Close and Complete
+## Phase 4: Commit and Close
 
-1. Run `bd close <issue-id>` to close the issue
-2. Summarize what was accomplished
-3. Stop - do not pick up another issue
+After review passes:
+
+1. Stage and commit your changes:
+   ```bash
+   git add <modified-files>
+   git commit -m "<type>: <description>
+
+   Closes <issue-id>
+
+   🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+   Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+   ```
+   Use conventional commit types: `fix:`, `feat:`, `refactor:`, `test:`, `docs:`
+
+2. Sync and push:
+   ```bash
+   bd sync
+   git push
+   ```
+
+3. Close the issue:
+   ```bash
+   bd close <issue-id>
+   bd sync
+   ```
+
+4. Summarize what was accomplished
+5. Stop - do not pick up another issue
 
 ## Important Rules
 
