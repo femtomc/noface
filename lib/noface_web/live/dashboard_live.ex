@@ -410,9 +410,6 @@ defmodule NofaceWeb.DashboardLive do
                       <%= if issue.issue_type do %>
                         <span class="text-dim"><%= String.upcase(to_string(issue.issue_type)) %></span>
                       <% end %>
-                      <%= if issue.dependencies && issue.dependencies != [] do %>
-                        <span class="text-dim">blocks <%= Enum.count(issue.dependencies) %></span>
-                      <% end %>
                     </div>
                     <%= if @expanded == issue.id do %>
                       <div class="issue-expanded">
@@ -423,12 +420,6 @@ defmodule NofaceWeb.DashboardLive do
                           <div class="issue-section">
                             <span class="issue-section-title">Acceptance:</span>
                             <pre class="text-delta"><%= issue.acceptance_criteria %></pre>
-                          </div>
-                        <% end %>
-                        <%= if issue.dependencies && issue.dependencies != [] do %>
-                          <div class="issue-section">
-                            <span class="issue-section-title">Blocks:</span>
-                            <span><%= Enum.map(issue.dependencies, & &1.depends_on_id) |> Enum.join(", ") %></span>
                           </div>
                         <% end %>
                     <div class="comment-box">
@@ -647,7 +638,6 @@ defmodule NofaceWeb.DashboardLive do
       priority: normalize_priority(fetch_field(content, "priority")),
       issue_type: fetch_field(content, "issue_type"),
       status: status,
-      dependencies: fetch_field(content, "dependencies") || [],
       comments:
         normalize_comments(
           Map.get(issue, :comments, []) || fetch_field(content, "comments") || []
@@ -869,61 +859,78 @@ defmodule NofaceWeb.DashboardLive do
 
   defp truncate_text(text, _), do: text
 
+  # Load real dependency data from beads via bd blocked command
+  defp load_beads_dependencies do
+    case System.cmd("bd", ["blocked", "--json"], stderr_to_stdout: true) do
+      {output, 0} ->
+        case Jason.decode(output) do
+          {:ok, blocked_issues} when is_list(blocked_issues) ->
+            # Build blocks and blocked_by maps from the beads data
+            # blocked_issues is a list of issues that are blocked, each has blocked_by: [issue_ids]
+            Enum.reduce(blocked_issues, {%{}, %{}}, fn issue, {blocks_acc, blocked_by_acc} ->
+              blocked_id = Map.get(issue, "id")
+              blockers = Map.get(issue, "blocked_by", [])
+
+              # Update blocked_by: blocked_id -> [list of blockers]
+              blocked_by_acc = Map.put(blocked_by_acc, blocked_id, blockers)
+
+              # Update blocks: blocker_id -> [list of issues it blocks]
+              blocks_acc =
+                Enum.reduce(blockers, blocks_acc, fn blocker_id, acc ->
+                  Map.update(acc, blocker_id, [blocked_id], &[blocked_id | &1])
+                end)
+
+              {blocks_acc, blocked_by_acc}
+            end)
+
+          _ ->
+            {%{}, %{}}
+        end
+
+      _ ->
+        {%{}, %{}}
+    end
+  rescue
+    _ -> {%{}, %{}}
+  end
+
   defp dependency_lines(issues) do
     issue_map = Map.new(issues, &{&1.id, &1})
 
-    {blocks, blocked_by} =
-      Enum.reduce(issues, {%{}, %{}}, fn issue, {bacc, bbacc} ->
-        deps = issue.dependencies || []
+    # Load real dependency data from beads
+    {blocks, blocked_by} = load_beads_dependencies()
 
-        Enum.reduce(deps, {bacc, bbacc}, fn dep, {b, bb} ->
-          child = Map.get(dep, :issue_id) || Map.get(dep, "issue_id") || issue.id
-          blocker = Map.get(dep, :depends_on_id) || Map.get(dep, "depends_on_id")
+    # Filter to only open issues for the graph
+    open_ids = issues |> Enum.reject(&(&1.status in [:completed, :failed])) |> MapSet.new(& &1.id)
 
-          b =
-            if blocker do
-              Map.update(b, blocker, [child], &[child | &1])
-            else
-              b
-            end
-
-          bb =
-            if blocker do
-              Map.update(bb, child, [blocker], &[blocker | &1])
-            else
-              bb
-            end
-
-          {b, bb}
-        end)
-      end)
-
+    # Find root issues: those with no blockers, or whose blockers are all completed
     roots =
       issues
       |> Enum.filter(fn issue ->
-        deps = Map.get(blocked_by, issue.id, [])
-
-        deps == [] or
-          Enum.all?(deps, fn dep_id ->
-            case Map.get(issue_map, dep_id) do
-              %{status: status} -> status in [:completed, :failed]
-              _ -> true
-            end
-          end)
+        issue.status not in [:completed, :failed] and
+          (not Map.has_key?(blocked_by, issue.id) or
+             Enum.all?(Map.get(blocked_by, issue.id, []), fn blocker_id ->
+               not MapSet.member?(open_ids, blocker_id)
+             end))
       end)
       |> Enum.sort_by(&(&1.priority || 2))
 
-    {lines, _visited} =
-      roots
-      |> Enum.with_index()
-      |> Enum.reduce({[], MapSet.new()}, fn {issue, idx}, {acc_lines, visited} ->
-        {tree_lines, visited} =
-          render_tree(issue.id, issue_map, blocks, visited, "", idx == length(roots) - 1)
+    # If no dependency relationships exist at all, return empty
+    if map_size(blocks) == 0 and map_size(blocked_by) == 0 do
+      []
+    else
+      {lines, _visited} =
+        roots
+        |> Enum.with_index()
+        |> Enum.reduce({[], MapSet.new()}, fn {issue, idx}, {acc_lines, visited} ->
+          {tree_lines, visited} =
+            render_tree(issue.id, issue_map, blocks, visited, "", idx == length(roots) - 1)
 
-        {acc_lines ++ tree_lines, visited}
-      end)
+          {acc_lines ++ tree_lines, visited}
+        end)
 
-    lines
+      lines
+    end
   end
 
   defp render_tree(issue_id, issue_map, blocks, visited, prefix, is_last) do
