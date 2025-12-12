@@ -57,3 +57,4 @@ When you believe the implementation is complete:
 - If you get stuck, add a comment with `bd comment <issue-id> "description of blocker"` and stop
 - If tests fail repeatedly, investigate the root cause before continuing
 - Always run `mix format` before requesting review
+- **Technical debt**: If you introduce technical debt or encounter complexity you can't fully handle, create a new issue with `bd create --title="..." --type=task` and link it to the original issue with `bd dep add <new-issue> <original-issue>`. Document what was deferred and why.
