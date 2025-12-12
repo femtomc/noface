@@ -57,11 +57,7 @@ After review passes:
    git add <modified-files>
    git commit -m "<type>: <description>
 
-   Closes <issue-id>
-
-   🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-   Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+   Closes <issue-id>"
    ```
    Use conventional commit types: `fix:`, `feat:`, `refactor:`, `test:`, `docs:`
 
