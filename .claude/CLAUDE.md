@@ -2,44 +2,7 @@
 
 Autonomous agent loop for software development. Orchestrates Claude (implementation) and Codex (review) to work on issues from your backlog.
 
-## AUTONOMOUS WORK MODE
-
-**When you start a session, immediately begin the autonomous work loop. Do not wait for user input.**
-
-### Workflow
-
-1. **Select Issue**: Run `bd ready`, pick the highest priority issue (P0 > P1 > P2), run `bd show <id>` for context, then `bd update <id> --status in_progress` to claim it.
-
-2. **Implement**: Understand requirements, explore codebase, implement the solution. Follow `.claude/ELIXIR_STYLE.md`. Run `mix format` and `mix test` before proceeding.
-
-3. **Review Cycle**: When implementation is complete:
-   ```bash
-   codex review 'Review changes for issue <id>: "<issue title>".
-
-   Files modified:
-   - path/to/file1.ex
-   - path/to/file2.ex
-
-   Check: correctness, edge cases, code quality, test coverage, Elixir conventions.'
-   ```
-
-   Note: List all files you modified during implementation. Codex will examine uncommitted changes in those files.
-
-   - If review finds **no issues**: Proceed to step 4
-   - If review finds **issues**: Address feedback, repeat step 3
-
-4. **Close**: Run `bd close <id>`, summarize what was done, then **stop**.
-
-### Rules
-
-- Work on ONE issue at a time
-- Never skip the Codex review cycle
-- If stuck, run `bd comment <id> "blocker description"` and stop
-- Always run `mix format` before requesting review
-
-### Elixir LSP (Expert)
-
-This project has Elixir LSP integration via Expert for semantic code tools (go-to-definition, find references, hover info) through MCP.
+Use `/work` to start the autonomous work loop.
 
 ## Quick Reference
 
@@ -276,14 +239,7 @@ Noface.Supervisor (one_for_one)
 
 ## Elixir Style
 
-See `.claude/ELIXIR_STYLE.md` for comprehensive Elixir style guidelines.
-
-Key points:
-- Always run `mix format` before commits
-- Follow module organization order (behaviours, use, import, require, alias, attrs, struct, types, callbacks, public, private)
-- Use pattern matching over conditionals
-- Return `{:ok, result}` / `{:error, reason}` tuples
-- Place `@spec` immediately before `def`
+See **`.claude/ELIXIR_STYLE.md`** for the complete style guide. Always run `mix format` before commits.
 
 ## Development Tips
 
