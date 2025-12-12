@@ -842,15 +842,24 @@ defmodule Noface.Core.State do
   end
 
   defp maybe_put(acc, key, attrs, candidates, transform \\ fn v -> v end) do
-    value =
-      Enum.find_value(candidates, fn c ->
-        Map.get(attrs, c) || Map.get(attrs, String.to_atom(c))
+    # Check if any candidate key is present in attrs (even if value is empty/nil)
+    {found, value} =
+      Enum.reduce_while(candidates, {false, nil}, fn c, _acc ->
+        str_key = c
+        atom_key = String.to_atom(c)
+
+        cond do
+          Map.has_key?(attrs, str_key) -> {:halt, {true, Map.get(attrs, str_key)}}
+          Map.has_key?(attrs, atom_key) -> {:halt, {true, Map.get(attrs, atom_key)}}
+          true -> {:cont, {false, nil}}
+        end
       end)
 
-    cond do
-      is_nil(value) -> acc
-      value == "" -> acc
-      true -> Map.put(acc, key, transform.(value))
+    # If key was present, include it (even if empty string, to allow clearing)
+    if found do
+      Map.put(acc, key, transform.(value))
+    else
+      acc
     end
   end
 

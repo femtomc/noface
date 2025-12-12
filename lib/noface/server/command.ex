@@ -156,13 +156,33 @@ defmodule Noface.Server.Command do
   end
 
   def handle_call({:comment_issue, issue_id, author, body}, _from, state) do
-    result = State.add_comment(issue_id, author, body)
+    # Sync to beads first - if it fails, don't update local State
+    result =
+      case sync_comment_to_beads(issue_id, author, body) do
+        :ok ->
+          # Beads sync succeeded, update local State for UI
+          State.add_comment(issue_id, author, body)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
     state = record_command(state, :comment_issue, issue_id)
     {:reply, result, state}
   end
 
   def handle_call({:update_issue, issue_id, attrs}, _from, state) do
-    result = State.update_issue_content(issue_id, attrs)
+    # Sync to beads first - if it fails, don't update local State
+    result =
+      case sync_update_to_beads(issue_id, attrs) do
+        :ok ->
+          # Beads sync succeeded, update local State for UI
+          State.update_issue_content(issue_id, attrs)
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+
     state = record_command(state, :update_issue, issue_id)
     {:reply, result, state}
   end
@@ -308,6 +328,90 @@ defmodule Noface.Server.Command do
 
       {error, _code} ->
         {:error, String.trim(error)}
+    end
+  end
+
+  defp sync_comment_to_beads(issue_id, author, body) do
+    args = ["comment", issue_id, body]
+
+    args =
+      if author && author != "" do
+        args ++ ["--author", author]
+      else
+        args
+      end
+
+    try do
+      case System.cmd("bd", args, stderr_to_stdout: true) do
+        {_output, 0} ->
+          :ok
+
+        {error, code} ->
+          Logger.warning(
+            "[COMMAND] Failed to sync comment to beads for #{issue_id}: #{String.trim(error)} (exit #{code})"
+          )
+
+          {:error, String.trim(error)}
+      end
+    rescue
+      e ->
+        Logger.warning("[COMMAND] bd command failed: #{inspect(e)}")
+        {:error, "bd command not available"}
+    end
+  end
+
+  defp sync_update_to_beads(issue_id, attrs) do
+    args = ["update", issue_id]
+
+    # Build args from attrs - support both string and atom keys
+    args = add_update_arg(args, attrs, ["title"], "--title")
+    args = add_update_arg(args, attrs, ["description"], "-d")
+    args = add_update_arg(args, attrs, ["priority"], "-p")
+    args = add_update_arg(args, attrs, ["acceptance_criteria", "acceptance"], "--acceptance")
+
+    # Only run if we have actual updates (more than just the issue_id)
+    if length(args) > 2 do
+      try do
+        case System.cmd("bd", args, stderr_to_stdout: true) do
+          {_output, 0} ->
+            :ok
+
+          {error, code} ->
+            Logger.warning(
+              "[COMMAND] Failed to sync update to beads for #{issue_id}: #{String.trim(error)} (exit #{code})"
+            )
+
+            {:error, String.trim(error)}
+        end
+      rescue
+        e ->
+          Logger.warning("[COMMAND] bd command failed: #{inspect(e)}")
+          {:error, "bd command not available"}
+      end
+    else
+      :ok
+    end
+  end
+
+  defp add_update_arg(args, attrs, keys, flag) do
+    # Check if any key is present in attrs (even if value is empty string)
+    {found, value} =
+      Enum.reduce_while(keys, {false, nil}, fn key, _acc ->
+        str_key = key
+        atom_key = String.to_atom(key)
+
+        cond do
+          Map.has_key?(attrs, str_key) -> {:halt, {true, Map.get(attrs, str_key)}}
+          Map.has_key?(attrs, atom_key) -> {:halt, {true, Map.get(attrs, atom_key)}}
+          true -> {:cont, {false, nil}}
+        end
+      end)
+
+    # If key was present, include it (even if empty string, to allow clearing)
+    if found do
+      args ++ [flag, to_string(value || "")]
+    else
+      args
     end
   end
 end
