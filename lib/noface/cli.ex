@@ -219,11 +219,13 @@ defmodule Noface.CLI do
     |> maybe_override(:max_iterations, opts[:max_iterations])
     |> maybe_override(:specific_issue, opts[:issue])
     |> maybe_override(:dry_run, opts[:dry_run])
-    |> maybe_override(:enable_planner, not opts[:no_planner])
+    # Only override enable_planner if --no-planner flag was explicitly provided
+    |> maybe_override(:enable_planner, if(Keyword.has_key?(opts, :no_planner), do: false))
     |> maybe_override(:planner_interval, opts[:planner_interval])
     |> maybe_override(:planner_mode, if(opts[:event_driven_planner], do: :event_driven))
     |> maybe_override(:planner_directions, opts[:planner_directions])
-    |> maybe_override(:enable_quality, not opts[:no_quality])
+    # Only override enable_quality if --no-quality flag was explicitly provided
+    |> maybe_override(:enable_quality, if(Keyword.has_key?(opts, :no_quality), do: false))
     |> maybe_override(:quality_interval, opts[:quality_interval])
     |> maybe_override(:monowiki_vault, opts[:monowiki_vault])
     |> maybe_override(

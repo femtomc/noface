@@ -58,13 +58,12 @@ bd close <id>        # Close an issue
 bd ready             # Show ready work (no blockers)
 bd sync              # Sync with git remote
 
-# Version control (jj/jujutsu)
-jj status            # Show working copy status
-jj diff              # Show changes
-jj log               # Show revision history
-jj new               # Create new change
-jj describe -m "msg" # Set change description
-jj commit            # Commit current change
+# Version control (git)
+git status           # Show working tree status
+git diff             # Show changes
+git log              # Show commit history
+git add <files>      # Stage changes
+git commit -m "msg"  # Commit changes
 
 # Run the orchestrator
 mix noface.start     # Start persistent server
@@ -150,39 +149,27 @@ bd info                    # Show database info
 
 Issues use prefix + hash format: `noface-abc`, `noface-xyz`
 
-## Version Control with `jj` (Jujutsu)
+## Version Control with Git
 
-This project uses `jj` instead of raw git. jj is Git-compatible but supports better parallel workflows.
+This project uses standard git for version control.
 
 ### Common Workflows
 
 ```bash
 # Check status
-jj status                  # What's changed
-jj diff                    # See diffs
-jj log                     # Revision history
+git status                 # What's changed
+git diff                   # See diffs
+git log --oneline          # Revision history
 
 # Make changes
-jj new                     # Create new change
-jj describe -m "message"   # Set description
-jj commit                  # Commit and create new WC
+git add <files>            # Stage changes
+git commit -m "message"    # Commit changes
 
-# Navigate history
-jj edit @-                 # Edit parent revision
-jj new main                # Create change on main
-
-# Workspace operations (for parallel work)
-jj workspace add ../worker-1 --name worker-1
-jj workspace list
-jj squash --from <change-id> --into @
+# Branches
+git checkout -b feature    # Create feature branch
+git checkout main          # Switch to main
+git merge feature          # Merge feature into current branch
 ```
-
-### Key Concepts
-
-- **Working copy (@)**: Current uncommitted changes
-- **Change ID**: Stable identifier for a commit (survives rebases)
-- **Commit ID**: SHA-like hash (changes with rebases)
-- **Workspaces**: Multiple working directories in one repo
 
 ## Configuration
 
@@ -330,10 +317,13 @@ bd daemon start
 bd info  # Check daemon status
 ```
 
-### jj workspace conflicts
+### Git merge conflicts
 ```bash
-jj workspace list
-jj resolve  # Interactive conflict resolution
+git status             # See conflicted files
+git diff               # Review conflicts
+# Edit files to resolve, then:
+git add <resolved-files>
+git commit
 ```
 
 ### Mix compile errors

@@ -183,13 +183,18 @@ defmodule Noface.Core.Config do
   defp apply_passes_section(config, nil), do: config
 
   defp apply_passes_section(config, section) do
+    # Use explicit nil check to honor false values from config
     planner_enabled =
-      Map.get(section, "planner_enabled") ||
-        Map.get(section, "scrum_enabled", config.enable_planner)
+      case Map.get(section, "planner_enabled") do
+        nil -> Map.get(section, "scrum_enabled", config.enable_planner)
+        value -> value
+      end
 
     planner_interval =
-      Map.get(section, "planner_interval") ||
-        Map.get(section, "scrum_interval", config.planner_interval)
+      case Map.get(section, "planner_interval") do
+        nil -> Map.get(section, "scrum_interval", config.planner_interval)
+        value -> value
+      end
 
     planner_mode =
       parse_planner_mode(
