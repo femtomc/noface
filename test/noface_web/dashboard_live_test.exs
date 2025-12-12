@@ -45,7 +45,7 @@ defmodule NofaceWeb.DashboardLiveTest do
         }
       )
 
-    view |> element("div.issue[phx-value-id=\"c\"]") |> render_click()
+    view |> element("div.issue-header[phx-value-id=\"c\"]") |> render_click()
 
     view
     |> form("form[phx-submit=add_comment][phx-value-id=\"c\"]", %{
@@ -105,5 +105,72 @@ defmodule NofaceWeb.DashboardLiveTest do
     assert html =~ "Read"
     assert html =~ "foo.txt"
     assert html =~ "completed work"
+  end
+
+  describe "loop controls" do
+    test "shows NOT STARTED when loop not running", %{conn: conn} do
+      {:ok, view, _} =
+        live_isolated(conn, NofaceWeb.DashboardLive,
+          session: %{
+            "test_state" => %{
+              issues: [],
+              status: %{
+                loop: %{running: false, paused: false, iteration: 0},
+                state: %{},
+                workers: %{workers: [], num_workers: 0}
+              }
+            }
+          }
+        )
+
+      html = render(view)
+      assert html =~ "NOT STARTED"
+      assert html =~ "Loop not started"
+      assert html =~ "Start"
+    end
+
+    test "shows RUNNING status with pause/interrupt buttons", %{conn: conn} do
+      {:ok, view, _} =
+        live_isolated(conn, NofaceWeb.DashboardLive,
+          session: %{
+            "test_state" => %{
+              issues: [],
+              status: %{
+                loop: %{running: true, paused: false, iteration: 5},
+                state: %{},
+                workers: %{workers: [], num_workers: 0}
+              }
+            }
+          }
+        )
+
+      html = render(view)
+      assert html =~ "RUNNING"
+      assert html =~ "Pause"
+      assert html =~ "Interrupt"
+      refute html =~ "Resume"
+    end
+
+    test "shows PAUSED status with resume/interrupt buttons", %{conn: conn} do
+      {:ok, view, _} =
+        live_isolated(conn, NofaceWeb.DashboardLive,
+          session: %{
+            "test_state" => %{
+              issues: [],
+              status: %{
+                loop: %{running: false, paused: true, iteration: 5},
+                state: %{},
+                workers: %{workers: [], num_workers: 0}
+              }
+            }
+          }
+        )
+
+      html = render(view)
+      assert html =~ "PAUSED"
+      assert html =~ "Resume"
+      assert html =~ "Interrupt"
+      refute html =~ ">Pause<"
+    end
   end
 end

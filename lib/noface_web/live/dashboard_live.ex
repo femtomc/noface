@@ -100,21 +100,46 @@ defmodule NofaceWeb.DashboardLive do
 
   def handle_event("pause", _params, socket) do
     case Command.pause() do
-      :ok -> {:noreply, assign_data(socket)}
-      {:error, _} -> {:noreply, socket}
+      :ok ->
+        {:noreply, socket |> clear_flash() |> assign_data()}
+
+      {:error, :already_paused} ->
+        {:noreply, socket |> put_flash(:info, "Loop is already paused")}
+
+      {:error, :not_running} ->
+        {:noreply, socket |> put_flash(:error, "Loop is not running")}
+
+      {:error, reason} ->
+        {:noreply, socket |> put_flash(:error, "Pause failed: #{inspect(reason)}")}
     end
   end
 
   def handle_event("resume", _params, socket) do
     case Command.resume() do
-      :ok -> {:noreply, assign_data(socket)}
-      {:error, _} -> {:noreply, socket}
+      :ok ->
+        {:noreply, socket |> clear_flash() |> assign_data()}
+
+      {:error, :not_paused} ->
+        {:noreply, socket |> put_flash(:info, "Loop is not paused")}
+
+      {:error, reason} ->
+        {:noreply, socket |> put_flash(:error, "Resume failed: #{inspect(reason)}")}
     end
   end
 
   def handle_event("interrupt", _params, socket) do
-    Command.interrupt()
-    {:noreply, assign_data(socket)}
+    case Command.interrupt() do
+      :ok ->
+        {:noreply,
+         socket |> clear_flash() |> put_flash(:info, "Interrupted current work") |> assign_data()}
+
+      {:error, reason} ->
+        {:noreply, socket |> put_flash(:error, "Interrupt failed: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("start_loop", _params, socket) do
+    {:noreply, socket |> put_flash(:info, "Use 'mix noface.start' to start the loop")}
   end
 
   @impl true
@@ -440,13 +465,13 @@ defmodule NofaceWeb.DashboardLive do
       .issue {
         padding: 0.5ch 1ch;
         border: 1px solid var(--border);
-        cursor: pointer;
       }
       .issue:hover { border-color: var(--text-muted); }
       .issue-header {
         display: flex;
         gap: 1ch;
         align-items: flex-start;
+        cursor: pointer;
       }
       .issue-id {
         color: var(--text-muted);
@@ -462,6 +487,7 @@ defmodule NofaceWeb.DashboardLive do
         gap: 1ch;
         margin-top: 0.25ch;
         font-size: 0.75rem;
+        cursor: pointer;
       }
       .priority {
         padding: 0 0.5ch;
@@ -698,12 +724,12 @@ defmodule NofaceWeb.DashboardLive do
             <% else %>
               <div class="issue-list">
                 <%= for issue <- filter_issues(@issues, @filter) do %>
-                  <div class="issue" phx-click="toggle_issue" phx-value-id={issue.id}>
-                    <div class="issue-header">
+                  <div class="issue">
+                    <div class="issue-header" phx-click="toggle_issue" phx-value-id={issue.id}>
                       <span class="issue-id"><%= issue.id %></span>
                       <span class="issue-title"><%= issue.title || "(no title)" %></span>
                     </div>
-                    <div class="issue-meta">
+                    <div class="issue-meta" phx-click="toggle_issue" phx-value-id={issue.id}>
                       <span class={"priority priority-#{issue.priority || 2}"}>
                         P<%= issue.priority || 2 %>
                       </span>
@@ -831,25 +857,33 @@ defmodule NofaceWeb.DashboardLive do
         <% end %>
 
         <div class="controls">
-          <%= if loop_running?(@status) and not loop_paused?(@status) do %>
-            <button class="ctrl-btn" phx-click="pause">Pause</button>
-            <button class="ctrl-btn danger" phx-click="interrupt">Interrupt</button>
-          <% else %>
-            <button class="ctrl-btn primary" phx-click="resume">Resume</button>
+          <% loop_state = loop_state(@status) %>
+          <%= case loop_state do %>
+            <% :running -> %>
+              <button class="ctrl-btn" phx-click="pause">Pause</button>
+              <button class="ctrl-btn danger" phx-click="interrupt">Interrupt</button>
+            <% :paused -> %>
+              <button class="ctrl-btn primary" phx-click="resume">Resume</button>
+              <button class="ctrl-btn danger" phx-click="interrupt">Interrupt</button>
+            <% :not_started -> %>
+              <button class="ctrl-btn" phx-click="start_loop" title="Start with: mix noface.start">Start</button>
+              <span style="color: var(--text-dim); font-size: 0.75rem; margin-left: 1ch;">Loop not started</span>
           <% end %>
         </div>
 
         <div class="panel-content">
+          <.flash_group flash={@flash} />
+
           <div class="loop-info">
             <div>
               <strong>Status:</strong>
-              <%= cond do %>
-                <% loop_paused?(@status) -> %>
-                  <span style="color: var(--warning);">PAUSED</span>
-                <% loop_running?(@status) -> %>
+              <%= case loop_state(@status) do %>
+                <% :running -> %>
                   <span style="color: var(--success);">RUNNING</span>
-                <% true -> %>
-                  <span style="color: var(--text-dim);">IDLE</span>
+                <% :paused -> %>
+                  <span style="color: var(--warning);">PAUSED</span>
+                <% :not_started -> %>
+                  <span style="color: var(--text-dim);">NOT STARTED</span>
               <% end %>
             </div>
             <div>
@@ -908,6 +942,14 @@ defmodule NofaceWeb.DashboardLive do
 
   defp loop_running?(status), do: get_in(status, [:loop, :running]) == true
   defp loop_paused?(status), do: get_in(status, [:loop, :paused]) == true
+
+  defp loop_state(status) do
+    cond do
+      loop_paused?(status) -> :paused
+      loop_running?(status) -> :running
+      true -> :not_started
+    end
+  end
 
   defp progress_bar(_done, total) when total == 0, do: String.duplicate("░", 12)
 
