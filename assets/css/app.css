@@ -208,3 +208,6 @@ th {
   pointer-events: none;
 }
 
+/* Import dashboard styles */
+@import "./dashboard.css";
+

@@ -330,337 +330,8 @@ defmodule NofaceWeb.DashboardLive do
   @impl true
   def render(assigns) do
     ~H"""
-    <style>
-      .app-container {
-        display: grid;
-        grid-template-rows: auto 1fr;
-        grid-template-columns: 1fr 1fr;
-        gap: 1ch;
-        height: calc(100vh - 60px);
-        padding: 1ch;
-      }
-      .app-header {
-        grid-column: 1 / -1;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        padding: 0 1ch;
-        border-bottom: var(--border-thickness) solid var(--border);
-        padding-bottom: 0.5ch;
-      }
-      .app-header h1 {
-        font-size: 1rem;
-        font-weight: 700;
-        text-transform: uppercase;
-        letter-spacing: 0.1ch;
-        display: flex;
-        align-items: center;
-        gap: 1ch;
-      }
-      .header-stats {
-        display: flex;
-        gap: 3ch;
-        color: var(--text-muted);
-        font-size: 0.85rem;
-      }
-      .header-stat {
-        display: flex;
-        gap: 0.5ch;
-      }
-      .header-stat-value {
-        color: var(--text);
-        font-weight: 500;
-      }
-      .live-indicator {
-        display: inline-block;
-        width: 10px;
-        height: 10px;
-        background: var(--success);
-        border-radius: 50%;
-        animation: pulse 2s infinite;
-        margin-right: 0.5ch;
-      }
-      .live-dot {
-        width: 8px;
-        height: 8px;
-        background: var(--success);
-        border-radius: 50%;
-        animation: pulse 2s infinite;
-      }
-      @keyframes pulse {
-        0%, 100% { opacity: 1; }
-        50% { opacity: 0.4; }
-      }
-      .panel {
-        background: var(--bg-secondary);
-        border: var(--border-thickness) solid var(--border);
-        display: flex;
-        flex-direction: column;
-        overflow: hidden;
-        min-height: 0;
-      }
-      .panel-header {
-        padding: 0.5ch 1ch;
-        border-bottom: var(--border-thickness) solid var(--border);
-        font-weight: 700;
-        text-transform: uppercase;
-        font-size: 0.85rem;
-        letter-spacing: 0.05ch;
-        background: var(--bg-alt);
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-      }
-      .panel-content {
-        flex: 1;
-        overflow-y: auto;
-        padding: 1ch;
-      }
-      .tabs {
-        display: flex;
-        gap: 0;
-        border-bottom: var(--border-thickness) solid var(--border);
-        flex-wrap: wrap;
-      }
-      .tab {
-        padding: 0.5ch 1.5ch;
-        cursor: pointer;
-        border: none;
-        background: transparent;
-        color: var(--text-muted);
-        font: inherit;
-        text-transform: uppercase;
-        font-size: 0.85rem;
-        border-bottom: var(--border-thickness) solid transparent;
-        margin-bottom: calc(-1 * var(--border-thickness));
-      }
-      .tab:hover { color: var(--text); }
-      .tab.active {
-        color: var(--text);
-        border-bottom-color: var(--accent);
-      }
-      .filter-bar {
-        display: flex;
-        gap: 0.5ch;
-        padding: 0.5ch 1ch;
-        border-bottom: 1px solid var(--border);
-      }
-      .filter-btn {
-        padding: 0 1ch;
-        border: 1px solid var(--border);
-        background: transparent;
-        color: var(--text-muted);
-        font: inherit;
-        font-size: 0.75rem;
-        cursor: pointer;
-        text-transform: uppercase;
-      }
-      .filter-btn:hover { border-color: var(--text-muted); color: var(--text); }
-      .filter-btn.active { border-color: var(--accent); color: var(--accent); }
-      .issue-list {
-        display: flex;
-        flex-direction: column;
-        gap: 0.5ch;
-      }
-      .issue {
-        padding: 0.5ch 1ch;
-        border: 1px solid var(--border);
-      }
-      .issue:hover { border-color: var(--text-muted); }
-      .issue-header {
-        display: flex;
-        gap: 1ch;
-        align-items: flex-start;
-        cursor: pointer;
-      }
-      .issue-id {
-        color: var(--text-muted);
-        font-size: 0.8rem;
-        flex-shrink: 0;
-      }
-      .issue-title {
-        flex: 1;
-        font-weight: 500;
-      }
-      .issue-meta {
-        display: flex;
-        gap: 1ch;
-        margin-top: 0.25ch;
-        font-size: 0.75rem;
-        cursor: pointer;
-      }
-      .priority {
-        padding: 0 0.5ch;
-        font-weight: 700;
-        border: 1px solid currentColor;
-      }
-      .priority-0 { color: var(--danger); }
-      .priority-1 { color: var(--warning); }
-      .priority-2 { color: var(--accent); }
-      .priority-3 { color: var(--text-dim); }
-      .issue-status {
-        text-transform: uppercase;
-      }
-      .issue-status.pending { color: var(--text-muted); }
-      .issue-status.running, .issue-status.assigned { color: var(--warning); }
-      .issue-status.completed { color: var(--success); }
-      .issue-status.failed { color: var(--danger); }
-      .issue-expanded {
-        margin-top: 0.5ch;
-        padding-top: 0.5ch;
-        border-top: 1px solid var(--border);
-        font-size: 0.85rem;
-        color: var(--text-muted);
-      }
-      .worker-grid {
-        display: flex;
-        gap: 1ch;
-        padding: 0.5ch 1ch;
-        border-bottom: 1px solid var(--border);
-        background: var(--bg-alt);
-        flex-wrap: wrap;
-      }
-      .worker {
-        font-size: 0.8rem;
-      }
-      .worker-id { color: var(--text-dim); }
-      .worker-status { text-transform: uppercase; }
-      .worker-status.idle { color: var(--text-dim); }
-      .worker-status.running { color: var(--warning); }
-      .worker-status.completed { color: var(--success); }
-      .controls {
-        display: flex;
-        gap: 0.5ch;
-        padding: 0.5ch 1ch;
-        border-bottom: 1px solid var(--border);
-      }
-      .ctrl-btn {
-        padding: 0.25ch 1ch;
-        border: 1px solid var(--border);
-        background: transparent;
-        color: var(--text);
-        font: inherit;
-        font-size: 0.8rem;
-        cursor: pointer;
-        text-transform: uppercase;
-      }
-      .ctrl-btn:hover { border-color: var(--text-muted); }
-      .ctrl-btn.primary { border-color: var(--accent); color: var(--accent); }
-      .ctrl-btn.danger { border-color: var(--danger); color: var(--danger); }
-      .progress-bar {
-        font-family: inherit;
-      }
-      .progress-filled { color: var(--success); }
-      .progress-empty { color: var(--text-dim); }
-      .empty-state {
-        color: var(--text-dim);
-        text-align: center;
-        padding: 2ch;
-      }
-      .agent-output {
-        font-size: 0.85rem;
-        line-height: 1.4;
-        display: flex;
-        flex-direction: column;
-        gap: 0.5ch;
-      }
-      .tool-call {
-        padding: 0.25ch 0;
-        border-left: 2px solid var(--accent);
-        padding-left: 1ch;
-        color: var(--text-muted);
-      }
-      .tool-call-name {
-        color: var(--accent);
-        font-weight: 700;
-      }
-      .tool-call-params {
-        color: var(--text-muted);
-        font-size: 0.8rem;
-      }
-      .text-delta {
-        white-space: pre-wrap;
-        word-break: break-word;
-        color: var(--text);
-        font-family: var(--font-family);
-      }
-      .dep-graph {
-        font-family: var(--font-family);
-        font-size: 0.85rem;
-        line-height: 1.4;
-        margin: 0;
-        white-space: pre;
-      }
-      .dep-prefix { color: var(--text-dim); }
-      .dep-marker-success { color: var(--success); }
-      .dep-marker-warning { color: var(--warning); }
-      .dep-marker-idle { color: var(--text-dim); }
-      .loop-info {
-        padding: 1ch;
-        font-size: 0.85rem;
-        color: var(--text-muted);
-      }
-      .loop-info div { margin-bottom: 0.25ch; }
-      .loop-info strong { color: var(--text); }
-      .comment-box {
-        margin-top: 0.5ch;
-        border-top: 1px solid var(--border);
-        padding-top: 0.5ch;
-        display: flex;
-        flex-direction: column;
-        gap: 0.5ch;
-      }
-      .comment-list {
-        display: flex;
-        flex-direction: column;
-        gap: 0.5ch;
-      }
-      .comment {
-        border: 1px solid var(--border);
-        padding: 0.5ch;
-        font-size: 0.85rem;
-      }
-      .comment-meta {
-        color: var(--text-muted);
-        font-size: 0.75rem;
-        margin-bottom: 0.25ch;
-      }
-      .issue-edit-form {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(20ch, 1fr));
-        gap: 0.5ch;
-        margin-top: 0.5ch;
-        border-top: 1px solid var(--border);
-        padding-top: 0.5ch;
-      }
-      .issue-edit-form textarea {
-        min-height: 6ch;
-        background: transparent;
-        color: var(--text);
-        border: 1px solid var(--border);
-        padding: 0.5ch;
-        font: inherit;
-      }
-      .issue-edit-form input, .issue-edit-form select {
-        background: transparent;
-        color: var(--text);
-        border: 1px solid var(--border);
-        padding: 0.25ch 0.5ch;
-        font: inherit;
-      }
-      .issue-edit-form button {
-        grid-column: 1 / -1;
-        justify-self: start;
-        padding: 0.5ch 1ch;
-        border: 1px solid var(--accent);
-        color: var(--accent);
-        background: transparent;
-        cursor: pointer;
-      }
-    </style>
-
-    <div class="app-container">
-      <header class="app-header">
+    <div class="dashboard">
+      <header class="dashboard-header">
         <h1>
           <%= if loop_running?(@status) do %><span class="live-indicator"></span><% end %>
           noface
@@ -677,7 +348,7 @@ defmodule NofaceWeb.DashboardLive do
             <span class="header-stat-value"><%= @stats.open %></span>
           </div>
           <div class="header-stat">
-            <span style="color: var(--warning);">active:</span>
+            <span class="text-warning">active:</span>
             <span class="header-stat-value"><%= @stats.in_progress %></span>
           </div>
           <div class="header-stat">
@@ -697,12 +368,12 @@ defmodule NofaceWeb.DashboardLive do
       <div class="panel">
         <div class="panel-header">
           <span><%= if @left_tab == "issues", do: "Issues", else: "Dependency Graph" %></span>
-          <div style="display: flex; gap: 1ch; align-items: center; font-size: 0.8rem;">
+          <div class="panel-header-actions">
             <%= if @left_tab == "issues" do %>
-              <span style="color: var(--text-muted);"><%= length(filter_issues(@issues, @filter)) %> shown</span>
-              <button class="filter-btn" phx-click="set_left_tab" phx-value-tab="graph">graph →</button>
+              <span class="text-muted"><%= length(filter_issues(@issues, @filter)) %> shown</span>
+              <button class="filter-btn" phx-click="set_left_tab" phx-value-tab="graph">graph</button>
             <% else %>
-              <button class="filter-btn" phx-click="set_left_tab" phx-value-tab="issues">← issues</button>
+              <button class="filter-btn" phx-click="set_left_tab" phx-value-tab="issues">issues</button>
             <% end %>
           </div>
         </div>
@@ -737,33 +408,29 @@ defmodule NofaceWeb.DashboardLive do
                         <%= issue.status %>
                       </span>
                       <%= if issue.issue_type do %>
-                        <span style="color: var(--text-dim); text-transform: uppercase;">
-                          <%= issue.issue_type %>
-                        </span>
+                        <span class="text-dim"><%= String.upcase(to_string(issue.issue_type)) %></span>
                       <% end %>
                       <%= if issue.dependencies && issue.dependencies != [] do %>
-                        <span style="color: var(--text-dim); font-size: 0.75rem;">
-                          blocks <%= Enum.count(issue.dependencies) %>
-                        </span>
+                        <span class="text-dim">blocks <%= Enum.count(issue.dependencies) %></span>
                       <% end %>
                     </div>
                     <%= if @expanded == issue.id do %>
                       <div class="issue-expanded">
                         <%= if issue.description do %>
-                          <div style="margin-bottom: 0.5ch;"><%= issue.description %></div>
+                          <div><%= issue.description %></div>
                         <% end %>
                         <%= if issue.acceptance_criteria do %>
-                          <div style="border-top: 1px solid var(--border); padding-top: 0.5ch; margin-top: 0.5ch;">
-                            <strong>Acceptance:</strong>
-                            <div style="white-space: pre-wrap;"><%= issue.acceptance_criteria %></div>
+                          <div class="issue-section">
+                            <span class="issue-section-title">Acceptance:</span>
+                            <pre class="text-delta"><%= issue.acceptance_criteria %></pre>
                           </div>
                         <% end %>
-                    <%= if issue.dependencies && issue.dependencies != [] do %>
-                      <div style="border-top: 1px solid var(--border); padding-top: 0.5ch; margin-top: 0.5ch;">
-                        <strong>Blocks:</strong>
-                        <div style="white-space: pre-wrap;"><%= Enum.map(issue.dependencies, & &1.depends_on_id) |> Enum.join(", ") %></div>
-                      </div>
-                    <% end %>
+                        <%= if issue.dependencies && issue.dependencies != [] do %>
+                          <div class="issue-section">
+                            <span class="issue-section-title">Blocks:</span>
+                            <span><%= Enum.map(issue.dependencies, & &1.depends_on_id) |> Enum.join(", ") %></span>
+                          </div>
+                        <% end %>
                     <div class="comment-box">
                       <%= if issue.comments && issue.comments != [] do %>
                         <div class="comment-list">
@@ -777,20 +444,20 @@ defmodule NofaceWeb.DashboardLive do
                           <% end %>
                         </div>
                       <% end %>
-                      <form phx-submit="add_comment" phx-value-id={issue.id} style="display: flex; gap: 0.5ch; flex-direction: column;">
-                        <textarea name="comment[body]" placeholder="Add comment" style="width: 100%; background: transparent; color: var(--text); border: 1px solid var(--border); padding: 0.5ch; min-height: 4ch;"></textarea>
-                        <div style="display: flex; gap: 0.5ch; align-items: center;">
-                          <input type="text" name="comment[author]" placeholder="Author" value="user" style="flex: 1; background: transparent; color: var(--text); border: 1px solid var(--border); padding: 0.25ch 0.5ch;">
+                      <form phx-submit="add_comment" phx-value-id={issue.id} class="comment-form">
+                        <textarea name="comment[body]" placeholder="Add comment"></textarea>
+                        <div class="comment-form-footer">
+                          <input type="text" name="comment[author]" placeholder="Author" value="user">
                           <button class="ctrl-btn" type="submit">Comment</button>
                         </div>
                       </form>
                     </div>
                     <form class="issue-edit-form" phx-submit="update_issue" phx-value-id={issue.id}>
-                      <div style="display: flex; flex-direction: column; gap: 0.25ch;">
+                      <div class="issue-edit-field">
                         <label>Title</label>
                         <input type="text" name="issue[title]" value={issue.title} />
                       </div>
-                      <div style="display: flex; flex-direction: column; gap: 0.25ch;">
+                      <div class="issue-edit-field">
                         <label>Priority</label>
                         <select name="issue[priority]" value={issue.priority || 2}>
                           <%= for p <- 0..3 do %>
@@ -798,11 +465,11 @@ defmodule NofaceWeb.DashboardLive do
                           <% end %>
                         </select>
                       </div>
-                      <div style="display: flex; flex-direction: column; gap: 0.25ch;">
+                      <div class="issue-edit-field">
                         <label>Description</label>
                         <textarea name="issue[description]"><%= issue.description %></textarea>
                       </div>
-                      <div style="display: flex; flex-direction: column; gap: 0.25ch;">
+                      <div class="issue-edit-field">
                         <label>Acceptance</label>
                         <textarea name="issue[acceptance_criteria]"><%= issue.acceptance_criteria %></textarea>
                       </div>
@@ -821,15 +488,7 @@ defmodule NofaceWeb.DashboardLive do
               <% [] -> %>
                 <div class="empty-state">No dependency relationships</div>
               <% lines -> %>
-                <pre class="dep-graph">
-                  <%= for line <- lines do %>
-                    <div>
-                      <span class="dep-prefix"><%= line.prefix %></span>
-                      <span style={"color: #{line.color}"}><%= line.marker %></span>
-                      <span><%= line.text %></span>
-                    </div>
-                  <% end %>
-                </pre>
+                <pre class="dep-graph"><%= for line <- lines do %><div><span class="dep-prefix"><%= line.prefix %></span><span class={line.color_class}><%= line.marker %></span> <%= line.text %></div><% end %></pre>
             <% end %>
           </div>
         <% end %>
@@ -839,14 +498,14 @@ defmodule NofaceWeb.DashboardLive do
       <div class="panel">
         <div class="panel-header">
           <span>Agent Activity</span>
-          <div style="font-weight: normal; font-size: 0.75rem; display: flex; gap: 2ch;">
+          <div class="panel-header-actions">
             <span>done: <strong><%= get_in(@status, [:state, :completed]) || 0 %></strong></span>
             <span>failed: <strong><%= get_in(@status, [:state, :failed]) || 0 %></strong></span>
           </div>
         </div>
 
         <%= if @workers != [] do %>
-          <div class="worker-grid" style={"grid-template-columns: repeat(#{max(length(@workers), 1)}, minmax(12ch, 1fr));"}>
+          <div class="worker-grid">
             <%= for worker <- @workers do %>
               <div class="worker">
                 <span class="worker-id">W<%= worker.id %></span>
@@ -867,7 +526,7 @@ defmodule NofaceWeb.DashboardLive do
               <button class="ctrl-btn danger" phx-click="interrupt">Interrupt</button>
             <% :not_started -> %>
               <button class="ctrl-btn" phx-click="start_loop" title="Start with: mix noface.start">Start</button>
-              <span style="color: var(--text-dim); font-size: 0.75rem; margin-left: 1ch;">Loop not started</span>
+              <span class="text-dim">Loop not started</span>
           <% end %>
         </div>
 
@@ -879,11 +538,11 @@ defmodule NofaceWeb.DashboardLive do
               <strong>Status:</strong>
               <%= case loop_state(@status) do %>
                 <% :running -> %>
-                  <span style="color: var(--success);">RUNNING</span>
+                  <span class="text-success">RUNNING</span>
                 <% :paused -> %>
-                  <span style="color: var(--warning);">PAUSED</span>
+                  <span class="text-warning">PAUSED</span>
                 <% :not_started -> %>
-                  <span style="color: var(--text-dim);">NOT STARTED</span>
+                  <span class="text-dim">NOT STARTED</span>
               <% end %>
             </div>
             <div>
@@ -902,9 +561,9 @@ defmodule NofaceWeb.DashboardLive do
             </div>
           </div>
 
-          <div class="tabs" style="margin: 0 1ch;">
+          <div class="tabs">
             <%= if map_size(@sessions) == 0 do %>
-              <span class="empty-state" style="padding: 0.5ch 0; width: 100%;">No sessions yet</span>
+              <span class="empty-state">No sessions yet</span>
             <% else %>
               <%= for id <- session_order(@sessions, active_issue_id(@issues)) do %>
                 <button
@@ -1273,14 +932,14 @@ defmodule NofaceWeb.DashboardLive do
     else
       visited = MapSet.put(visited, issue_id)
       issue = Map.get(issue_map, issue_id)
-      {marker, color} = status_marker(issue && issue.status)
+      {marker, color_class} = status_marker(issue && issue.status)
       connector = if is_last, do: "└─", else: "├─"
       title = if issue && issue.title, do: " #{issue.title}", else: ""
 
       line = %{
         prefix: prefix <> connector <> " ",
         marker: marker,
-        color: color,
+        color_class: color_class,
         text: "#{issue_id}#{title}"
       }
 
@@ -1302,12 +961,12 @@ defmodule NofaceWeb.DashboardLive do
 
   defp status_marker(status) do
     case status do
-      :completed -> {"✓", "var(--success)"}
-      :running -> {"▶", "var(--warning)"}
-      :assigned -> {"▶", "var(--warning)"}
-      :failed -> {"✗", "var(--danger)"}
-      :pending -> {"○", "var(--text-dim)"}
-      _ -> {"○", "var(--text-dim)"}
+      :completed -> {"✓", "text-success"}
+      :running -> {"▶", "text-warning"}
+      :assigned -> {"▶", "text-warning"}
+      :failed -> {"✗", "text-danger"}
+      :pending -> {"○", "text-dim"}
+      _ -> {"○", "text-dim"}
     end
   end
 
