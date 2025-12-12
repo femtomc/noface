@@ -226,16 +226,20 @@ defmodule NofaceWeb.DashboardLive do
   end
 
   defp assign_data(socket) do
-    {status, issues, sessions} =
+    {status, issues, sessions, deps_result} =
       case socket.assigns[:test_state] do
         %{status: s, issues: i} = test ->
-          {s, Enum.map(i, &present_issue/1), Map.get(test, :sessions, %{})}
+          # For tests, use mock deps if provided, otherwise {:ok, {%{}, %{}}}
+          deps = Map.get(test, :deps_result, {:ok, {%{}, %{}}})
+          {s, Enum.map(i, &present_issue/1), Map.get(test, :sessions, %{}), deps}
 
         _ ->
           status = Command.status()
           issues = get_issues()
           sessions = load_sessions()
-          {status, issues, sessions}
+          # Load dependencies here instead of during render
+          deps_result = load_beads_dependencies()
+          {status, issues, sessions, deps_result}
       end
 
     state_counts = status[:state] || %{}
@@ -255,7 +259,8 @@ defmodule NofaceWeb.DashboardLive do
       stats: stats,
       workers: get_workers(status),
       sessions: sessions,
-      selected_session: selected_session
+      selected_session: selected_session,
+      deps_result: deps_result
     )
   end
 
@@ -475,11 +480,20 @@ defmodule NofaceWeb.DashboardLive do
           </div>
         <% else %>
           <div class="panel-content">
-            <%= case dependency_lines(@issues) do %>
-              <% [] -> %>
-                <div class="empty-state">No dependency relationships</div>
-              <% lines -> %>
-                <pre class="dep-graph"><%= for line <- lines do %><div><span class="dep-prefix"><%= line.prefix %></span><span class={line.color_class}><%= line.marker %></span> <%= line.text %></div><% end %></pre>
+            <%= case @deps_result do %>
+              <% {:error, :timeout} -> %>
+                <div class="empty-state text-warning">Failed to load dependencies (timeout)</div>
+              <% {:error, {:command_failed, _code}} -> %>
+                <div class="empty-state text-warning">Failed to load dependencies (bd command failed)</div>
+              <% {:error, _reason} -> %>
+                <div class="empty-state text-warning">Failed to load dependencies</div>
+              <% {:ok, {blocks, blocked_by}} -> %>
+                <%= case dependency_lines(@issues, blocks, blocked_by) do %>
+                  <% [] -> %>
+                    <div class="empty-state">No dependency relationships</div>
+                  <% lines -> %>
+                    <pre class="dep-graph"><%= for line <- lines do %><div><span class="dep-prefix"><%= line.prefix %></span><span class={line.color_class}><%= line.marker %></span> <%= line.text %></div><% end %></pre>
+                <% end %>
             <% end %>
           </div>
         <% end %>
@@ -860,50 +874,64 @@ defmodule NofaceWeb.DashboardLive do
   defp truncate_text(text, _), do: text
 
   # Load real dependency data from beads via bd blocked command
+  # Returns {:ok, {blocks, blocked_by}} or {:error, reason}
   defp load_beads_dependencies do
-    case System.cmd("bd", ["blocked", "--json"], stderr_to_stdout: true) do
-      {output, 0} ->
+    # Run with 5 second timeout to avoid blocking LiveView
+    task =
+      Task.async(fn ->
+        System.cmd("bd", ["blocked", "--json"], stderr_to_stdout: true)
+      end)
+
+    case Task.yield(task, 5_000) || Task.shutdown(task) do
+      {:ok, {output, 0}} ->
         case Jason.decode(output) do
           {:ok, blocked_issues} when is_list(blocked_issues) ->
             # Build blocks and blocked_by maps from the beads data
             # blocked_issues is a list of issues that are blocked, each has blocked_by: [issue_ids]
-            Enum.reduce(blocked_issues, {%{}, %{}}, fn issue, {blocks_acc, blocked_by_acc} ->
-              blocked_id = Map.get(issue, "id")
-              blockers = Map.get(issue, "blocked_by", [])
+            result =
+              Enum.reduce(blocked_issues, {%{}, %{}}, fn issue, {blocks_acc, blocked_by_acc} ->
+                blocked_id = Map.get(issue, "id")
+                blockers = Map.get(issue, "blocked_by", [])
 
-              # Update blocked_by: blocked_id -> [list of blockers]
-              blocked_by_acc = Map.put(blocked_by_acc, blocked_id, blockers)
+                # Update blocked_by: blocked_id -> [list of blockers]
+                blocked_by_acc = Map.put(blocked_by_acc, blocked_id, blockers)
 
-              # Update blocks: blocker_id -> [list of issues it blocks]
-              blocks_acc =
-                Enum.reduce(blockers, blocks_acc, fn blocker_id, acc ->
-                  Map.update(acc, blocker_id, [blocked_id], &[blocked_id | &1])
-                end)
+                # Update blocks: blocker_id -> [list of issues it blocks]
+                blocks_acc =
+                  Enum.reduce(blockers, blocks_acc, fn blocker_id, acc ->
+                    Map.update(acc, blocker_id, [blocked_id], &[blocked_id | &1])
+                  end)
 
-              {blocks_acc, blocked_by_acc}
-            end)
+                {blocks_acc, blocked_by_acc}
+              end)
 
-          _ ->
-            {%{}, %{}}
+            {:ok, result}
+
+          {:ok, _} ->
+            {:error, :invalid_format}
+
+          {:error, _} ->
+            {:error, :json_decode_failed}
         end
 
-      _ ->
-        {%{}, %{}}
+      {:ok, {_output, exit_code}} ->
+        {:error, {:command_failed, exit_code}}
+
+      nil ->
+        {:error, :timeout}
     end
   rescue
-    _ -> {%{}, %{}}
+    e -> {:error, {:exception, Exception.message(e)}}
   end
 
-  defp dependency_lines(issues) do
+  # Build dependency graph lines from pre-loaded dependency data
+  defp dependency_lines(issues, blocks, blocked_by) do
     issue_map = Map.new(issues, &{&1.id, &1})
-
-    # Load real dependency data from beads
-    {blocks, blocked_by} = load_beads_dependencies()
 
     # Filter to only open issues for the graph
     open_ids = issues |> Enum.reject(&(&1.status in [:completed, :failed])) |> MapSet.new(& &1.id)
 
-    # Find root issues: those with no blockers, or whose blockers are all completed
+    # Find root issues: those with no blockers, or whose blockers are all completed/not in our set
     roots =
       issues
       |> Enum.filter(fn issue ->
